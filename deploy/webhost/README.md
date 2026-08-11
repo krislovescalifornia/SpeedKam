@@ -48,6 +48,16 @@ browsing your backups. Access them via SFTP/your host's file manager.
 
 ## 4. Verify
 
+Open the receiver URL in a browser — it now shows a **health page**: a green
+"Online" status with storage-writable, secret-configured, and upload-limit
+checks. It never reveals the secret or any recorded data, so it's safe to leave
+public. For monitoring/uptime tools, add `?format=json` (or send
+`Accept: application/json`) — it returns `{"ok":true,...}` with HTTP 200 when
+healthy, or 503 if storage isn't writable / the secret is still the placeholder.
+
+    https://yourdomain.example/speedkam/speedkam_receiver.php          -> status page
+    https://yourdomain.example/speedkam/speedkam_receiver.php?format=json
+
 On the camera, run `python serve.py` and watch the dashboard's **backup** pill —
 it shows `synced → yourdomain` when the queue is empty, or `N queued` with the
 error on hover if it can't reach the server. To push all pre-existing records

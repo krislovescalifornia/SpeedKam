@@ -50,6 +50,84 @@ function rrmdir($dir) {
     return $removed;
 }
 
+// --- health check (GET) -----------------------------------------------------
+// A human- and machine-readable "is this receiver alive and set up right?" page.
+// Public on purpose (no secret needed) but leaks NOTHING sensitive: no secret,
+// no event data, no counts. Visit the URL in a browser for a status page, or
+// add ?format=json (or send Accept: application/json) for a monitoring probe.
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $exists   = is_dir($DATA_DIR);
+    $writable = $exists ? is_writable($DATA_DIR) : is_writable(dirname($DATA_DIR));
+    $configured = ($SECRET !== 'CHANGE-ME-to-a-long-random-string' && $SECRET !== '');
+    $ok = ($writable && $configured);
+    $health = [
+        'ok'         => $ok,
+        'service'    => 'speedkam-receiver',
+        'time'       => gmdate('c'),
+        'php'        => PHP_VERSION,
+        'writable'   => $writable,
+        'configured' => $configured,
+        'limits'     => [
+            'upload_max_filesize' => ini_get('upload_max_filesize'),
+            'post_max_size'       => ini_get('post_max_size'),
+        ],
+    ];
+    $wants_json = (($_GET['format'] ?? '') === 'json')
+        || strpos($_SERVER['HTTP_ACCEPT'] ?? '', 'application/json') !== false;
+    if ($wants_json) {
+        // header() is already application/json from above.
+        http_response_code($ok ? 200 : 503);
+        echo json_encode($health);
+        exit;
+    }
+    header('Content-Type: text/html; charset=utf-8');
+    http_response_code($ok ? 200 : 503);
+    $yn = function ($b) {
+        return $b
+            ? '<span class="ok">&#10003; yes</span>'
+            : '<span class="bad">&#10007; no</span>';
+    };
+    $status_word  = $ok ? 'Online' : 'Needs attention';
+    $status_class = $ok ? 'ok' : 'bad';
+    echo '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       . '<title>SpeedKam backup &mdash; ' . htmlspecialchars($status_word) . '</title>'
+       . '<style>'
+       . ':root{color-scheme:light dark}'
+       . 'body{font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;'
+       . 'margin:0;padding:2rem;display:flex;justify-content:center;'
+       . 'background:#0b0f14;color:#e6edf3}'
+       . '.card{max-width:560px;width:100%;background:#111823;border:1px solid #223;'
+       . 'border-radius:14px;padding:1.5rem 1.75rem;box-shadow:0 8px 30px rgba(0,0,0,.3)}'
+       . 'h1{margin:.2rem 0 1rem;font-size:1.3rem;display:flex;align-items:center;gap:.6rem}'
+       . '.dot{width:.7rem;height:.7rem;border-radius:50%;display:inline-block}'
+       . '.ok{color:#3fb950}.bad{color:#f85149}'
+       . '.dot.ok{background:#3fb950}.dot.bad{background:#f85149}'
+       . 'table{width:100%;border-collapse:collapse;margin:.5rem 0}'
+       . 'td{padding:.5rem .25rem;border-top:1px solid #223}'
+       . 'td:last-child{text-align:right;font-variant-numeric:tabular-nums}'
+       . '.muted{color:#8b949e;font-size:.85rem;margin-top:1rem}'
+       . 'code{background:#0b0f14;padding:.1rem .35rem;border-radius:6px}'
+       . '</style></head><body><div class="card">'
+       . '<h1><span class="dot ' . $status_class . '"></span>SpeedKam backup receiver &mdash; '
+       . '<span class="' . $status_class . '">' . htmlspecialchars($status_word) . '</span></h1>'
+       . '<table>'
+       . '<tr><td>Storage writable</td><td>' . $yn($writable) . '</td></tr>'
+       . '<tr><td>Secret configured</td><td>' . $yn($configured) . '</td></tr>'
+       . '<tr><td>Max upload size</td><td><code>'
+       . htmlspecialchars(ini_get('upload_max_filesize')) . '</code></td></tr>'
+       . '<tr><td>Max POST size</td><td><code>'
+       . htmlspecialchars(ini_get('post_max_size')) . '</code></td></tr>'
+       . '<tr><td>PHP</td><td><code>' . htmlspecialchars(PHP_VERSION) . '</code></td></tr>'
+       . '<tr><td>Server time (UTC)</td><td>' . htmlspecialchars(gmdate('c')) . '</td></tr>'
+       . '</table>'
+       . '<p class="muted">This endpoint receives camera uploads over HTTPS (POST). '
+       . 'A camera authenticates with a shared key; this page never exposes it or '
+       . 'any recorded data. Machine-readable status: <code>?format=json</code>.</p>'
+       . '</div></body></html>';
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     fail(405, 'POST only');
 }
