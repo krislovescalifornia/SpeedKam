@@ -1,0 +1,5 @@
+# These run on Linux (Raspberry Pi). CRLF would break the bash shebang and
+# systemd unit parsing, so always store and check them out with LF endings.
+*.sh            text eol=lf
+*.service       text eol=lf
+deploy/webhost/htaccess-for-data-folder text eol=lf

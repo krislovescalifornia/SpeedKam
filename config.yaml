@@ -5,9 +5,13 @@
 # =============================================================================
 
 camera:
-  # backend: "opencv"  -> USB webcam / any cv2-supported source (Windows + Pi)
-  #          "picamera2" -> Raspberry Pi native camera (CSI ribbon)
-  backend: opencv
+  # backend: "auto"      -> poll on boot: use the CSI camera if one is attached,
+  #                         else fall back to the OpenCV source below. This is
+  #                         the fleet default so one SD image works whether a
+  #                         node has a Pi CSI camera or a USB webcam.
+  #          "opencv"     -> force USB webcam / any cv2 source (Windows + Pi)
+  #          "picamera2"  -> force Raspberry Pi native camera (CSI ribbon)
+  backend: auto
 
   # For opencv backend: integer index (0 = default webcam) OR a path/URL to a
   # video file or RTSP stream. On Windows your Logitech cam is usually 0.
@@ -84,7 +88,7 @@ recording:
   # direction and recognized -- there's just no clip taking up space. So a
   # SpeedKapture of 35 captures a car doing 35.9 mph but not one doing 34.
   # 0 = capture every vehicle. You can also change this live on the dashboard.
-  speedkapture_threshold: 0
+  speedkapture_threshold: 25
   # Dashboard-adjustable settings persist here (keeps config.yaml comments).
   state_file: captures/runtime.json
 
@@ -125,7 +129,12 @@ backup:
   #
   # Setup: put deploy/webhost/speedkam_receiver.php on your site, pick a long
   # random secret, set the same secret in BOTH places, then set enabled: true.
-  enabled: false
+  #
+  # FLEET NOTE: every node shares this one backup domain. Set the real `url` and
+  # `secret` ON THE GOLDEN MASTER before you capture the image (they then ride
+  # along on every clone). provision.sh refuses to build an image while the
+  # secret is still the CHANGE-ME placeholder, so you can't ship a broken fleet.
+  enabled: true
   url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
   secret: "CHANGE-ME-to-a-long-random-string"   # must match the PHP receiver
   include_snapshots: true

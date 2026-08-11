@@ -1,9 +1,13 @@
 """Camera abstraction.
 
-One interface, two backends:
+One interface, three backend selections:
   * "opencv"    -> cv2.VideoCapture (USB webcam, video file, or RTSP stream).
                    Works on Windows (your Logitech cam) and on the Pi.
   * "picamera2" -> Raspberry Pi native CSI camera (Global Shutter / Cam Module).
+  * "auto"      -> poll on startup: use the CSI camera if one is attached,
+                   otherwise fall back to the OpenCV source. This is what the
+                   fleet image ships with, so one SD card works whether a node
+                   has a CSI camera or a USB webcam plugged in.
 
 read() returns (t, frame) where t is a monotonic timestamp (seconds) captured
 as close to the frame grab as possible. We use REAL timestamps rather than a
@@ -30,10 +34,35 @@ class Camera:
         self._offline = False
         self._file_fps = float(cfg.get("fps", 30) or 30)
         self._frame_idx = 0
+        if self.backend == "auto":
+            self.backend = self._auto_detect_backend()
         if self.backend == "picamera2":
             self._open_picamera2()
         else:
             self._open_opencv()
+
+    # -------------------------------------------------------------------- auto
+    def _auto_detect_backend(self):
+        """Pick the camera that's actually attached, at startup.
+
+        Prefer the native CSI camera (the recommended global-shutter sensor for
+        a speed cam); fall back to an OpenCV source (USB webcam / file / stream).
+        On the Windows dev box picamera2 simply isn't installed, so 'auto'
+        cleanly resolves to the webcam there too -- one config works everywhere.
+        """
+        try:
+            from picamera2 import Picamera2  # type: ignore
+
+            cams = Picamera2.global_camera_info()
+            if cams:
+                models = ", ".join(c.get("Model", "?") for c in cams) or "?"
+                print(f"[camera] auto: CSI camera present ({models}) -> picamera2")
+                return "picamera2"
+            print("[camera] auto: picamera2 available but no CSI camera attached")
+        except Exception as exc:  # ImportError on dev box, or libcamera hiccup
+            print(f"[camera] auto: no CSI camera ({exc})")
+        print(f"[camera] auto: falling back to OpenCV source {self.cfg['source']!r}")
+        return "opencv"
 
     # ------------------------------------------------------------------ opencv
     def _open_opencv(self):

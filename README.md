@@ -203,7 +203,7 @@ touch:
 | Setting | What it does |
 |---|---|
 | `camera.source` | Webcam index (0), or a video file / RTSP URL for testing |
-| `camera.backend` | `opencv` (webcam/Pi) or `picamera2` (Pi CSI camera) |
+| `camera.backend` | `auto` (poll on boot: CSI camera if present, else USB webcam), or force `opencv` / `picamera2` |
 | `detection.min_area` | Blob size to count as a vehicle — tune to your framing |
 | `speed.speed_limit_kmh` | Flags/annotates speeders |
 | `speed.display_units` | `mph` or `kmh` |
@@ -244,9 +244,10 @@ mounting. Mount the camera **rigidly** — any wobble invalidates the calibratio
 sudo apt update && sudo apt install -y python3-opencv python3-picamera2 python3-yaml
 git clone <this project>  # or copy the folder
 ```
-Then in `config.yaml` set `camera.backend: picamera2` (for the CSI camera) or
-keep `opencv` for a USB cam, set `display.show_window: false`, and re-run
-`calibrate.py` in the final mounted position.
+Then in `config.yaml` set `display.show_window: false` and re-run `calibrate.py`
+in the final mounted position. Leave `camera.backend: auto` (the default) and it
+picks the CSI camera or a USB webcam automatically at boot — or pin it to
+`picamera2` / `opencv` if you want to force one.
 
 ### Autorun on boot (plug in and go)
 
@@ -284,6 +285,23 @@ Do calibrate (`python tools/calibrate.py`) and set the right `camera.source`
 **before** relying on it — the service reads the same `config.yaml` and
 `calibration.json`. After recalibrating, `sudo systemctl restart speedkam`.
 
+### Deploy a fleet — clone one SD card to many
+
+Setting up more than one camera? Build **one** fully-installed card and clone its
+image to the rest instead of provisioning each by hand. On the Pi you're turning
+into the master, run:
+
+```bash
+sudo bash deploy/image/provision.sh
+```
+
+It installs every dependency from `apt`, installs the autostart service, wipes
+per-node state so the image starts blank, and arms a first-boot step that gives
+each clone a unique hostname + fresh SSH host keys / machine-id. Then capture the
+card to an `.img` and flash it to as many cards as you like — full recipe in
+[`deploy/image/README.md`](deploy/image/README.md). Each node still gets a
+one-time on-site calibration; nothing else is manual.
+
 > First-time gotcha: if the installer just added you to the `video` group,
 > reboot once so the running service picks up camera permissions.
 
@@ -305,6 +323,11 @@ deploy/
   speedkam.service     systemd unit template (autorun on boot)
   install-service.sh   One-command installer for the Pi
   uninstall-service.sh Remove the service
+  image/               Golden-image build: clone one SD card to a whole fleet
+    provision.sh              Turn a fresh Pi OS card into a ready-to-clone master
+    firstboot.sh              Per-clone identity reset (hostname/SSH keys/machine-id)
+    speedkam-firstboot.service  Runs firstboot.sh once on each clone
+    README.md                 Capture + shrink + clone workflow
   webhost/             Off-site backup receiver for your domain
     speedkam_receiver.php      Drop-in PHP endpoint (mirrors CSV + media)
     htaccess-for-data-folder   Protect the backup folder from public access

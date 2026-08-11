@@ -1,0 +1,17 @@
+[Unit]
+Description=SpeedKam first-boot personalisation (unique identity per cloned card)
+# Must run before anything that bakes in the (soon-to-be-regenerated) identity.
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service sshd.service network-pre.target sysinit.target
+Wants=local-fs.target
+# Only meaningful until it has personalised the card once.
+ConditionPathExists=!/var/lib/speedkam/firstboot.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash __DIR__/deploy/image/firstboot.sh
+
+[Install]
+WantedBy=sysinit.target
