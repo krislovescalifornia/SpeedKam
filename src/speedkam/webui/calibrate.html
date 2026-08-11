@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpeedKam — Calibrate</title>
+<style>
+  :root{--bg:#0f1216;--panel:#171c22;--panel2:#1e242c;--line:#2a323c;
+    --text:#e7edf3;--muted:#8b97a4;--accent:#3aa0ff;--ok:#37c871;--bad:#ff5470}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 20px;
+    background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:19px;margin:0}header h1 span{color:var(--accent)}
+  a.back{margin-left:auto;color:var(--muted);text-decoration:none}
+  a.back:hover{color:var(--text)}
+  main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:20px;
+    grid-template-columns:3fr 2fr}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .imgwrap{position:relative;display:inline-block;width:100%;line-height:0;
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:crosshair}
+  .imgwrap img{width:100%;display:block;background:#000}
+  .marker{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;
+    border:2px solid #fff;border-radius:50%;background:rgba(58,160,255,.5);
+    color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;
+    justify-content:center;pointer-events:none}
+  .btn{background:var(--accent);color:#04121f;border:none;border-radius:8px;
+    padding:9px 14px;font-weight:600;cursor:pointer;font-size:14px}
+  .btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+  .btn:hover{filter:brightness(1.08)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  table{width:100%;border-collapse:collapse;margin-top:6px;font-size:14px}
+  th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase}
+  input.m{width:72px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--text);border-radius:6px;padding:5px 7px;font-size:14px}
+  td .rm{color:var(--bad);cursor:pointer;background:none;border:none;font-size:16px}
+  .hint{color:var(--muted);font-size:13.5px}
+  .hint code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+  #result{margin-top:12px;font-weight:600}
+  #result.ok{color:var(--ok)}#result.bad{color:var(--bad)}
+  ol{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13.5px}
+  ol li{margin:3px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Speed<span>Kam</span> — Calibrate</h1>
+  <a class="back" href="/">← Back to dashboard</a>
+</header>
+
+<main>
+  <div class="card">
+    <div class="imgwrap" id="wrap">
+      <img id="snap" src="/api/snapshot.jpg" alt="road snapshot">
+      <!-- markers injected here -->
+    </div>
+    <div class="row">
+      <button class="btn ghost" onclick="refreshSnap()">↻ Refresh snapshot</button>
+      <button class="btn ghost" onclick="undo()">Undo point</button>
+      <button class="btn ghost" onclick="clearAll()">Clear</button>
+    </div>
+    <p class="hint">Click a road feature you have tape-measured, then set its
+      real-world X/Y (meters) in the table. Add <b>4 or more</b>, spread across
+      the zone where cars will be timed.</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 4px">Measured points</h3>
+    <ol>
+      <li>Choose an origin on the road = <code>(0, 0)</code>.</li>
+      <li>X = distance <i>along</i> the road, Y = <i>across</i> it (meters).</li>
+      <li>Click each point, then type its X and Y below.</li>
+      <li>Lower reprojection error = better. Aim under ~0.3 m.</li>
+    </ol>
+    <table>
+      <thead><tr><th>#</th><th>pixel</th><th>X (m)</th><th>Y (m)</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="row">
+      <button class="btn" onclick="submitCalib()">Save calibration</button>
+    </div>
+    <div id="result"></div>
+  </div>
+</main>
+
+<script>
+const pts = [];  // {x,y (natural px), X,Y (meters)}
+const wrap = document.getElementById('wrap');
+const snap = document.getElementById('snap');
+
+wrap.addEventListener('click', (e)=>{
+  if(e.target !== snap) return;
+  const rect = snap.getBoundingClientRect();
+  if(!snap.naturalWidth) return;
+  const x = (e.clientX - rect.left) * (snap.naturalWidth / rect.width);
+  const y = (e.clientY - rect.top)  * (snap.naturalHeight / rect.height);
+  pts.push({x:Math.round(x), y:Math.round(y), X:"", Y:""});
+  render();
+});
+
+function render(){
+  // markers
+  [...wrap.querySelectorAll('.marker')].forEach(m=>m.remove());
+  pts.forEach((p,i)=>{
+    const m = document.createElement('div');
+    m.className='marker';
+    m.style.left = (p.x/snap.naturalWidth*100)+'%';
+    m.style.top  = (p.y/snap.naturalHeight*100)+'%';
+    m.textContent = i+1;
+    wrap.appendChild(m);
+  });
+  // table
+  const tb = document.getElementById('tbody');
+  tb.innerHTML='';
+  pts.forEach((p,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>'+(i+1)+'</td>'+
+      '<td>'+p.x+','+p.y+'</td>'+
+      '<td><input class="m" inputmode="decimal" value="'+p.X+'" data-i="'+i+'" data-k="X"></td>'+
+      '<td><input class="m" inputmode="decimal" value="'+p.Y+'" data-i="'+i+'" data-k="Y"></td>'+
+      '<td><button class="rm" data-rm="'+i+'">&times;</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('input.m').forEach(inp=>{
+    inp.addEventListener('input', e=>{
+      pts[+e.target.dataset.i][e.target.dataset.k] = e.target.value;
+    });
+  });
+  tb.querySelectorAll('button[data-rm]').forEach(b=>{
+    b.addEventListener('click', e=>{ pts.splice(+e.target.dataset.rm,1); render(); });
+  });
+}
+
+function undo(){ pts.pop(); render(); }
+function clearAll(){ pts.length=0; render(); document.getElementById('result').textContent=''; }
+function refreshSnap(){ snap.src = '/api/snapshot.jpg?t=' + Date.now(); }
+
+async function submitCalib(){
+  const res = document.getElementById('result');
+  if(pts.length < 4){ res.className='bad'; res.textContent='Need at least 4 points.'; return; }
+  const image_points=[], world_points=[];
+  for(const p of pts){
+    if(p.X==='' || p.Y===''){ res.className='bad';
+      res.textContent='Fill in X and Y (meters) for every point.'; return; }
+    image_points.push([p.x, p.y]);
+    world_points.push([parseFloat(p.X), parseFloat(p.Y)]);
+  }
+  res.className=''; res.textContent='Saving…';
+  try{
+    const r = await fetch('/api/calibrate', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({image_points, world_points})});
+    const j = await r.json();
+    if(j.ok){
+      res.className='ok';
+      res.textContent = '✓ Saved '+j.points+' points. Reprojection error '
+        + j.reprojection_error_m + ' m'
+        + (j.reprojection_error_m < 0.3 ? ' (good).' : ' — consider re-measuring.');
+    }else{
+      res.className='bad'; res.textContent = '✗ '+(j.error||'Failed.');
+    }
+  }catch(e){ res.className='bad'; res.textContent='✗ '+e; }
+}
+</script>
+</body>
+</html>

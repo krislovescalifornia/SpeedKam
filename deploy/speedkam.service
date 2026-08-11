@@ -1,0 +1,29 @@
+[Unit]
+Description=SpeedKam vehicle speed camera
+# Wait until the system is basically up. The camera is local hardware, so we
+# don't need the network; a short pre-start sleep below covers USB enumeration.
+After=multi-user.target
+
+[Service]
+Type=simple
+User=__USER__
+# Camera device access on Raspberry Pi OS is gated by the 'video' group.
+SupplementaryGroups=video
+WorkingDirectory=__DIR__
+# Give USB webcams / the CSI stack a few seconds to come up after boot.
+ExecStartPre=/bin/sleep 8
+# Run the web dashboard (live view + clips + calibration) AND the pipeline.
+# Browse to http://<pi-ip>:8080. To run headless with no UI instead, swap
+# this for: __PYTHON__ __DIR__/run.py --no-display
+ExecStart=__PYTHON__ __DIR__/serve.py
+# Keep it running no matter what: restart on crash, and on clean exit
+# (e.g. camera unplugged mid-stream) after a short back-off.
+Restart=always
+RestartSec=5
+# Unbuffered so logs appear live in `journalctl`.
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

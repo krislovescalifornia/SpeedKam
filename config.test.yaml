@@ -1,0 +1,22 @@
+# Config used only by the synthetic end-to-end test (tools/make_test_video.py).
+camera:
+  source: test_road.mp4
+  loop: true             # keep the demo video playing for the web UI
+detection:
+  min_area: 800          # synthetic car can be small at the far end
+  history: 500           # long enough that the moving car isn't absorbed
+  min_hits: 2
+speed:
+  calibration_file: test_calibration.json
+  min_samples: 5
+  display_units: mph
+  speed_limit_kmh: 40
+recording:
+  enabled: true
+  output_dir: captures_test
+  clip_seconds: 6
+  save_only_with_speed: false
+display:
+  show_window: false
+logging:
+  csv_file: captures_test/events.csv

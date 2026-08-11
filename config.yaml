@@ -1,0 +1,157 @@
+# =============================================================================
+# SpeedKam configuration
+# Edit this file to move between machines (Windows test rig -> Raspberry Pi).
+# Nothing else needs to change between platforms.
+# =============================================================================
+
+camera:
+  # backend: "opencv"  -> USB webcam / any cv2-supported source (Windows + Pi)
+  #          "picamera2" -> Raspberry Pi native camera (CSI ribbon)
+  backend: opencv
+
+  # For opencv backend: integer index (0 = default webcam) OR a path/URL to a
+  # video file or RTSP stream. On Windows your Logitech cam is usually 0.
+  source: 0
+
+  width: 1280
+  height: 720
+  fps: 30
+
+  # Windows-specific: forces the DirectShow backend which is more reliable for
+  # Logitech webcams. Ignored on Linux/Pi. Set false if you get a black frame.
+  windows_use_dshow: true
+
+  # Cap exposure to freeze motion (reduce blur on fast cars). -1 = auto/leave.
+  # On many webcams exposure is in log2 seconds, e.g. -6 ~ 1/64s. Experiment.
+  manual_exposure: -1
+
+detection:
+  # Minimum blob area (pixels) to count as a vehicle. Tune to your framing:
+  # too small -> triggers on birds/leaves; too large -> misses distant cars.
+  min_area: 1500
+  max_area: 500000
+  # Background-subtraction history + sensitivity.
+  history: 400
+  var_threshold: 40
+  detect_shadows: true
+  # Morphology kernel size to clean up the motion mask.
+  morph_kernel: 5
+  # A detection must persist this many frames before it becomes a track.
+  # Filters out momentary noise.
+  min_hits: 3
+
+tracker:
+  # Max pixel distance between frames to associate a detection with a track.
+  max_match_distance: 120
+  # Frames a track can go unmatched before it's finalized (car left frame).
+  max_missed: 12
+
+speed:
+  # Path to the calibration produced by tools/calibrate.py. If missing, the app
+  # runs in DETECTION-ONLY mode (records clips, but reports no speed).
+  calibration_file: calibration.json
+  # Ignore tracks shorter than this real-world distance (meters) or sample count
+  # -- avoids reporting speed from noise.
+  min_track_distance_m: 3.0
+  min_samples: 6
+  # Reject implausible readings (km/h).
+  min_speed_kmh: 3
+  max_speed_kmh: 200
+  # Speed limit for the road (used only to flag/annotate speeders).
+  speed_limit_kmh: 30
+  # Report units shown in overlays/logs: "kmh" or "mph".
+  display_units: mph
+  # Human labels for the two travel directions (sign of motion along the road).
+  direction_positive: "outbound"
+  direction_negative: "inbound"
+
+recording:
+  enabled: true
+  output_dir: captures
+  # Seconds of buffered video to keep so the saved clip includes the approach
+  # BEFORE the trigger. The ring buffer holds roughly this many seconds.
+  clip_seconds: 8
+  # Only save a clip when a valid speed was measured. If false, saves for every
+  # tracked vehicle (useful while still calibrating).
+  save_only_with_speed: true
+  # Also save a single annotated JPEG snapshot at peak speed.
+  save_snapshot: true
+  # Draw the speed/box overlay onto the saved video (vs. clean footage).
+  burn_overlay: true
+  # --- SpeedKapture --------------------------------------------------------
+  # Only save + off-site post a clip when the measured speed (in display_units)
+  # is ABOVE this number. Below it, the pass is still COUNTED, timed, given a
+  # direction and recognized -- there's just no clip taking up space. So a
+  # SpeedKapture of 35 captures a car doing 35.9 mph but not one doing 34.
+  # 0 = capture every vehicle. You can also change this live on the dashboard.
+  speedkapture_threshold: 0
+  # Dashboard-adjustable settings persist here (keeps config.yaml comments).
+  state_file: captures/runtime.json
+
+retention:
+  # Auto-delete OLD LOCAL clips/snapshots so the Pi's SD card doesn't fill up.
+  # (CSV log rows are tiny and kept forever, so your vehicle counts survive
+  # even after the video is gone.)
+  enabled: false
+  # Delete local media older than this many days.
+  local_days: 14
+  # Only delete media that off-site backup has CONFIRMED uploaded. Keep this
+  # true whenever backup is on. If backup is disabled, set it false to allow
+  # plain age-based cleanup (otherwise nothing is ever deleted).
+  require_backup: true
+  # How often the cleanup sweep runs (seconds).
+  interval_seconds: 3600
+
+display:
+  # Show a live preview window. Set false for headless Pi deployment.
+  show_window: true
+  # Draw the calibrated measurement zone + detection boxes on the live view.
+  draw_debug: true
+
+logging:
+  # CSV of every event: timestamp, id, speed, direction, clip path.
+  csv_file: captures/events.csv
+
+web:
+  # Web dashboard (serve.py): live view, recent clips, browser calibration.
+  # host 0.0.0.0 = reachable from other devices on your LAN (phone/laptop).
+  host: 0.0.0.0
+  port: 8080
+
+backup:
+  # Off-site backup: mirror every event (CSV row + snapshot + clip) to a web
+  # domain you own, so records survive if the camera is damaged or stolen.
+  # Local internal storage always keeps everything regardless of this.
+  #
+  # Setup: put deploy/webhost/speedkam_receiver.php on your site, pick a long
+  # random secret, set the same secret in BOTH places, then set enabled: true.
+  enabled: false
+  url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
+  secret: "CHANGE-ME-to-a-long-random-string"   # must match the PHP receiver
+  include_snapshots: true
+  include_clips: true          # false = back up metadata + snapshots only
+  verify_tls: true             # keep true; only disable for self-signed hosts
+  timeout: 30
+  # If an upload fails (Pi offline), events queue on disk and retry every N s.
+  retry_seconds: 60
+  # Remote rotation: ask the receiver to delete OFF-SITE media older than this
+  # many days so the remote host doesn't fill up. 0 = keep forever. This is a
+  # DIFFERENT knob from retention.local_days -- local and remote rotate apart.
+  remote_retention_days: 0
+
+recognition:
+  # Optional, best-effort vehicle attributes (type / make / model / year /
+  # color). Fully optional: with this off -- or ultralytics/torch not installed
+  # -- every pass is still counted and timed, attributes just stay blank.
+  # Heavy on a Pi; enable once you've added a model and tested throughput.
+  enabled: true
+  # YOLO weights for vehicle TYPE (COCO classes: car/truck/bus/motorcycle).
+  # Downloaded automatically by ultralytics on first use.
+  model: yolov8n.pt
+  min_confidence: 0.35
+  # Estimate the dominant body color from the crop (cheap, no model needed).
+  color: true
+  # Optional fine-grained make/model/year classifier: a YOLOv8-cls model whose
+  # class names look like "Toyota Camry 2018". Leave empty if you don't have one
+  # -> make/model/year stay blank ("when available").
+  make_model_weights: ""

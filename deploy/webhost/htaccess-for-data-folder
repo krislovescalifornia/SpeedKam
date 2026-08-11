@@ -1,0 +1,11 @@
+# Rename this file to ".htaccess" and place it inside speedkam_data/ to block
+# public web access to your backup CSV and media. (The receiver also writes a
+# deny rule automatically, but this makes it explicit.)
+#
+# Apache 2.4+
+Require all denied
+Options -Indexes
+
+# Older Apache 2.2 fallback:
+# Order deny,allow
+# Deny from all

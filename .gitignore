@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+captures/
+captures_test/
+**/.sync_queue/
+speedkam_data/
+calibration.json
+calibration.ref.jpg
+test_calibration.json
+test_road.mp4
+# YOLO weights (downloaded on demand by ultralytics)
+*.pt

@@ -1,0 +1,348 @@
+# SpeedKam
+
+A camera-based vehicle **speed camera** for a fixed location on a private road.
+It watches a road, detects passing vehicles, estimates their speed from
+real-world ground markers, and saves an annotated video clip + snapshot + a CSV
+log for every pass.
+
+It runs **now on Windows with a USB webcam** for testing, and moves **unchanged
+to a Raspberry Pi** later — you only edit `config.yaml`.
+
+---
+
+## How it estimates speed
+
+A fixed camera looking at a flat road is a solved geometry problem. You measure
+a few real points on the road once (with a tape measure) and click them in the
+image. SpeedKam computes a **homography** that maps image pixels → real-world
+meters on the road surface. Then for each vehicle it:
+
+1. **Detects** motion (background subtraction) → bounding box.
+2. Takes the box's **bottom-centre** as the tire/ground contact point.
+3. Maps that point to **meters** via the homography, every frame.
+4. **Tracks** the vehicle across frames using **real capture timestamps**.
+5. Fits distance-vs-time to get **speed = metres / second**, converted to mph/kmh.
+   A robust regression + a median cross-check reject per-frame noise.
+
+Accuracy is bounded by your calibration: measure carefully, spread the markers
+along the whole measurement zone, and keep the camera rigidly mounted.
+
+---
+
+## Quick start (Windows test rig)
+
+```bash
+# 1. Create the environment (already done once; repeat on a new machine)
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+
+# 2. Find your webcam index and put it in config.yaml (camera.source)
+.venv\Scripts\python tools\camera_check.py
+
+# 3. Prove the whole chain works with a synthetic drive-by (no camera needed)
+.venv\Scripts\python tools\make_test_video.py
+.venv\Scripts\python run.py --config config.test.yaml --source test_road.mp4 --no-display
+#   -> should report ~30 mph for the synthetic car
+
+# 4. Calibrate against YOUR road (see below), then run live
+.venv\Scripts\python tools\calibrate.py
+.venv\Scripts\python run.py
+```
+
+Press `q` in the preview window (or `Ctrl+C`) to stop. Captures land in
+`captures/` with a running log in `captures/events.csv`.
+
+---
+
+## Web dashboard (recommended)
+
+Instead of the desktop preview window, run the dashboard — a browser UI with a
+**live view**, the **most recent clips** (click to play), **stats**, and a
+**click-to-calibrate** page. This is the best way to use the Pi: no monitor
+needed, just browse to it from your phone or laptop.
+
+```bash
+.venv\Scripts\python serve.py
+```
+
+It prints a URL like `http://192.168.1.42:8080`. Open it on any device on the
+same network. `run.py` (the desktop window) still works and is handy for quick
+local checks; `serve.py` is what the boot service runs on the Pi.
+
+The dashboard has:
+- **Live view** — the annotated camera stream (boxes, speeds, calibration zone).
+- **Latest reading** and **stats** — last speed, vehicle count, over-limit count.
+- **Recent clips** — thumbnails of recent captures; click to play the clip.
+- **Date filter** — narrow the clips and Top-10 to a From/To day range.
+- **Top 10 speeders** — the fastest speeds ever recorded (or within the filter),
+  click any to play its clip.
+- **CSV export** — download the filtered event log, or the Top-10, as CSV
+  (buttons on each section; exports respect the date filter).
+- **Backup pill** — shows off-site backup health (`synced` / `N queued`).
+- **Calibrate** button — opens a page where you click points on a snapshot and
+  type their measured meters, then Save. No monitor or mouse-on-the-Pi needed.
+
+---
+
+## Off-site backup (survive theft/damage)
+
+Everything is stored locally in `captures/` **and** can be mirrored to a web
+domain you own, so records survive if the camera is stolen or damaged. Each
+event (CSV row + snapshot + video clip) is uploaded over HTTPS to a small PHP
+receiver on your site, authenticated with a shared secret.
+
+It's reliable by design: events are written to an on-disk queue first, then a
+background worker uploads them. If the Pi is briefly offline, jobs stay queued
+and retry automatically — nothing is lost. The server dedupes by event id, so
+retries never create duplicates.
+
+**Setup** (details in [`deploy/webhost/README.md`](deploy/webhost/README.md)):
+1. Upload [`deploy/webhost/speedkam_receiver.php`](deploy/webhost/speedkam_receiver.php)
+   to your domain and set a long random `$SECRET` in it.
+2. In `config.yaml` under `backup:` set `enabled: true`, the `url`, and the same
+   `secret`.
+3. Watch the dashboard's **backup** pill go to `synced`. To push records that
+   already exist locally (first-time backup / after downtime):
+
+```bash
+python tools/backfill_sync.py
+```
+
+> Keep `backup.secret` private and use an `https://` URL. If you keep this
+> project in git, don't commit a real secret in `config.yaml`.
+
+---
+
+## SpeedKapture — record only what matters
+
+By default SpeedKam saves a clip for every vehicle it can measure. Set a
+**SpeedKapture** threshold and it will only **save and off-site-post a clip when
+the speed is above that number** (in your `display_units`). A SpeedKapture of
+`35` captures a car doing 35.9 mph but ignores one doing 34.
+
+Crucially, slower vehicles are **still counted** — you keep the daily/weekly/
+monthly totals, direction, speed, and any recognized attributes — there's just
+no video clip eating disk space for a car that wasn't speeding. Set it to `0` to
+capture everything.
+
+Change it live from the **SpeedKapture** card on the dashboard (it persists
+across restarts), or set `recording.speedkapture_threshold` in `config.yaml`.
+
+The dashboard's **Traffic summary** card shows Today / This week / This month
+counts with a direction breakdown, computed from the CSV log — so the numbers
+survive even after old clips are rotated away.
+
+---
+
+## Storage rotation (SD card + off-site)
+
+Two independent knobs keep storage from filling up — one for the Pi, one for
+your web host:
+
+- **Local** (`retention.local_days`): delete local clips/snapshots older than N
+  days. With `retention.require_backup: true` (the default) a file is only
+  deleted **once off-site backup has confirmed it uploaded**, so you never drop
+  the only copy. Turn the whole thing on with `retention.enabled: true`. If you
+  run without backup, set `require_backup: false` to allow plain age-based
+  cleanup.
+- **Remote** (`backup.remote_retention_days`): the camera periodically asks the
+  web receiver to delete off-site media older than N days. `0` = keep forever.
+
+Only **media** is ever deleted — the CSV event log (and therefore your vehicle
+counts and history) is kept indefinitely, locally and off-site.
+
+---
+
+## Vehicle recognition (type / make / model / year / colour)
+
+Optional and best-effort. With `recognition.enabled: true` SpeedKam annotates
+each pass with what it can determine and logs it to the CSV + dashboard:
+
+- **Colour** is estimated from the vehicle crop with a cheap OpenCV analysis —
+  no model needed, so it works even on a bare Pi.
+- **Type** (car/truck/bus/motorcycle) comes from a YOLO model (`recognition.model`,
+  auto-downloaded) when `ultralytics` is installed (`pip install ultralytics`).
+- **Make / model / year** only appear if you point
+  `recognition.make_model_weights` at a fine-grained classifier — otherwise they
+  stay blank. That's the "when available" contract: missing attributes never
+  block the count or the speed.
+
+Recognition is heavy on a Pi; leave it off until you've tested throughput. It
+runs on a buffered frame at finalize time, so it works for counted-but-not-
+captured (sub-SpeedKapture) passes too.
+
+---
+
+## Calibrating your road
+
+This is the one step that makes speed accurate. Do it once, with the camera in
+its final mounted position.
+
+1. Pick **4 or more** points you can both **see in the image** and
+   **tape-measure between** on the road surface: lane markings, cracks, chalk
+   crosses, cones, driveway corners, fence posts. Spread them out to cover the
+   stretch where cars will be timed.
+2. Define an origin `(0,0)` and axes in meters, e.g. **X = along the road**,
+   **Y = across it**. Write down each point's `(X, Y)`.
+   Example rectangle: `(0,0) (20,0) (20,4) (0,4)`.
+3. Run `python tools/calibrate.py`, press **SPACE** to freeze a frame, click the
+   points **in the same order** as your measured list, press **ENTER**, and type
+   each `X Y` in the terminal.
+4. It saves `calibration.json` and reports a **reprojection error** in meters.
+   Under ~0.3 m is good; if it's large, re-measure.
+
+Tip: you can also calibrate from a saved photo: `python tools/calibrate.py --image road.jpg`.
+
+---
+
+## Configuration
+
+Everything is in `config.yaml` (fully commented). The knobs you'll actually
+touch:
+
+| Setting | What it does |
+|---|---|
+| `camera.source` | Webcam index (0), or a video file / RTSP URL for testing |
+| `camera.backend` | `opencv` (webcam/Pi) or `picamera2` (Pi CSI camera) |
+| `detection.min_area` | Blob size to count as a vehicle — tune to your framing |
+| `speed.speed_limit_kmh` | Flags/annotates speeders |
+| `speed.display_units` | `mph` or `kmh` |
+| `recording.clip_seconds` | Seconds of pre-trigger footage kept in the clip |
+| `recording.speedkapture_threshold` | **SpeedKapture** — only record/post clips above this speed (also set live on the dashboard) |
+| `retention.local_days` | Auto-delete local clips older than N days (once backed up) |
+| `backup.remote_retention_days` | Auto-delete off-site clips older than N days |
+| `recognition.enabled` | Best-effort vehicle type/make/model/year/colour (needs `ultralytics`) |
+| `display.show_window` | `false` for headless Pi deployment |
+
+---
+
+## Recommended hardware
+
+**Compute — Raspberry Pi 5 (4 GB or 8 GB).**
+An Arduino cannot do computer vision; this is a video-processing task. A Pi 5
+runs this OpenCV pipeline comfortably in real time. (A Pi 4 works but slower.)
+
+**Camera — Raspberry Pi Global Shutter Camera (Sony IMX296) + a 6 mm or 8 mm
+CS-mount lens.**
+For a *speed* camera the single most important feature is a **global shutter**:
+it exposes the whole frame at once, so a fast car isn't skewed/smeared like it
+is on the rolling-shutter sensors in most webcams and phone cameras. Pair it
+with a manual exposure short enough to freeze motion. Pick the lens focal length
+for your distance/road width (6 mm ≈ wider, 8 mm ≈ tighter/farther).
+
+- *Budget alternative:* Raspberry Pi Camera Module 3 (autofocus, rolling
+  shutter) — fine for the lower speeds of a private road.
+- *Testing now:* your USB Logitech webcam works with zero code changes.
+
+**Also:** a good power supply, a 64 GB+ A2 microSD (or a USB SSD for lots of
+clips), and a weatherproof enclosure with a clear window + sun shade for outdoor
+mounting. Mount the camera **rigidly** — any wobble invalidates the calibration.
+
+### Moving to the Pi
+
+```bash
+sudo apt update && sudo apt install -y python3-opencv python3-picamera2 python3-yaml
+git clone <this project>  # or copy the folder
+```
+Then in `config.yaml` set `camera.backend: picamera2` (for the CSI camera) or
+keep `opencv` for a USB cam, set `display.show_window: false`, and re-run
+`calibrate.py` in the final mounted position.
+
+### Autorun on boot (plug in and go)
+
+Install the systemd service once, on the Pi, from inside the project folder:
+
+```bash
+sudo bash deploy/install-service.sh
+```
+
+That's it. From now on SpeedKam starts automatically at every boot, serves the
+**web dashboard on port 8080**, and restarts itself if it ever crashes or the
+camera hiccups — so you can just give the Pi power with no keyboard/monitor
+attached and open `http://<pi-ip>:8080` from your phone. (Prefer a fully
+headless run with no web UI? Edit the unit's `ExecStart` to use
+`run.py --no-display` instead of `serve.py`.)
+
+The installer figures out the login user, project path, and Python for you,
+adds that user to the `video` group for camera access, renders
+`deploy/speedkam.service`, and enables it. By default it uses the project
+`.venv` if present, otherwise the system `python3` (which is what you want when
+you installed OpenCV/picamera2 via `apt`). Force a specific interpreter with
+`sudo PYTHON=/usr/bin/python3 bash deploy/install-service.sh`.
+
+Manage it with:
+
+```bash
+sudo systemctl status speedkam     # is it running?
+journalctl -u speedkam -f          # live logs / measured speeds
+sudo systemctl restart speedkam    # after editing config.yaml or recalibrating
+sudo systemctl stop speedkam       # stop for now
+sudo bash deploy/uninstall-service.sh   # remove it entirely
+```
+
+Do calibrate (`python tools/calibrate.py`) and set the right `camera.source`
+**before** relying on it — the service reads the same `config.yaml` and
+`calibration.json`. After recalibrating, `sudo systemctl restart speedkam`.
+
+> First-time gotcha: if the installer just added you to the `video` group,
+> reboot once so the running service picks up camera permissions.
+
+---
+
+## Project layout
+
+```
+config.yaml            Main configuration (commented)
+config.test.yaml       Config for the synthetic self-test
+run.py                 Entry point (desktop preview window)
+serve.py               Entry point (web dashboard) -- recommended
+tools/
+  camera_check.py      Find your webcam index
+  calibrate.py         Interactive ground-plane calibration
+  make_test_video.py   Generate a synthetic drive-by to validate speed math
+  backfill_sync.py     Push all existing local records to the off-site backup
+deploy/
+  speedkam.service     systemd unit template (autorun on boot)
+  install-service.sh   One-command installer for the Pi
+  uninstall-service.sh Remove the service
+  webhost/             Off-site backup receiver for your domain
+    speedkam_receiver.php      Drop-in PHP endpoint (mirrors CSV + media)
+    htaccess-for-data-folder   Protect the backup folder from public access
+    README.md                  Web-host setup guide
+src/speedkam/
+  capture.py           Camera abstraction (webcam / file / RTSP / picamera2)
+  detector.py          MOG2 motion detection
+  tracker.py           Multi-object tracker
+  calibration.py       Homography (pixels -> meters)
+  speed.py             Robust speed estimation
+  recorder.py          Ring-buffer clip + snapshot + CSV logging
+  recognition.py       Optional vehicle type/make/model/year/colour (YOLO)
+  retention.py         Local + remote media rotation (SD card / off-site)
+  state.py             Dashboard-adjustable settings (SpeedKapture), persisted
+  annotate.py          Overlays
+  pipeline.py          Ties it all together
+  web.py               Flask dashboard + pipeline runner thread
+  sync.py              Off-site backup uploader (disk-queued, retrying)
+  webui/               dashboard.html, calibrate.html
+```
+
+---
+
+## Accuracy & limitations
+
+- Speed is only as good as the calibration and a rigid mount. Re-calibrate if
+  the camera moves.
+- Motion-blur (rolling shutter, long exposure) hurts the ground-point estimate
+  at speed — hence the global-shutter recommendation.
+- The far field (top of frame) has poor metric resolution; keep the measured
+  zone in the nearer, well-conditioned part of the image.
+- Background subtraction handles one vehicle at a time well; heavy/overlapping
+  traffic would want a learned detector (YOLO) — the detector module is a
+  drop-in swap behind the same interface.
+
+## Legal note
+
+This is a monitoring/measurement tool for **your own private road**. It is not a
+calibrated legal-enforcement instrument. If you plan to record beyond your
+property or use footage against third parties, check your local laws on video
+recording and privacy first.
