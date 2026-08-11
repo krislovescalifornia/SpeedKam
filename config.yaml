@@ -135,8 +135,8 @@ backup:
   # along on every clone). provision.sh refuses to build an image while the
   # secret is still the CHANGE-ME placeholder, so you can't ship a broken fleet.
   enabled: true
-  url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
-  secret: "CHANGE-ME-to-a-long-random-string"   # must match the PHP receiver
+  url: "https://kriskling.com/speedkam/speedkam_receiver.php"
+  secret: "CHANGE-ME-to-a-long-random-string"   # set on the master Pi (not in git)
   include_snapshots: true
   include_clips: true          # false = back up metadata + snapshots only
   verify_tls: true             # keep true; only disable for self-signed hosts
