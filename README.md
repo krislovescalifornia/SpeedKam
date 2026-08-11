@@ -240,6 +240,11 @@ mounting. Mount the camera **rigidly** — any wobble invalidates the calibratio
 
 ### Moving to the Pi
 
+> **Full runbook:** [`deploy/raspberry-pi.md`](deploy/raspberry-pi.md) walks
+> through Deploy / Setup / Maintain end-to-end (OS flash, dependencies, headless
+> calibration, autostart) and includes minimum system requirements — you
+> probably don't need a Pi 5. The steps below are the short version.
+
 ```bash
 sudo apt update && sudo apt install -y python3-opencv python3-picamera2 python3-yaml
 git clone <this project>  # or copy the folder
