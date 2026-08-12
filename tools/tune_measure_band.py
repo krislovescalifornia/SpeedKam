@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""Tune the center-band measurement gate against a video of known speed.
+"""Tune the measurement gate against a video of known speed.
 
 It replays a video through the real detect -> track -> homography chain, takes
-the vehicle's track, then sweeps candidate horizontal bands and reports the
-recovered speed for each versus the known ground truth. Because a side-on
-camera's lens distorts the frame edges, timing the car full-frame is biased;
-narrowing the band trades a little baseline for accuracy. This finds the
-WIDEST band (longest, most robust baseline) that still hits the error target.
+the vehicle's track, then sweeps candidate bands and reports the recovered speed
+for each versus the known ground truth. It finds the most INCLUSIVE band (the
+longest, most robust baseline) that still hits the error target.
+
+The axis to sweep depends on how the camera is mounted:
+  * parallel (side-on): the lens distorts the LEFT/RIGHT edges, so sweep a
+    horizontal band symmetric about centre (x).
+  * head_on (receding): perspective collapses pixels-per-metre toward the
+    vanishing point, so far cars are unreliable -- sweep a near/mid VERTICAL
+    band (y) that drops the far top of frame.
+The axis is taken from the clip's meta ("orientation"), or forced with --axis.
 
 Usage:
-  python tools/make_sideon_video.py         # once, to create the test clip
-  python tools/tune_measure_band.py         # reads test_sideon.meta.json
+  python tools/make_sideon_video.py                            # side-on clip
+  python tools/tune_measure_band.py                            # tunes parallel (x)
 
-  # or point it at your own clip of a car at a known speed:
+  python tools/make_headon_video.py                            # head-on clip
+  python tools/tune_measure_band.py --meta test_headon.meta.json   # tunes head_on (y)
+
+  # or your own clip of a car at a known speed:
   python tools/tune_measure_band.py --video clip.mp4 \
-      --calibration calibration.json --truth-mph 30 --target 1.5
+      --calibration calibration.json --truth-mph 30 --axis y
 """
 from __future__ import annotations
 
@@ -37,6 +46,15 @@ MPH_PER_MS = 2.2369362920544
 # Detection tuned for the synthetic clip (a small, high-contrast car). Override
 # via --config if you're tuning against real footage with a real detector setup.
 DET_OVERRIDES = {"min_area": 800, "history": 500, "min_hits": 2}
+
+# A band must retain at least this many samples to be trusted. Perspective makes
+# far-field readings noisy, so a lucky handful of samples can score well by
+# chance; requiring a real baseline keeps the recommendation robust.
+MIN_BAND_SAMPLES = 15
+
+# Near cap for vertical (head_on) sweeps: keep [y_min, YCAP], drop the far top by
+# raising y_min. YCAP < 1 also trims the very-near bottom where a car is clipped.
+YCAP = 0.95
 
 
 def collect_track(cfg, video, calibration):
@@ -70,50 +88,88 @@ def collect_track(cfg, video, calibration):
     return max(finished_all, key=lambda tr: len(tr.samples)), frame_wh
 
 
-def recovered_speed(track, cfg_speed, frame_wh, band):
-    cfg = {**cfg_speed, "measure_band": band}
-    r = speed_mod.estimate(track, cfg, frame_wh)
-    return None if r is None else r.speed_mph
+def eval_band(track, cfg_speed, frame_wh, band):
+    """Return (speed_mph, n_samples) for a flat band, or (None, 0)."""
+    r = speed_mod.estimate(track, {**cfg_speed, "measure_band": band}, frame_wh)
+    return (None, 0) if r is None else (r.speed_mph, r.n_samples)
 
 
-def position_profile(track, calibration, frame_wh):
-    """Per-segment instantaneous speed vs. horizontal position (shows the edges)."""
-    xs = [s.ground_px[0] / frame_wh[0] for s in track.samples if s.world is not None]
+def candidates(axis):
+    """Yield (label, span, band) sweep candidates for the given axis.
+
+    span = the fraction of the frame the band spans along the swept axis; larger
+    is a longer baseline, so among bands that hit the target we prefer the
+    largest span.
+    """
+    if axis == "x":
+        for hw in [0.50, 0.45, 0.40, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10]:
+            band = {"enabled": True, "x_min": round(0.5 - hw, 3),
+                    "x_max": round(0.5 + hw, 3), "y_min": 0.0, "y_max": 1.0}
+            label = "full-frame" if hw >= 0.5 else f"x +/-{hw:.2f}"
+            yield label, round(2 * hw, 3), band
+    else:  # y: keep [y_min, YCAP], raise y_min to drop the far/top region
+        for y_min in [0.0, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65]:
+            band = {"enabled": True, "x_min": 0.0, "x_max": 1.0,
+                    "y_min": y_min, "y_max": YCAP}
+            label = "full-frame" if y_min <= 0.0 else f"y {y_min:.2f}-{YCAP:.2f}"
+            yield label, round(YCAP - y_min, 3), band
+
+
+def position_profile(track, frame_wh, axis, truth):
+    """Print instantaneous speed bucketed by position along the swept axis."""
+    idx = 0 if axis == "x" else 1
+    dim = frame_wh[idx]
     ss = [s for s in track.samples if s.world is not None]
     rows = []
     for a, b in zip(ss, ss[1:]):
         dt = b.t - a.t
         if dt <= 0:
             continue
-        dx = b.world[0] - a.world[0]
-        dy = b.world[1] - a.world[1]
-        v = (dx * dx + dy * dy) ** 0.5 / dt * MPH_PER_MS
-        xf = (a.ground_px[0] + b.ground_px[0]) / 2 / frame_wh[0]
-        rows.append((xf, v))
-    return rows
+        d = ((b.world[0] - a.world[0]) ** 2 + (b.world[1] - a.world[1]) ** 2) ** 0.5
+        pos = (a.ground_px[idx] + b.ground_px[idx]) / 2 / dim
+        rows.append((pos, d / dt * MPH_PER_MS))
+    near_far = "x = fraction of width" if axis == "x" else \
+        "y = fraction of height (low y = FAR/near vanishing point)"
+    print(f"Instantaneous speed by position ({near_far}):")
+    for lo in [i / 10 for i in range(10)]:
+        vals = [v for (p, v) in rows if lo <= p < lo + 0.1]
+        if vals:
+            m = sum(vals) / len(vals)
+            err = (m - truth) / truth * 100
+            print(f"  {lo:.1f}-{lo+0.1:.1f}: {m:6.1f} mph  ({err:+6.1f}%)  "
+                  f"{'#' * min(40, int(abs(err)))}")
+    print()
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Tune the center-band measurement gate")
+    ap = argparse.ArgumentParser(description="Tune the measurement gate")
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--video", help="video file (default: from test_sideon.meta.json)")
-    ap.add_argument("--calibration", help="calibration json (default: from meta)")
-    ap.add_argument("--truth-mph", type=float, help="ground-truth speed (default: from meta)")
+    ap.add_argument("--meta", default="test_sideon.meta.json",
+                    help="clip meta json (video/calibration/truth/orientation)")
+    ap.add_argument("--video", help="video file (default: from --meta)")
+    ap.add_argument("--calibration", help="calibration json (default: from --meta)")
+    ap.add_argument("--truth-mph", type=float, help="ground-truth speed (default: from --meta)")
+    ap.add_argument("--axis", choices=["x", "y", "auto"], default="auto",
+                    help="sweep horizontal (x/parallel) or vertical (y/head_on)")
     ap.add_argument("--target", type=float, default=2.0,
                     help="max acceptable speed error, percent (default 2.0)")
     args = ap.parse_args()
 
     meta = {}
-    meta_path = Path("test_sideon.meta.json")
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if Path(args.meta).exists():
+        meta = json.loads(Path(args.meta).read_text(encoding="utf-8"))
 
     video = args.video or meta.get("video")
     calib_path = args.calibration or meta.get("calibration")
     truth = args.truth_mph if args.truth_mph is not None else meta.get("truth_mph")
     if not (video and calib_path and truth):
         raise SystemExit("Need --video, --calibration and --truth-mph "
-                         "(or run tools/make_sideon_video.py first).")
+                         "(or a --meta json from make_*_video.py).")
+
+    axis = args.axis
+    if axis == "auto":
+        axis = "y" if speed_mod.normalize_orientation(
+            meta.get("orientation")) == "head_on" else "x"
 
     cfg = load_config(args.config)
     calibration = Calibration.load(calib_path)
@@ -121,64 +177,57 @@ def main():
         raise SystemExit(f"Could not load calibration {calib_path!r}")
 
     track, frame_wh = collect_track(cfg, video, calibration)
-    print(f"Track #{track.id}: {len(track.samples)} samples across the frame.")
+    orient = "head_on (vertical band)" if axis == "y" else "parallel (horizontal band)"
+    print(f"Track #{track.id}: {len(track.samples)} samples.  Mounting: {orient}.")
     print(f"Ground truth: {truth:.1f} mph   (target error <= {args.target:.1f}%)\n")
 
-    # 1) Where does the mapping go wrong? Instantaneous speed by x-position.
-    prof = position_profile(track, calibration, frame_wh)
-    print("Instantaneous speed by horizontal position (x = fraction of width):")
-    for lo in [i / 10 for i in range(10)]:
-        vals = [v for (xf, v) in prof if lo <= xf < lo + 0.1]
-        if vals:
-            m = sum(vals) / len(vals)
-            err = (m - truth) / truth * 100
-            bar = "#" * min(40, int(abs(err) * 2))
-            print(f"  x {lo:.1f}-{lo+0.1:.1f}: {m:5.1f} mph  ({err:+5.1f}%)  {bar}")
-    print()
+    position_profile(track, frame_wh, axis, truth)
 
-    # 2) Sweep symmetric bands about the frame centre; find the widest that hits
-    #    the target. Wider band = longer baseline, so prefer the widest that works.
-    print("Band sweep (symmetric about centre):")
-    print("  half-width   band          speed     error")
+    print("Band sweep (most inclusive first):")
+    print("  band              span   speed     error    samples")
     results = []
-    for hw in [0.50, 0.45, 0.40, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10]:
-        band = {"enabled": True, "x_min": round(0.5 - hw, 3),
-                "x_max": round(0.5 + hw, 3), "y_min": 0.0, "y_max": 1.0}
-        v = recovered_speed(track, cfg["speed"], frame_wh, band)
+    for label, span, band in candidates(axis):
+        v, n = eval_band(track, cfg["speed"], frame_wh, band)
         if v is None:
-            print(f"  +/-{hw:.2f}      "
-                  f"[{band['x_min']:.2f},{band['x_max']:.2f}]   (too few samples)")
+            print(f"  {label:15s}  {span:.2f}   (too few samples)")
             continue
         err = (v - truth) / truth * 100
-        ok = abs(err) <= args.target
-        tag = "full-frame" if hw >= 0.5 else f"+/-{hw:.2f}   "
-        print(f"  {tag}   [{band['x_min']:.2f},{band['x_max']:.2f}]   "
-              f"{v:5.1f} mph  {err:+5.1f}%{'  <= target' if ok else ''}")
-        results.append((hw, band, v, err))
+        robust = n >= MIN_BAND_SAMPLES
+        note = "  <= target" if abs(err) <= args.target and robust else \
+               ("  (thin)" if not robust else "")
+        print(f"  {label:15s}  {span:.2f}   {v:5.1f} mph  {err:+6.1f}%   "
+              f"{n:3d}{note}")
+        results.append((label, span, band, v, err, n))
 
-    full = recovered_speed(track, cfg["speed"], frame_wh, {"enabled": False})
+    full = eval_band(track, cfg["speed"], frame_wh, {"enabled": False})[0]
     print(f"\nFull-frame (gate off): {full:.1f} mph "
           f"({(full - truth) / truth * 100:+.1f}%)")
 
-    if not results:
-        raise SystemExit("No band produced a reading -- check detection/calibration.")
-
-    passing = [r for r in results if abs(r[3]) <= args.target]
+    robust = [r for r in results if r[5] >= MIN_BAND_SAMPLES]
+    if not robust:
+        raise SystemExit("No band kept enough samples -- widen the sweep or clip.")
+    passing = [r for r in robust if abs(r[4]) <= args.target]
     if passing:
-        # Widest band that still hits the target = longest, most robust baseline.
-        hw, band, v, err = max(passing, key=lambda r: r[0])
-        note = f"widest band within the {args.target:.1f}% target"
+        # Most inclusive (largest span) band that hits the target = best baseline.
+        label, span, band, v, err, n = max(passing, key=lambda r: r[1])
+        note = f"most inclusive band within the {args.target:.1f}% target"
     else:
-        # Nothing met it; recommend the most accurate band and say so plainly.
-        hw, band, v, err = min(results, key=lambda r: abs(r[3]))
-        note = (f"target {args.target:.1f}% NOT met by any band; this is the most "
-                f"accurate one -- loosen the lens/calibration or the target")
-    print(f"\nRECOMMENDED band ({note}):")
-    print(f"  x_min: {band['x_min']}")
-    print(f"  x_max: {band['x_max']}")
-    print(f"  recovers {v:.1f} mph ({err:+.1f}%) vs {full:.1f} mph "
-          f"({(full - truth) / truth * 100:+.1f}%) full-frame.")
-    print("  Set these under speed.measure_band in config.yaml (enabled: true).")
+        label, span, band, v, err, n = min(robust, key=lambda r: abs(r[4]))
+        note = (f"target {args.target:.1f}% NOT met; this is the most accurate "
+                f"robust band -- loosen the target, re-calibrate, or move the camera")
+
+    keys = ("x_min", "x_max") if axis == "x" else ("y_min", "y_max")
+    print(f"\nRECOMMENDED band for {'head_on' if axis == 'y' else 'parallel'} "
+          f"({note}):")
+    for k in keys:
+        print(f"  {k}: {band[k]}")
+    other = "y_min/y_max: 0.0/1.0 (full height)" if axis == "x" else \
+            "x_min/x_max: 0.0/1.0 (full width)"
+    print(f"  {other}")
+    print(f"  recovers {v:.1f} mph ({err:+.1f}%) from {n} samples vs "
+          f"{full:.1f} mph ({(full - truth) / truth * 100:+.1f}%) full-frame.")
+    print(f"  Set these under speed.measure_band."
+          f"{'head_on' if axis == 'y' else 'parallel'} in config.yaml.")
 
 
 if __name__ == "__main__":

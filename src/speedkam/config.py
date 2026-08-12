@@ -56,12 +56,14 @@ DEFAULTS = {
         #     horizontally -> a horizontal centre band. Tuned to +2.0% against a
         #     synthetic side-on clip (tools/tune_measure_band.py); re-tune per lens.
         #   head_on (receding): car stays near centre-x and shrinks toward the
-        #     vanishing point -> a vertical near/mid band, dropping the far top.
+        #     vanishing point, where pixels-per-metre collapses -> a vertical
+        #     near/mid band dropping the far top. Tuned to -1.4% (vs +32%
+        #     full-frame) against a synthetic head-on clip (make_headon_video.py).
         "measure_band": {
             "enabled": True,
             "orientation": "parallel",
             "parallel": {"x_min": 0.3, "x_max": 0.7, "y_min": 0.0, "y_max": 1.0},
-            "head_on": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.4, "y_max": 0.92},
+            "head_on": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.55, "y_max": 0.95},
         },
     },
     "recording": {
