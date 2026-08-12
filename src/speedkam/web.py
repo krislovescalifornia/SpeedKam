@@ -108,10 +108,15 @@ class Runner:
             "recognition": bool(getattr(sc, "recognizer", None)
                                 and sc.recognizer.active),
             "speedkapture_threshold": sc.speedkapture_threshold,
+            "orientation": sc.orientation,
+            "measure_band": sc._active_band(),
         }
 
     def set_speedkapture(self, value):
         return self.speedcam.set_speedkapture_threshold(value)
+
+    def set_orientation(self, value):
+        return self.speedcam.set_orientation(value)
 
     # -------------------------------------------------------------- event data
     def _all_rows(self):
@@ -279,6 +284,14 @@ def create_app(runner: Runner) -> Flask:
                             "error": "threshold must be a number"}), 400
         return jsonify({"ok": True, "speedkapture_threshold": applied,
                         "units": runner.speedcam.units})
+
+    @app.route("/api/orientation", methods=["POST"])
+    def orientation():
+        data = request.get_json(force=True, silent=True) or {}
+        val = data.get("orientation", request.form.get("orientation"))
+        applied = runner.set_orientation(val)
+        return jsonify({"ok": True, "orientation": applied,
+                        "measure_band": runner.speedcam._active_band()})
 
     @app.route("/api/events")
     def events():

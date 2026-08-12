@@ -67,6 +67,7 @@ class RemoteControl:
             "total_count": cam.total_count,
             "speeder_count": cam.speeder_count,
             "speedkapture_threshold": cam.speedkapture_threshold,
+            "orientation": cam.orientation,
             "speed_limit_kmh": cam.limit_kmh,
             "units": cam.units,
             "last_event": cam.last_event,
@@ -114,4 +115,8 @@ class RemoteControl:
                       f"{self.camera.units} (rev {rev}).")
             except (TypeError, ValueError):
                 pass
+        orient = settings.get("orientation")
+        if orient is not None:
+            new = self.camera.set_orientation(orient)
+            print(f"[SpeedKam] Remote set orientation -> {new} (rev {rev}).")
         self.camera.state.set("remote_rev", rev)

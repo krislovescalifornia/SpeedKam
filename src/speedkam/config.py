@@ -16,6 +16,16 @@ DEFAULTS = {
         "windows_use_dshow": True,
         "manual_exposure": -1,
         "loop": False,
+        # Optional lens undistortion applied to every frame before detection and
+        # calibration. Off by default. dist_coeffs is OpenCV order [k1,k2,p1,p2,k3];
+        # intrinsics are derived from fov_deg + frame size unless fx/fy/cx/cy given.
+        "undistort": {
+            "enabled": False,
+            "fov_deg": 70.0,
+            "fx": None, "fy": None, "cx": None, "cy": None,
+            "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "alpha": 0.0,
+        },
     },
     "detection": {
         "min_area": 1500,
@@ -38,18 +48,20 @@ DEFAULTS = {
         "direction_positive": "outbound",
         "direction_negative": "inbound",
         # Center-band measurement gate: only time a vehicle while its ground
-        # point is inside this band of the frame (fractions of width/height).
-        # Speeds are fit from in-band samples only. On by default for the
-        # side-on (camera parallel to the road) deployment this fleet uses:
-        # the central 40% keeps speed error low where the pixels->meters map is
-        # trustworthy, dropping the lens-distorted edges. Tuned against a
-        # synthetic side-on clip (tools/tune_measure_band.py); re-tune per lens.
+        # point is inside a band of the frame (fractions of width/height), where
+        # the pixels->meters map is trustworthy. The right band depends on how
+        # the camera is mounted, so two presets are kept and `orientation`
+        # selects the active one (toggle it live on the dashboard):
+        #   parallel (side-on): traffic crosses L<->R, edges distorted
+        #     horizontally -> a horizontal centre band. Tuned to +2.0% against a
+        #     synthetic side-on clip (tools/tune_measure_band.py); re-tune per lens.
+        #   head_on (receding): car stays near centre-x and shrinks toward the
+        #     vanishing point -> a vertical near/mid band, dropping the far top.
         "measure_band": {
             "enabled": True,
-            "x_min": 0.3,
-            "x_max": 0.7,
-            "y_min": 0.0,
-            "y_max": 1.0,
+            "orientation": "parallel",
+            "parallel": {"x_min": 0.3, "x_max": 0.7, "y_min": 0.0, "y_max": 1.0},
+            "head_on": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.4, "y_max": 0.92},
         },
     },
     "recording": {

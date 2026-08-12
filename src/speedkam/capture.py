@@ -21,11 +21,16 @@ import time
 
 import cv2
 
+from .undistort import Undistorter
+
 
 class Camera:
     def __init__(self, cfg):
         self.cfg = cfg
         self.backend = cfg["backend"]
+        # Optional lens undistortion, applied to every frame BEFORE anything
+        # downstream sees it -- so calibration and detection share one geometry.
+        self.undistorter = Undistorter(cfg.get("undistort"))
         self._picam = None
         self._cap = None
         # Offline video files must be timed by the file's own frame clock, not
@@ -123,7 +128,8 @@ class Camera:
         if self._picam is not None:  # pragma: no cover - Pi only
             t = time.monotonic()
             rgb = self._picam.capture_array()
-            return t, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            return t, self.undistorter.apply(frame)
 
         ok, frame = self._cap.read()
         if (not ok or frame is None) and self._offline and self.cfg.get("loop"):
@@ -138,7 +144,7 @@ class Camera:
             self._frame_idx += 1
         else:
             t = time.monotonic()
-        return t, frame
+        return t, self.undistorter.apply(frame)
 
     @property
     def actual_size(self):

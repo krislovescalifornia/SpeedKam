@@ -39,6 +39,30 @@ class SpeedResult:
         return f"{val:.0f} {unit}"
 
 
+def normalize_orientation(value):
+    """Map free-form orientation labels onto the two canonical preset keys."""
+    v = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return "head_on" if v in ("head_on", "headon", "head", "oncoming") else "parallel"
+
+
+def resolve_band(band_cfg, orientation=None):
+    """Flatten the measure_band config into a single {enabled, x/y bounds} band.
+
+    Accepts two shapes:
+      * NESTED (config form): {enabled, orientation, parallel:{...}, head_on:{...}}
+        -- pick the preset for `orientation` (or the config's own default).
+      * FLAT (what the tuner passes): {enabled, x_min, x_max, ...} -- returned
+        as-is, so a directly-specified band still works.
+    """
+    band_cfg = band_cfg or {}
+    preset = band_cfg.get("parallel") or band_cfg.get("head_on")
+    if preset is None:
+        return band_cfg  # already a flat band
+    key = normalize_orientation(orientation or band_cfg.get("orientation"))
+    chosen = band_cfg.get(key) or {}
+    return {"enabled": band_cfg.get("enabled", False), **chosen}
+
+
 def _in_band(samples, band, frame_wh):
     """Keep only samples whose ground point lies inside the central band.
 
@@ -61,9 +85,10 @@ def _in_band(samples, band, frame_wh):
     ]
 
 
-def estimate(track, cfg, frame_wh=None) -> SpeedResult | None:
+def estimate(track, cfg, frame_wh=None, orientation=None) -> SpeedResult | None:
     samples = [s for s in track.samples if s.world is not None]
-    samples = _in_band(samples, cfg.get("measure_band") or {}, frame_wh)
+    band = resolve_band(cfg.get("measure_band"), orientation)
+    samples = _in_band(samples, band, frame_wh)
     if len(samples) < cfg["min_samples"]:
         return None
 

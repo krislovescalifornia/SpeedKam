@@ -88,6 +88,10 @@ class SpeedCamera:
             cfg["recording"].get("state_file", "captures/runtime.json"),
             {"speedkapture_threshold":
                 float(cfg["recording"].get("speedkapture_threshold", 0) or 0),
+             # Camera mounting: selects which measure_band preset is active.
+             # Dashboard-toggleable (parallel = side-on, head_on = receding).
+             "orientation": speed_mod.normalize_orientation(
+                 (cfg["speed"].get("measure_band") or {}).get("orientation")),
              # Last off-site settings revision we've applied (see RemoteControl).
              "remote_rev": None},
         )
@@ -141,6 +145,23 @@ class SpeedCamera:
     def _should_capture(self, display_speed) -> bool:
         thr = self.speedkapture_threshold
         return thr <= 0 or display_speed > thr
+
+    # --------------------------------------------------------------- orientation
+    @property
+    def orientation(self) -> str:
+        """Active camera mounting: 'parallel' (side-on) or 'head_on' (receding)."""
+        return speed_mod.normalize_orientation(self.state.get("orientation"))
+
+    def set_orientation(self, value) -> str:
+        """Switch the active measure_band preset; persists across restarts."""
+        norm = speed_mod.normalize_orientation(value)
+        self.state.set("orientation", norm)
+        return norm
+
+    def _active_band(self):
+        """The measure_band resolved for the current orientation (for drawing)."""
+        return speed_mod.resolve_band(
+            self.cfg["speed"].get("measure_band"), self.orientation)
 
     def _display_speed(self, result) -> float:
         return result.speed_mph if self.units == "mph" else result.speed_kmh
@@ -203,7 +224,7 @@ class SpeedCamera:
                     view = frame.copy()
                     if draw_debug:
                         annotate.draw_zone(view, self.calibration)
-                        annotate.draw_measure_band(view, self.cfg["speed"].get("measure_band"))
+                        annotate.draw_measure_band(view, self._active_band())
                         annotate.draw_tracks(view, active, self.units)
                     annotate.draw_hud(view, self._last_result_text, self._last_over)
                     if frame_callback is not None:
@@ -243,7 +264,8 @@ class SpeedCamera:
         with self._calib_lock:
             calibrated = self.calibration is not None
         if calibrated:
-            result = speed_mod.estimate(track, self.cfg["speed"], self.frame_wh)
+            result = speed_mod.estimate(track, self.cfg["speed"], self.frame_wh,
+                                        orientation=self.orientation)
 
         if result is None:
             # No speed (uncalibrated / too-short track): nothing to count.
