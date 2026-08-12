@@ -53,6 +53,10 @@ class SpeedCamera:
         # Optional off-site backup mirror.
         self.sync = None
         backup = cfg.get("backup", {})
+        # Full mirror: back up EVERY counted pass off-site (row + snapshot),
+        # not just captured (above-threshold) clips. Makes the remote a complete
+        # historical record that survives local retention trimming media.
+        self._mirror_all = bool(backup.get("mirror_all"))
         if backup.get("enabled"):
             if backup.get("url") and backup.get("secret"):
                 self.sync = SyncManager(
@@ -253,6 +257,12 @@ class SpeedCamera:
                 snap_name = snap.name if snap else None
                 if clip:
                     print(f"[SpeedKam]    saved {clip.name}")
+            elif self.cfg["recording"].get("always_snapshot"):
+                # Below SpeedKapture: no clip, but keep a JPEG so a deferred
+                # recognition worker can still fill in type/make/model later.
+                snap = self.recorder.save_snapshot_only(
+                    track.id, result, self.units, self.limit_kmh)
+                snap_name = snap.name if snap else None
             self.recorder.log_row(track.id, result, self.units, attrs,
                                   clip_name, snap_name, captured=capture)
 
@@ -277,8 +287,9 @@ class SpeedCamera:
             "clip": clip_name,
             "snapshot": snap_name,
         }
-        # Only mirror captured events off-site (matches "post the clip if above").
-        if self.sync is not None and capture:
+        # Mirror off-site: captured events always; every counted pass when
+        # backup.mirror_all is on (so the remote is a full historical record).
+        if self.sync is not None and (capture or self._mirror_all):
             self.sync.enqueue(self.last_event)
 
     # --------------------------------------------------------------- recognition

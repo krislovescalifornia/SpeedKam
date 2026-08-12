@@ -127,6 +127,27 @@ class Recorder:
         return float(self.fps_hint)
 
     # ----------------------------------------------------------------- media
+    def save_snapshot_only(self, track_id, result, units, limit_kmh):
+        """Write just the annotated JPEG snapshot (no clip) for one pass.
+
+        Used for counted passes BELOW the SpeedKapture threshold when
+        recording.always_snapshot is on, so a deferred recognition worker has
+        an image to enrich later. Returns the snapshot Path, or None.
+        """
+        if not self.buffer:
+            return None
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        speed_tag = (f"{result.speed_mph:.0f}mph" if units == "mph"
+                     else f"{result.speed_kmh:.0f}kmh")
+        base = f"{stamp}_id{track_id}_{speed_tag}"
+        frames = list(self.buffer)
+        _, fr = frames[len(frames) // 2]
+        snap = fr.copy()
+        annotate.draw_speed_banner(snap, result, limit_kmh, units)
+        snapshot_path = self.output_dir / f"{base}.jpg"
+        cv2.imwrite(str(snapshot_path), snap)
+        return snapshot_path
+
     def save_media(self, track_id, result, units, limit_kmh, burn_overlay):
         """Write clip (+ optional snapshot) for one finished vehicle.
 

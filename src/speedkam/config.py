@@ -51,6 +51,12 @@ DEFAULTS = {
         # -- there's just no clip. 0 = capture every vehicle. Adjustable live
         # from the dashboard (persisted to the runtime state file below).
         "speedkapture_threshold": 0,
+        # Save a lightweight JPEG snapshot for EVERY counted pass, even ones
+        # below the SpeedKapture threshold (which get no clip). This is what
+        # lets a deferred recognition worker fill in type/make/model later for
+        # sub-threshold passes too -- there has to be an image on disk to look
+        # at. Cheap (one JPEG/pass); leave off if you only enrich captured passes.
+        "always_snapshot": False,
         # Small JSON file holding dashboard-adjustable settings (SpeedKapture)
         # so they survive a restart without rewriting the commented config.yaml.
         "state_file": "captures/runtime.json",
@@ -76,6 +82,13 @@ DEFAULTS = {
         "secret": "",
         "include_snapshots": True,
         "include_clips": True,
+        # Full mirror: also back up counted passes BELOW the SpeedKapture
+        # threshold (their CSV row + snapshot), not just captured clips. With
+        # this on, the off-site copy is a complete historical record, so when
+        # local retention trims old media the remote still has everything.
+        # (Clips still only exist for captured passes -- there's no clip to
+        # mirror below threshold -- but every row and snapshot is mirrored.)
+        "mirror_all": False,
         "verify_tls": True,
         "timeout": 30,
         "retry_seconds": 60,
@@ -89,6 +102,13 @@ DEFAULTS = {
         # Fully optional: with this off, or ultralytics/torch not installed,
         # every pass is still counted and timed -- attributes just stay blank.
         "enabled": False,
+        # Deferred (offloaded) recognition. When true, this node does NOT load
+        # or run the heavy YOLO models -- it only does the cheap color pass and
+        # persists snapshots, leaving type/make/model blank in the CSV. A
+        # separate machine runs tools/recognize_worker.py later to fill them in
+        # from the saved images. Set true on a Raspberry Pi to keep the capture
+        # loop fast; leave false to recognize inline (desktop/GPU node).
+        "defer": False,
         # YOLO weights for vehicle TYPE (COCO: car/truck/bus/motorcycle).
         "model": "yolov8n.pt",
         "min_confidence": 0.35,

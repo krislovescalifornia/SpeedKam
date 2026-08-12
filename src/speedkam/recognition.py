@@ -95,6 +95,7 @@ class VehicleRecognizer:
     def __init__(self, cfg):
         self.cfg = cfg or {}
         self.enabled = bool(self.cfg.get("enabled"))
+        self.defer = bool(self.cfg.get("defer"))
         self.want_color = bool(self.cfg.get("color", True))
         self.min_conf = float(self.cfg.get("min_confidence", 0.35))
         self._type_model = None
@@ -102,6 +103,16 @@ class VehicleRecognizer:
         self._active = False
 
         if not self.enabled:
+            return
+
+        # Deferred mode: this node offloads YOLO to a separate machine. Don't
+        # import or load torch/ultralytics at all -- just do the cheap color
+        # pass inline; a worker fills in type/make/model later from snapshots.
+        if self.defer:
+            self._active = self.want_color
+            if self._active:
+                print("[SpeedKam] Recognition DEFERRED: color inline, "
+                      "type/make/model offloaded to recognize_worker.")
             return
         try:
             from ultralytics import YOLO  # noqa: F401  (import gate only)
@@ -167,22 +178,61 @@ class VehicleRecognizer:
 
         return out
 
-    def _detect_type(self, crop):
+    # ---------------------------------------------------------- full-frame
+    def recognize_full(self, frame) -> dict:
+        """Recognize the dominant vehicle in a WHOLE frame (no bbox needed).
+
+        Used by the deferred worker: it reads a saved snapshot/clip frame that
+        has no stored crop coordinates, so we run the type detector over the
+        full image, pick the best vehicle box, and derive color + make/model
+        from that box. Falls back to the whole frame for color when no box.
+        """
+        out = _empty()
+        if not self._active or frame is None:
+            return out
+
+        box = None
+        if self._type_model is not None:
+            out["vehicle_type"], box = self._detect_type(frame, want_box=True)
+
+        crop = _crop(frame, box) if box is not None else frame
+
+        if self.want_color:
+            try:
+                out["color"] = estimate_color(crop)
+            except Exception:  # noqa: BLE001 - color is best-effort
+                pass
+
+        if self._mm_model is not None and crop is not None:
+            make, model, year = self._classify_make_model(crop)
+            out["make"], out["model"], out["year"] = make, model, year
+
+        return out
+
+    def _detect_type(self, crop, want_box=False):
+        """Best vehicle label in ``crop``. With want_box, also return its bbox
+        (x, y, w, h) in ``crop`` coordinates so callers can re-crop tightly."""
+        none_result = (None, None) if want_box else None
         try:
             res = self._type_model.predict(crop, verbose=False,
                                            conf=self.min_conf)
         except Exception:  # noqa: BLE001
-            return None
-        best_label, best_conf = None, 0.0
+            return none_result
+        best_label, best_conf, best_box = None, 0.0, None
         for r in res:
             boxes = getattr(r, "boxes", None)
             if boxes is None:
                 continue
-            for cls_id, conf in zip(boxes.cls.tolist(), boxes.conf.tolist()):
+            xyxy = boxes.xyxy.tolist() if want_box else [None] * len(boxes.cls)
+            for cls_id, conf, xy in zip(boxes.cls.tolist(),
+                                        boxes.conf.tolist(), xyxy):
                 label = _COCO_VEHICLES.get(int(cls_id))
                 if label and conf > best_conf:
                     best_label, best_conf = label, conf
-        return best_label
+                    if want_box and xy is not None:
+                        x0, y0, x1, y1 = xy
+                        best_box = (x0, y0, x1 - x0, y1 - y0)
+        return (best_label, best_box) if want_box else best_label
 
     def _classify_make_model(self, crop):
         try:

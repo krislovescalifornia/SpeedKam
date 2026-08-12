@@ -162,6 +162,65 @@ if (($_POST['action'] ?? '') === 'prune') {
     exit;
 }
 
+// --- deferred recognition write-back: fill attributes on an existing row ---
+// Called by tools/recognize_worker.py after it runs YOLO off-box. Matches the
+// event by the stem of its clip (or snapshot) filename and rewrites only the
+// attribute columns (vehicle_type/make/model/year/color) in events.csv.
+if (($_POST['action'] ?? '') === 'enrich') {
+    $event_id = preg_replace('/[^A-Za-z0-9._-]/', '_', $_POST['event_id'] ?? '');
+    $attrs = json_decode($_POST['attrs'] ?? '', true);
+    if ($event_id === '' || !is_array($attrs)) {
+        fail(400, 'missing event_id or attrs');
+    }
+    $csv = "$DATA_DIR/events.csv";
+    if (!is_file($csv)) { echo json_encode(['ok' => true, 'updated' => 0]); exit; }
+    $ATTR_COLS = ['vehicle_type', 'make', 'model', 'year', 'color'];
+    $updated = 0;
+    $fh = fopen($csv, 'c+');
+    if ($fh === false) { fail(500, 'cannot open events.csv'); }
+    if (flock($fh, LOCK_EX)) {
+        $rows = [];
+        $header = null;
+        while (($r = fgetcsv($fh)) !== false) {
+            if ($header === null) { $header = $r; $rows[] = $r; continue; }
+            $rows[] = $r;
+        }
+        if ($header !== null) {
+            $idx = array_flip($header);
+            $clip_i = $idx['clip'] ?? null;
+            $snap_i = $idx['snapshot'] ?? null;
+            foreach ($rows as $ri => &$row) {
+                if ($ri === 0) continue;  // header
+                $stem = null;
+                if ($clip_i !== null && !empty($row[$clip_i])) {
+                    $stem = pathinfo($row[$clip_i], PATHINFO_FILENAME);
+                } elseif ($snap_i !== null && !empty($row[$snap_i])) {
+                    $stem = pathinfo($row[$snap_i], PATHINFO_FILENAME);
+                }
+                if ($stem !== $event_id) continue;
+                foreach ($ATTR_COLS as $col) {
+                    if (isset($attrs[$col]) && $attrs[$col] !== ''
+                        && isset($idx[$col])) {
+                        $row[$idx[$col]] = $attrs[$col];
+                    }
+                }
+                $updated++;
+            }
+            unset($row);
+            if ($updated > 0) {
+                ftruncate($fh, 0);
+                rewind($fh);
+                foreach ($rows as $row) { fputcsv($fh, $row); }
+                fflush($fh);
+            }
+        }
+        flock($fh, LOCK_UN);
+    }
+    fclose($fh);
+    echo json_encode(['ok' => true, 'updated' => $updated]);
+    exit;
+}
+
 // --- parse fields ---
 $event_id = $_POST['event_id'] ?? '';
 $meta_raw = $_POST['meta'] ?? '';

@@ -151,6 +151,18 @@ your web host:
 Only **media** is ever deleted — the CSV event log (and therefore your vehicle
 counts and history) is kept indefinitely, locally and off-site.
 
+### Making the off-site copy a full historical archive
+
+The two rotation knobs are independent on purpose: set a short `local_days` and
+leave `remote_retention_days: 0`, and the Pi trims old media off its SD card
+while the web host keeps everything forever. For that to be a *complete* archive,
+turn on **`backup.mirror_all: true`** — then every counted pass is mirrored
+off-site (its CSV row + snapshot), not just captured (above-SpeedKapture) clips.
+Below-threshold passes have no clip to mirror, but their row and snapshot go up,
+so nothing is missing when local media rotates away. (A file is still only
+trimmed locally once backup has confirmed it uploaded, so the mirror is never
+racing ahead of the delete.)
+
 ---
 
 ## Vehicle recognition (type / make / model / year / colour)
@@ -170,6 +182,49 @@ each pass with what it can determine and logs it to the CSV + dashboard:
 Recognition is heavy on a Pi; leave it off until you've tested throughput. It
 runs on a buffered frame at finalize time, so it works for counted-but-not-
 captured (sub-SpeedKapture) passes too.
+
+### Offloading recognition (defer the YOLO to another machine)
+
+The YOLO type/make/model stage is the expensive part; colour and speed are
+cheap. You can split them: let the Pi capture video, measure speed, estimate
+colour and save images in real time, then run YOLO **later on a beefier box**
+that reads those saved images and fills the attributes in.
+
+Turn it on with two config knobs (already set on the golden image):
+
+```yaml
+recognition:
+  enabled: true
+  defer: true          # Pi does colour only; never loads torch/ultralytics
+recording:
+  always_snapshot: true  # keep a JPEG for EVERY pass so sub-threshold passes
+                         # are enrichable later, not just captured ones
+```
+
+In defer mode the Pi writes CSV rows with `vehicle_type`/`make`/`model`/`year`
+blank (colour + speed are still filled inline). Then, on a desktop/GPU machine
+that can see the same `captures/` folder (a mount, an `rsync`, or the same SD
+card), run the worker:
+
+```bash
+python tools/recognize_worker.py --config config.yaml          # one pass
+python tools/recognize_worker.py --config config.yaml --watch 30   # keep filling
+```
+
+The worker runs YOLO on each saved snapshot (or a clip frame), fills the blank
+attribute columns in `events.csv`, and POSTs the fills to the backup receiver's
+new `enrich` endpoint so the **off-site copy is updated too** — for every pass
+that's mirrored off-site (with `backup.mirror_all: true`, that's all of them;
+otherwise just captured clips). It's **idempotent** via two small ledgers next
+to the media (`.recognized`, `.enriched_remote`): images it has already run are
+never re-run, a confirmed off-site push is never re-sent, but an off-site push
+that hasn't landed yet (Pi uploaded late) is retried until it does. It never
+overwrites a value the Pi already wrote (e.g. colour).
+
+Add a fine-grained make/model model with `--make-model-weights model.pt`,
+`--no-remote` to update only the local CSV, or `--force` to re-process
+everything after swapping in a better model. Note: enriching the off-site copy
+requires the updated `deploy/webhost/speedkam_receiver.php` on your host.
 
 ---
 
@@ -209,9 +264,12 @@ touch:
 | `speed.display_units` | `mph` or `kmh` |
 | `recording.clip_seconds` | Seconds of pre-trigger footage kept in the clip |
 | `recording.speedkapture_threshold` | **SpeedKapture** — only record/post clips above this speed (also set live on the dashboard) |
+| `recording.always_snapshot` | Keep a JPEG for every pass (even sub-threshold) so deferred recognition can enrich them later |
 | `retention.local_days` | Auto-delete local clips older than N days (once backed up) |
+| `backup.mirror_all` | Mirror every counted pass off-site (row + snapshot), not just captured clips — full historical archive |
 | `backup.remote_retention_days` | Auto-delete off-site clips older than N days |
 | `recognition.enabled` | Best-effort vehicle type/make/model/year/colour (needs `ultralytics`) |
+| `recognition.defer` | Offload YOLO: Pi does colour only, `tools/recognize_worker.py` fills type/make/model later |
 | `display.show_window` | `false` for headless Pi deployment |
 
 ---
@@ -324,6 +382,7 @@ tools/
   calibrate.py         Interactive ground-plane calibration
   make_test_video.py   Generate a synthetic drive-by to validate speed math
   backfill_sync.py     Push all existing local records to the off-site backup
+  recognize_worker.py  Run YOLO off-box to fill deferred type/make/model attributes
 deploy/
   speedkam.service     systemd unit template (autorun on boot)
   install-service.sh   One-command installer for the Pi

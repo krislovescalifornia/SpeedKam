@@ -107,9 +107,19 @@ class SyncManager:
     def enqueue(self, event: dict):
         """Queue one event for upload. `event` is the last_event dict from the
         pipeline (time, speeds, direction, clip, snapshot, ...)."""
+        # Event id doubles as the retention ledger key, which is matched against
+        # each media file's stem (see RetentionManager._deletable). So derive it
+        # from the media basename when there is one -- clip if present, else the
+        # snapshot -- so snapshot-only (sub-threshold) passes are ledger-matched
+        # too. Only truly media-less rows fall back to a synthetic id.
         clip = event.get("clip")
-        event_id = (Path(clip).stem if clip
-                    else f"{event.get('time')}_{event.get('track_id')}")
+        snap = event.get("snapshot")
+        if clip:
+            event_id = Path(clip).stem
+        elif snap:
+            event_id = Path(snap).stem
+        else:
+            event_id = f"{event.get('time')}_{event.get('track_id')}"
         safe_id = "".join(c if c.isalnum() or c in "-_." else "_" for c in event_id)
         job = {
             "event_id": event_id,
@@ -195,6 +205,43 @@ class SyncManager:
                 self.last_error = f"prune HTTP {resp.status_code}: {resp.text[:120]}"
         except requests.RequestException as exc:
             self.last_error = f"prune {type(exc).__name__}: {exc}"
+        return 0
+
+    # ------------------------------------------------------------- remote enrich
+    def enrich_remote(self, event_id, attrs) -> int:
+        """Ask the receiver to fill in recognized attributes for an event that
+        was already mirrored off-site (deferred recognition write-back).
+
+        ``attrs`` is a dict of any of vehicle_type/make/model/year/color. The
+        receiver rewrites that event's off-site CSV row in place. Returns the
+        number of remote rows updated: 0 means the row isn't off-site yet (so
+        the caller should retry later) or the request failed. Best-effort.
+        """
+        payload = {k: v for k, v in (attrs or {}).items() if v}
+        if not event_id or not payload:
+            return 0
+        try:
+            resp = requests.post(
+                self.url,
+                headers={"X-SpeedKam-Key": self.secret},
+                data={"action": "enrich",
+                      "event_id": event_id,
+                      "attrs": json.dumps(payload)},
+                timeout=self.timeout,
+                verify=self.verify_tls,
+            )
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                except ValueError:
+                    return 0
+                if body.get("ok"):
+                    return int(body.get("updated", 0) or 0)
+                self.last_error = f"enrich rejected: {resp.text[:120]}"
+            else:
+                self.last_error = f"enrich HTTP {resp.status_code}: {resp.text[:120]}"
+        except requests.RequestException as exc:
+            self.last_error = f"enrich {type(exc).__name__}: {exc}"
         return 0
 
     def _upload(self, job) -> bool:
