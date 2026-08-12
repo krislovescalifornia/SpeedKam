@@ -57,6 +57,13 @@ sudo apt install -y \
   git
 ```
 
+> **A `.venv` folder silently changes which Python the service runs.** The
+> installer auto-prefers `./.venv/bin/python` if it exists, else system
+> `python3`. The **only** supported venv is the `--system-site-packages`
+> recognition venv in [2.6](#26-optional-turn-on-vehicle-recognition) — a
+> leftover or half-built `.venv` will hijack the service's interpreter and can
+> break it. If you're not enabling recognition, don't create one.
+
 - `python3-picamera2` is only needed for the **CSI ribbon camera** (Global
   Shutter / Camera Module). Harmless to install even if you use a USB webcam —
   the `auto` backend just won't find a CSI camera and falls back to USB.
@@ -107,7 +114,12 @@ Only a few keys change from the Windows test rig. Open `config.yaml` and set:
 
 > The shipped `config.yaml` has `recognition.enabled: true` and a real backup
 > secret. Turn recognition **off** for the first bring-up, and put your **own**
-> backup secret in (keep it out of git).
+> backup secret in. To keep your secret out of git (what the comment on the
+> `secret:` line refers to), tell git to ignore local changes to the file:
+>
+> ```bash
+> git update-index --skip-worktree config.yaml
+> ```
 
 ### 2.3 Sanity-check the pipeline (optional but reassuring)
 
@@ -165,8 +177,34 @@ Recognition is the one compute-hungry feature. Two very different costs:
   on a Pi 4-4GB / Pi 5, but leave it **off** on 2 GB boards and the Zero 2 W.
 
 Enable it only after speed works, then watch `journalctl` for the pipeline
-keeping up. Set `recognition.enabled: true` (and `pip install ultralytics` in a
-`--system-site-packages` venv if you want type/make/model).
+keeping up. Set `recognition.enabled: true`. **Colour** needs nothing more.
+
+For **type / make / model** you need `ultralytics`, which must live in a venv
+that can also see the apt-installed `opencv`/`picamera2` — hence
+`--system-site-packages` (those packages are not cleanly pip-installable, per
+[1.3](#13-install-dependencies-system-packages--the-recommended-path)):
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install ultralytics
+```
+
+> **The service must run *this* venv's Python, or recognition silently does
+> nothing.** The installer picks `./.venv/bin/python` when a `.venv` exists,
+> else system `python3`. If you create the venv **after** already installing the
+> service ([2.7](#27-install-the-autostart-service)), the service is still on
+> system `python3` (no `ultralytics`) and type/make/model just stay blank — with
+> no error, because the installer's dependency check doesn't test for
+> `ultralytics`. Re-point it and restart:
+>
+> ```bash
+> sudo bash deploy/install-service.sh   # re-renders the unit to use .venv
+> sudo systemctl restart speedkam
+> ```
+
+> The type model (`yolov8n.pt`) **auto-downloads on first use**, so the first
+> recognized vehicle needs internet — or pre-place the weights file in the
+> project folder.
 
 ### 2.7 Install the autostart service
 
