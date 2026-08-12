@@ -9,5 +9,8 @@ calibration.json
 calibration.ref.jpg
 test_calibration.json
 test_road.mp4
+test_sideon.mp4
+test_sideon_calibration.json
+test_sideon.meta.json
 # YOLO weights (downloaded on demand by ultralytics)
 *.pt

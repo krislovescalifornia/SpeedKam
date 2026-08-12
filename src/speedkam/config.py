@@ -37,6 +37,16 @@ DEFAULTS = {
         "display_units": "mph",
         "direction_positive": "outbound",
         "direction_negative": "inbound",
+        # Center-band measurement gate: only time a vehicle while its ground
+        # point is inside this band of the frame (fractions of width/height).
+        # Speeds are fit from in-band samples only. Off by default.
+        "measure_band": {
+            "enabled": False,
+            "x_min": 0.2,
+            "x_max": 0.8,
+            "y_min": 0.0,
+            "y_max": 1.0,
+        },
     },
     "recording": {
         "enabled": True,

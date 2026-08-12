@@ -39,8 +39,31 @@ class SpeedResult:
         return f"{val:.0f} {unit}"
 
 
-def estimate(track, cfg) -> SpeedResult | None:
+def _in_band(samples, band, frame_wh):
+    """Keep only samples whose ground point lies inside the central band.
+
+    The band is defined in FRACTIONS of frame width/height, so it is
+    resolution-independent. For a side-on (camera parallel to the road) view
+    the pixels->meters mapping is most trustworthy dead-centre; foreshortening
+    and lens distortion grow toward the left/right edges, so timing a car only
+    across the central band avoids those corrupt samples.
+    """
+    if not band.get("enabled") or not frame_wh:
+        return samples
+    w, h = frame_wh
+    x_lo = band.get("x_min", 0.0) * w
+    x_hi = band.get("x_max", 1.0) * w
+    y_lo = band.get("y_min", 0.0) * h
+    y_hi = band.get("y_max", 1.0) * h
+    return [
+        s for s in samples
+        if x_lo <= s.ground_px[0] <= x_hi and y_lo <= s.ground_px[1] <= y_hi
+    ]
+
+
+def estimate(track, cfg, frame_wh=None) -> SpeedResult | None:
     samples = [s for s in track.samples if s.world is not None]
+    samples = _in_band(samples, cfg.get("measure_band") or {}, frame_wh)
     if len(samples) < cfg["min_samples"]:
         return None
 

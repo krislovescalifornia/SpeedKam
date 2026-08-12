@@ -115,6 +115,11 @@ class SpeedCamera:
         self.running = False
         self._fps_times = deque(maxlen=30)
 
+        # Actual frame size (w, h), used to resolve the center-band measurement
+        # gate (fractions -> pixels). Seeded from config; refreshed per frame in
+        # case the camera hands back a different resolution than requested.
+        self.frame_wh = (cfg["camera"]["width"], cfg["camera"]["height"])
+
     # --------------------------------------------------------------- calibration
     def set_calibration(self, calibration):
         """Hot-swap the calibration (called by the web recalibration flow)."""
@@ -182,6 +187,7 @@ class SpeedCamera:
                     break
                 frames += 1
                 self._tick_fps()
+                self.frame_wh = (frame.shape[1], frame.shape[0])
 
                 detections, _ = self.detector.detect(frame)
                 world = self._world_points(detections)
@@ -197,6 +203,7 @@ class SpeedCamera:
                     view = frame.copy()
                     if draw_debug:
                         annotate.draw_zone(view, self.calibration)
+                        annotate.draw_measure_band(view, self.cfg["speed"].get("measure_band"))
                         annotate.draw_tracks(view, active, self.units)
                     annotate.draw_hud(view, self._last_result_text, self._last_over)
                     if frame_callback is not None:
@@ -236,7 +243,7 @@ class SpeedCamera:
         with self._calib_lock:
             calibrated = self.calibration is not None
         if calibrated:
-            result = speed_mod.estimate(track, self.cfg["speed"])
+            result = speed_mod.estimate(track, self.cfg["speed"], self.frame_wh)
 
         if result is None:
             # No speed (uncalibrated / too-short track): nothing to count.
