@@ -8,9 +8,10 @@
  * if the camera is stolen or damaged.
  *
  * SETUP
- *  1. Edit $SECRET below to a long random string, and set the SAME value in the
- *     camera's config.yaml (backup.secret).
- *  2. Upload this file. Make sure your host runs PHP and allows file uploads.
+ *  1. Edit speedkam_config.php: set $SECRET (must match config.yaml
+ *     backup.secret) and $DASHBOARD_PASSWORD.
+ *  2. Upload speedkam_config.php, this file, and speedkam_dashboard.php into the
+ *     same folder. Make sure your host runs PHP and allows file uploads.
  *  3. For video clips, raise these in php.ini (or .htaccess/.user.ini):
  *        upload_max_filesize = 64M
  *        post_max_size       = 80M
@@ -20,11 +21,7 @@
  * private (the included .htaccess denies direct web browsing of it).
  */
 
-// ===================== CONFIG =====================
-$SECRET   = 'CHANGE-ME-to-a-long-random-string';     // must match config.yaml
-$DATA_DIR = __DIR__ . '/speedkam_data';              // where backups are stored
-$ALLOWED_EXT = ['jpg' => 'image/jpeg', 'mp4' => 'video/mp4'];
-// ==================================================
+require __DIR__ . '/speedkam_config.php';   // $SECRET, $DATA_DIR, $ALLOWED_EXT
 
 header('Content-Type: application/json');
 
@@ -136,6 +133,31 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $key = $_SERVER['HTTP_X_SPEEDKAM_KEY'] ?? '';
 if ($SECRET === 'CHANGE-ME-to-a-long-random-string' || !hash_equals($SECRET, $key)) {
     fail(403, 'bad or missing key');
+}
+
+// --- camera heartbeat + settings pull (pull-based remote control) ---
+// The camera POSTs its status here every control.poll_seconds. We store the
+// status so the dashboard can show liveness + counts even when you're off the
+// camera's LAN, and we return the DESIRED settings the operator set on the
+// dashboard. The camera applies them on its next poll -- this is how control
+// reaches a camera behind home NAT without any inbound ports.
+if (($_POST['action'] ?? '') === 'sync') {
+    if (!is_dir($DATA_DIR) && !mkdir($DATA_DIR, 0750, true) && !is_dir($DATA_DIR)) {
+        fail(500, 'cannot create data dir');
+    }
+    $status = json_decode($_POST['status'] ?? '', true);
+    if (!is_array($status)) { $status = []; }
+    $status['received_at'] = gmdate('c');   // server-stamped, for liveness
+    @file_put_contents("$DATA_DIR/status.json", json_encode($status));
+    // Hand back whatever the dashboard has queued (empty until first change).
+    $desired = [];
+    $dfile = "$DATA_DIR/desired.json";
+    if (is_file($dfile)) {
+        $d = json_decode(@file_get_contents($dfile), true);
+        if (is_array($d)) { $desired = $d; }
+    }
+    echo json_encode(['ok' => true, 'settings' => $desired]);
+    exit;
 }
 
 // --- remote rotation: delete off-site media older than N days ---

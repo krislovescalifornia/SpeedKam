@@ -97,8 +97,10 @@ and retry automatically — nothing is lost. The server dedupes by event id, so
 retries never create duplicates.
 
 **Setup** (details in [`deploy/webhost/README.md`](deploy/webhost/README.md)):
-1. Upload [`deploy/webhost/speedkam_receiver.php`](deploy/webhost/speedkam_receiver.php)
-   to your domain and set a long random `$SECRET` in it.
+1. Upload the three PHP files in [`deploy/webhost/`](deploy/webhost/) to your
+   domain, and in
+   [`speedkam_config.php`](deploy/webhost/speedkam_config.php) set a long random
+   `$SECRET` and a `$DASHBOARD_PASSWORD`.
 2. In `config.yaml` under `backup:` set `enabled: true`, the `url`, and the same
    `secret`.
 3. Watch the dashboard's **backup** pill go to `synced`. To push records that
@@ -110,6 +112,35 @@ python tools/backfill_sync.py
 
 > Keep `backup.secret` private and use an `https://` URL. If you keep this
 > project in git, don't commit a real secret in `config.yaml`.
+
+For a **complete** off-site archive, also set `backup.mirror_all: true` — see
+[Making the off-site copy a full historical archive](#making-the-off-site-copy-a-full-historical-archive).
+
+---
+
+## Off-site dashboard & remote control
+
+The web host isn't just storage — [`speedkam_dashboard.php`](deploy/webhost/speedkam_dashboard.php)
+is a **password-protected web UI on your own domain** that reads the mirrored
+data, so you can see everything from anywhere and it keeps working even if the
+camera is taken. It shows an online/offline pill with the camera's last check-in,
+today/week/month counts (with over-limit tallies), and a gallery of passes with
+snapshot thumbnails and speeder clips — media served through an authenticated
+proxy, never public.
+
+It also does **basic remote control**. Your camera lives behind your home router,
+so the host can't reach *in* to it. Instead the camera **checks in** every
+`control.poll_seconds` (`control.enabled: true`), reporting status and pulling any
+settings you changed on the dashboard. So when you adjust the SpeedKapture
+threshold on the website, the camera picks it up on its next check-in a few
+seconds later — no port-forwarding, nothing about your home network exposed.
+Remote and on-LAN edits don't fight: changes carry a revision number and are only
+re-applied when it advances (and that survives a camera reboot).
+
+This is the recommended shape for a camera in the yard: the **Pi does all the
+work** (capture, speed, recognition) and mirrors finished results home; the
+off-site host **stores, displays, and relays your control** — plain PHP, no
+Python or special server needed.
 
 ---
 
@@ -185,12 +216,18 @@ captured (sub-SpeedKapture) passes too.
 
 ### Offloading recognition (defer the YOLO to another machine)
 
+> **You probably don't need this.** On a low-traffic road (a private drive, a
+> quiet street) the Pi runs YOLO **once per car**, with long gaps between cars,
+> so inline recognition (`recognition.defer: false`) is plenty and keeps the
+> whole system to just the Pi + your web host. Deferral only earns its keep on a
+> **busy** road where per-pass inference can't keep up with back-to-back cars.
+
 The YOLO type/make/model stage is the expensive part; colour and speed are
 cheap. You can split them: let the Pi capture video, measure speed, estimate
 colour and save images in real time, then run YOLO **later on a beefier box**
 that reads those saved images and fills the attributes in.
 
-Turn it on with two config knobs (already set on the golden image):
+Turn it on with two config knobs:
 
 ```yaml
 recognition:
@@ -268,8 +305,9 @@ touch:
 | `retention.local_days` | Auto-delete local clips older than N days (once backed up) |
 | `backup.mirror_all` | Mirror every counted pass off-site (row + snapshot), not just captured clips — full historical archive |
 | `backup.remote_retention_days` | Auto-delete off-site clips older than N days |
+| `control.enabled` | Camera checks in with the off-site host for liveness + settings you change on the dashboard |
 | `recognition.enabled` | Best-effort vehicle type/make/model/year/colour (needs `ultralytics`) |
-| `recognition.defer` | Offload YOLO: Pi does colour only, `tools/recognize_worker.py` fills type/make/model later |
+| `recognition.defer` | Offload YOLO to another machine (busy roads only) — keep `false` for a low-traffic drive |
 | `display.show_window` | `false` for headless Pi deployment |
 
 ---
@@ -392,8 +430,10 @@ deploy/
     firstboot.sh              Per-clone identity reset (hostname/SSH keys/machine-id)
     speedkam-firstboot.service  Runs firstboot.sh once on each clone
     README.md                 Capture + shrink + clone workflow
-  webhost/             Off-site backup receiver for your domain
-    speedkam_receiver.php      Drop-in PHP endpoint (mirrors CSV + media)
+  webhost/             Off-site host: backup receiver + web dashboard
+    speedkam_config.php        Shared settings (secret + dashboard password)
+    speedkam_receiver.php      Camera endpoint (uploads + heartbeat + settings)
+    speedkam_dashboard.php     Password-gated web UI: view records + control camera
     htaccess-for-data-folder   Protect the backup folder from public access
     README.md                  Web-host setup guide
 src/speedkam/
@@ -410,6 +450,7 @@ src/speedkam/
   pipeline.py          Ties it all together
   web.py               Flask dashboard + pipeline runner thread
   sync.py              Off-site backup uploader (disk-queued, retrying)
+  remotecontrol.py     Pull-based remote control + heartbeat to the off-site host
   webui/               dashboard.html, calibrate.html
 ```
 

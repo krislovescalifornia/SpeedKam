@@ -87,8 +87,25 @@ class SpeedCamera:
         self.state = RuntimeState(
             cfg["recording"].get("state_file", "captures/runtime.json"),
             {"speedkapture_threshold":
-                float(cfg["recording"].get("speedkapture_threshold", 0) or 0)},
+                float(cfg["recording"].get("speedkapture_threshold", 0) or 0),
+             # Last off-site settings revision we've applied (see RemoteControl).
+             "remote_rev": None},
         )
+
+        # Optional pull-based remote control: check in with the off-site host and
+        # adopt any settings changed on its dashboard. Reuses the backup host.
+        self.remote = None
+        control = cfg.get("control", {})
+        if control.get("enabled") and backup.get("url") and backup.get("secret"):
+            from .remotecontrol import RemoteControl
+            self.remote = RemoteControl(
+                control, backup["url"], backup["secret"], self,
+                verify_tls=backup.get("verify_tls", True),
+                timeout=backup.get("timeout", 15),
+            )
+        elif control.get("enabled"):
+            print("[SpeedKam] control.enabled but backup url/secret missing -> "
+                  "remote control disabled.")
 
         # --- live stats, read by the web dashboard -------------------------
         self.last_event = None        # dict describing the most recent reading
@@ -149,6 +166,8 @@ class SpeedCamera:
         self.running = True
         if self.sync is not None:
             self.sync.start()
+        if self.remote is not None:
+            self.remote.start()
         self.retention.start()
         where = "window" if show else "web/headless"
         print(f"[SpeedKam] Running ({where}). Ctrl+C to stop.")
@@ -192,6 +211,8 @@ class SpeedCamera:
             self.running = False
             if self.sync is not None:
                 self.sync.stop()
+            if self.remote is not None:
+                self.remote.stop()
             self.retention.stop()
             self.camera.release()
             if show:

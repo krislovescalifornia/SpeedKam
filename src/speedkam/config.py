@@ -97,6 +97,17 @@ DEFAULTS = {
         # This is a separate knob from retention.local_days on purpose.
         "remote_retention_days": 0,
     },
+    "control": {
+        # Pull-based remote control + heartbeat. The camera periodically POSTs
+        # its status to the SAME off-site host as backup (reusing backup.url +
+        # backup.secret) and receives any settings the operator changed on the
+        # off-site dashboard, applying them. This is how you adjust a camera
+        # that lives behind home NAT -- it reaches out; nothing reaches in.
+        # Needs backup.enabled with a valid url + secret.
+        "enabled": False,
+        # How often the camera checks in / pulls settings (seconds).
+        "poll_seconds": 30,
+    },
     "recognition": {
         # Optional, best-effort vehicle attributes (type/make/model/year/color).
         # Fully optional: with this off, or ultralytics/torch not installed,

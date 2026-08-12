@@ -1,83 +1,120 @@
-# SpeedKam off-site backup — web host setup
+# SpeedKam off-site host — setup
 
-This mirrors every recorded event (CSV row + snapshot + video clip) from the
-camera to a web domain you own, so records survive if the camera is stolen or
-damaged. The camera keeps everything locally too; this is a second copy.
+Your camera mirrors every pass (CSV row + snapshot, plus a video clip for
+speeders) to a web domain you own, and you view it all from a password-protected
+**dashboard** on that same domain. So even if the camera is stolen or damaged,
+the records — and a live "is it still online?" view — survive off-site.
 
-## 1. Put the receiver on your site
+Three PHP files work together, all in one folder:
 
-Upload `speedkam_receiver.php` to your domain, e.g. so it is reachable at:
+| File | Role |
+|---|---|
+| `speedkam_config.php` | Shared settings (secret, dashboard password, data dir). Edit this one. |
+| `speedkam_receiver.php` | The endpoint the camera POSTs to (uploads + heartbeat + settings). |
+| `speedkam_dashboard.php` | The human web UI: view records, control the camera. |
+
+## 1. Upload the files
+
+Put all three into the same folder on your domain, e.g. reachable at:
 
     https://yourdomain.example/speedkam/speedkam_receiver.php
+    https://yourdomain.example/speedkam/speedkam_dashboard.php
 
 Requirements: any host that runs **PHP** and allows **file uploads** (typical
-shared/cPanel hosting is fine). For video clips, raise the upload limits — put a
-`.user.ini` or `php.ini` next to the script with:
+shared/cPanel hosting is fine — no Python or special server needed; the camera
+does all the video/speed/recognition work). For video clips, raise the upload
+limits — put a `.user.ini` or `php.ini` next to the scripts with:
 
     upload_max_filesize = 64M
     post_max_size       = 80M
 
-## 2. Set a shared secret
+## 2. Set the secret and the dashboard password
 
-Open `speedkam_receiver.php` and change `$SECRET` to a long random string.
-Put the **same** value in the camera's `config.yaml`:
+Open **`speedkam_config.php`** and set two values:
+
+```php
+$SECRET             = '<long random string>';   // the CAMERA authenticates with this
+$DASHBOARD_PASSWORD = '<a different password>';  // YOU type this to view the dashboard
+```
+
+Put the **same** `$SECRET` in the camera's `config.yaml`:
 
 ```yaml
 backup:
   enabled: true
   url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
   secret: "<the same long random string>"
+control:
+  enabled: true      # lets you change camera settings from the dashboard
 ```
 
-Generate one with, e.g.:
+Generate a strong secret with:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
+The dashboard **refuses to load** while `$DASHBOARD_PASSWORD` is still the
+placeholder, so you can't accidentally publish your driveway footage unprotected.
+
 ## 3. Protect the data folder
 
-Backups land in `speedkam_data/` next to the script (`events.csv` + `media/`).
-Copy the included `htaccess-for-data-folder` to `speedkam_data/.htaccess` (the
-script also writes a deny rule automatically). This stops the public from
-browsing your backups. Access them via SFTP/your host's file manager.
+Backups land in `speedkam_data/` next to the scripts. Copy the included
+`htaccess-for-data-folder` to `speedkam_data/.htaccess` (the receiver also writes
+a deny rule automatically). This stops the public from browsing your backups
+directly — the dashboard serves snapshots and clips through an **authenticated
+proxy** instead, so media is only viewable once you've logged in.
 
-> Use **HTTPS** for the URL so the secret and footage are encrypted in transit.
-> The secret only authorizes uploads; anyone with it could POST data, so keep it
-> private and rotate it if leaked (update both places).
+> Use **HTTPS** so the secret, the password, and the footage are encrypted in
+> transit. Keep the secret private; rotate it (in both places) if it leaks.
 
 ## 4. Verify
 
-Open the receiver URL in a browser — it now shows a **health page**: a green
-"Online" status with storage-writable, secret-configured, and upload-limit
-checks. It never reveals the secret or any recorded data, so it's safe to leave
-public. For monitoring/uptime tools, add `?format=json` (or send
-`Accept: application/json`) — it returns `{"ok":true,...}` with HTTP 200 when
-healthy, or 503 if storage isn't writable / the secret is still the placeholder.
+- **Receiver health:** open the receiver URL in a browser — it shows a green
+  "Online" status page (storage-writable, secret-configured, upload limits). It
+  reveals no secret or data, so it's safe to leave public. Add `?format=json`
+  for a monitoring probe (`{"ok":true,...}`, HTTP 200 healthy / 503 if not).
+- **Dashboard:** open the dashboard URL, sign in with `$DASHBOARD_PASSWORD`.
+  Until the camera has sent data it'll be empty; once it runs you'll see counts,
+  a gallery of passes, and an online/offline pill with the last check-in time.
 
-    https://yourdomain.example/speedkam/speedkam_receiver.php          -> status page
-    https://yourdomain.example/speedkam/speedkam_receiver.php?format=json
-
-On the camera, run `python serve.py` and watch the dashboard's **backup** pill —
-it shows `synced → yourdomain` when the queue is empty, or `N queued` with the
-error on hover if it can't reach the server. To push all pre-existing records
-(first-time backup or after downtime), run:
+On the camera, run `python serve.py` (or the systemd service). To push all
+pre-existing records off-site (first-time backup or after downtime):
 
 ```bash
 python tools/backfill_sync.py
 ```
 
+## Remote control (how it reaches a camera behind home NAT)
+
+Your camera sits behind your home router, so the host can't connect *in* to it.
+Control flows the other way: the camera **checks in** every `control.poll_seconds`
+(POST `action=sync`), reporting its status and pulling any settings you changed
+on the dashboard. So when you set a new SpeedKapture threshold on the website, it
+takes effect on the camera's next check-in (a few seconds later) — no
+port-forwarding, nothing about your home network exposed.
+
+The dashboard writes your desired settings to `desired.json` with a revision
+number; the camera only re-applies when that number changes, so your on-camera
+(LAN) dashboard tweaks aren't fought over between remote edits.
+
 ## Layout on the server
 
 ```
 speedkam/
-  speedkam_receiver.php
-  speedkam_data/            (created automatically; keep private)
-    events.csv              mirror of the camera's event log (+ received_at)
-    media/YYYY-MM-DD/*.jpg  snapshots
-    media/YYYY-MM-DD/*.mp4  clips
-    .index/                 per-event markers (dedupe; safe to keep)
+  speedkam_config.php        edit: secret + dashboard password
+  speedkam_receiver.php      camera upload / heartbeat endpoint
+  speedkam_dashboard.php     the web UI you open in a browser
+  speedkam_data/             (created automatically; keep private)
+    events.csv               mirror of the camera's event log (+ received_at)
+    media/YYYY-MM-DD/*.jpg    snapshots
+    media/YYYY-MM-DD/*.mp4    clips (speeders)
+    status.json              latest camera heartbeat (liveness + counts)
+    desired.json             settings you've queued for the camera
+    .index/                  per-event dedupe markers (safe to keep)
 ```
 
-Retries are idempotent: the server dedupes by event id, so re-sending the same
-event never creates duplicates.
+Uploads are idempotent: the server dedupes by event id, so re-sending the same
+event never creates duplicates. Deferred attributes (make/model, on a busy-road
+setup) arrive later via the receiver's `enrich` action; on a low-traffic drive
+the camera fills them in before uploading, so you won't need that.
