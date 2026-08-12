@@ -39,11 +39,15 @@ DEFAULTS = {
         "direction_negative": "inbound",
         # Center-band measurement gate: only time a vehicle while its ground
         # point is inside this band of the frame (fractions of width/height).
-        # Speeds are fit from in-band samples only. Off by default.
+        # Speeds are fit from in-band samples only. On by default for the
+        # side-on (camera parallel to the road) deployment this fleet uses:
+        # the central 40% keeps speed error low where the pixels->meters map is
+        # trustworthy, dropping the lens-distorted edges. Tuned against a
+        # synthetic side-on clip (tools/tune_measure_band.py); re-tune per lens.
         "measure_band": {
-            "enabled": False,
-            "x_min": 0.2,
-            "x_max": 0.8,
+            "enabled": True,
+            "x_min": 0.3,
+            "x_max": 0.7,
             "y_min": 0.0,
             "y_max": 1.0,
         },
