@@ -106,7 +106,14 @@ DEFAULTS = {
     },
     "display": {"show_window": True, "draw_debug": True},
     "logging": {"csv_file": "captures/events.csv"},
-    "web": {"host": "0.0.0.0", "port": 8080},
+    "web": {
+        "host": "0.0.0.0",
+        "port": 8080,
+        # Optional HTTP Basic Auth for the LAN dashboard. Off unless a password
+        # is set (put the real one in config.local.yaml). When set, every request
+        # -- pages, APIs, the live stream, and /captures -- requires it.
+        "auth": {"username": "admin", "password": ""},
+    },
     "backup": {
         "enabled": False,
         "url": "",

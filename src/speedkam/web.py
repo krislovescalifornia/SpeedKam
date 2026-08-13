@@ -11,6 +11,7 @@ phone/laptop -- browse to http://<pi-ip>:8080.
 from __future__ import annotations
 
 import csv
+import hmac
 import io
 import threading
 from pathlib import Path
@@ -244,9 +245,41 @@ def _tally(counts, key):
         counts[key] = counts.get(key, 0) + 1
 
 
+# ----------------------------------------------------------------------- auth
+def auth_enabled(auth_cfg) -> bool:
+    """Auth is active only when a non-empty password is configured."""
+    return bool(str((auth_cfg or {}).get("password") or ""))
+
+
+def _install_auth(app, auth_cfg):
+    """Optionally gate the whole app behind HTTP Basic Auth.
+
+    Off by default (no password set) so the LAN dashboard works as before. When
+    a password is configured (put it in config.local.yaml, not config.yaml), the
+    browser prompts once and then sends credentials for every request -- pages,
+    APIs, the MJPEG stream, and /captures alike -- so no front-end changes are
+    needed. Credentials are compared in constant time.
+    """
+    if not auth_enabled(auth_cfg):
+        return
+    username = str(auth_cfg.get("username") or "admin")
+    password = str(auth_cfg.get("password"))
+
+    @app.before_request
+    def _require_auth():
+        a = request.authorization
+        if (a is not None and (a.type or "").lower() == "basic"
+                and hmac.compare_digest(a.username or "", username)
+                and hmac.compare_digest(a.password or "", password)):
+            return None
+        return Response("Authentication required.", 401,
+                        {"WWW-Authenticate": 'Basic realm="SpeedKam"'})
+
+
 # --------------------------------------------------------------------- Flask
 def create_app(runner: Runner) -> Flask:
     app = Flask(__name__)
+    _install_auth(app, (runner.cfg.get("web") or {}).get("auth"))
 
     @app.route("/")
     def index():

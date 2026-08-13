@@ -193,6 +193,14 @@ web:
   # host 0.0.0.0 = reachable from other devices on your LAN (phone/laptop).
   host: 0.0.0.0
   port: 8080
+  # Optional HTTP Basic Auth. Leave password empty for an open dashboard (fine on
+  # a trusted home LAN). Set a password to require login for EVERYTHING -- pages,
+  # APIs, the live stream, and captured media. Put the real password in
+  # config.local.yaml (it's a secret), not here. Recommended if the camera shares
+  # a network with devices/people you don't fully trust.
+  auth:
+    username: admin
+    password: ""
 
 backup:
   # Off-site backup: mirror every event (CSV row + snapshot + clip) to a web

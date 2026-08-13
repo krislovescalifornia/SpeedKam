@@ -80,6 +80,23 @@ It prints a URL like `http://192.168.1.42:8080`. Open it on any device on the
 same network. `run.py` (the desktop window) still works and is handy for quick
 local checks; `serve.py` is what the boot service runs on the Pi.
 
+> **Password-protect the dashboard (optional).** By default the dashboard is
+> open — fine on a trusted home LAN. To require a login for everything (pages,
+> APIs, live stream, and captured media), set a `web.auth.password` in
+> `config.local.yaml` (it's a secret, so it stays out of git):
+>
+> ```yaml
+> web:
+>   auth:
+>     username: admin
+>     password: "a-long-password"
+> ```
+>
+> The camera then uses HTTP Basic Auth; the startup banner shows whether the
+> dashboard is `password-protected` or `OPEN`. Recommended if the camera shares a
+> network with devices or people you don't fully trust. Use HTTPS (e.g. behind a
+> reverse proxy) if you expose it beyond the LAN.
+
 The dashboard has:
 - **Live view** — the annotated camera stream (boxes, speeds, calibration zone).
 - **Latest reading** and **stats** — last speed, vehicle count, over-limit count.

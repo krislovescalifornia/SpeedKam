@@ -15,3 +15,10 @@
 backup:
   url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
   secret: "CHANGE-ME-to-a-long-random-string"
+
+# Optional: password-protect the LAN dashboard (HTTP Basic Auth). Uncomment and
+# set a password to require login for the dashboard, APIs, live stream, and media.
+# web:
+#   auth:
+#     username: admin
+#     password: "CHANGE-ME-dashboard-password"

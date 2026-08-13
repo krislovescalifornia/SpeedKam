@@ -65,7 +65,7 @@ def serve_main(argv=None):
     ap.add_argument("--port", type=int)
     args = ap.parse_args(argv)
 
-    from .web import Runner, create_app  # deferred: imports cv2/flask
+    from .web import Runner, auth_enabled, create_app  # deferred: imports cv2/flask
 
     cfg = load_config(args.config)
     if args.source is not None:
@@ -81,7 +81,9 @@ def serve_main(argv=None):
     app = create_app(runner)
 
     shown = _lan_ip() if host in ("0.0.0.0", "::") else host
-    print(f"\n[SpeedKam] Dashboard: http://{shown}:{port}    (Ctrl+C to stop)\n")
+    protected = auth_enabled((cfg.get("web") or {}).get("auth"))
+    lock = "password-protected" if protected else "OPEN (no auth -- trusted LAN only)"
+    print(f"\n[SpeedKam] Dashboard: http://{shown}:{port}  [{lock}]    (Ctrl+C to stop)\n")
     try:
         app.run(host=host, port=port, threaded=True, debug=False,
                 use_reloader=False)
