@@ -2,6 +2,12 @@
 __pycache__/
 *.pyc
 
+# Python packaging / build artifacts
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
 # Local, untracked config overlays holding real secrets / per-deployment values.
 # These are deep-merged over the tracked config.yaml at load time. Never commit.
 config.local.yaml

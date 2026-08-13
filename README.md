@@ -34,7 +34,9 @@ along the whole measurement zone, and keep the camera rigidly mounted.
 ```bash
 # 1. Create the environment (already done once; repeat on a new machine)
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install -e .        # installs the package + deps
+#   add recognition (YOLO, AGPL, heavy):  pip install -e ".[recognition]"
+#   plain deps without packaging instead:  pip install -r requirements.txt
 
 # 2. Find your webcam index and put it in config.yaml (camera.source)
 .venv\Scripts\python tools\camera_check.py
@@ -51,6 +53,12 @@ python -m venv .venv
 
 Press `q` in the preview window (or `Ctrl+C`) to stop. Captures land in
 `captures/` with a running log in `captures/events.csv`.
+
+> **Installed vs. uninstalled.** After `pip install -e .` you also get two
+> commands — `speedkam` (desktop/headless) and `speedkam-serve` (web dashboard) —
+> equivalent to `python run.py` / `python serve.py`. The `run.py`/`serve.py`
+> launchers keep working **without** any install, which is how the Raspberry Pi
+> runs from apt-provided packages (no pip).
 
 ---
 
@@ -205,7 +213,9 @@ each pass with what it can determine and logs it to the CSV + dashboard:
 - **Colour** is estimated from the vehicle crop with a cheap OpenCV analysis —
   no model needed, so it works even on a bare Pi.
 - **Type** (car/truck/bus/motorcycle) comes from a YOLO model (`recognition.model`,
-  auto-downloaded) when `ultralytics` is installed (`pip install ultralytics`).
+  auto-downloaded) when `ultralytics` is installed — `pip install -e ".[recognition]"`
+  (or `pip install ultralytics`). Note this pulls in **AGPL-3.0** code; see
+  [License](#license).
 - **Make / model / year** only appear if you point
   `recognition.make_model_weights` at a fine-grained classifier — otherwise they
   stay blank. That's the "when available" contract: missing attributes never
