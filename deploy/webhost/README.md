@@ -70,6 +70,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 The dashboard **refuses to load** while `$DASHBOARD_PASSWORD` is still the
 placeholder, so you can't accidentally publish your driveway footage unprotected.
+Login is also **rate-limited**: after 5 wrong passwords from one IP the dashboard
+locks that address out for 15 minutes, to slow down guessing.
 
 ## 3. Protect the data folder
 

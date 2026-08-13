@@ -27,6 +27,64 @@ $configured = ($DASHBOARD_PASSWORD !== 'CHANGE-ME-dashboard-password'
 function is_authed() { return !empty($_SESSION['speedkam_auth']); }
 function self_path() { return strtok($_SERVER['REQUEST_URI'], '?'); }
 
+// --- login rate limiting ----------------------------------------------------
+// Slow down password guessing: after LOGIN_MAX_FAILS bad attempts from one IP
+// within LOGIN_WINDOW seconds, lock that IP out for LOGIN_LOCKOUT seconds. State
+// is a small JSON file in the (non-public) data dir. Keyed on REMOTE_ADDR only
+// -- X-Forwarded-For is client-spoofable and must not gate security.
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_WINDOW    = 900;   // count bad attempts over a 15-minute window
+const LOGIN_LOCKOUT   = 900;   // lock out for 15 minutes once tripped
+
+function login_client_ip() { return $_SERVER['REMOTE_ADDR'] ?? 'unknown'; }
+
+// Seconds remaining on a lockout for this IP, or 0 if not locked.
+function login_locked_seconds($dir, $ip) {
+    $file = "$dir/.login_throttle.json";
+    if (!is_file($file)) return 0;
+    $map = json_decode(@file_get_contents($file), true);
+    $until = is_array($map) ? (int)($map[$ip]['locked_until'] ?? 0) : 0;
+    $left = $until - time();
+    return $left > 0 ? $left : 0;
+}
+
+// Record the outcome of a login attempt: success clears the IP's counter, a
+// failure increments it (and may start a lockout).
+function login_record($dir, $ip, $success) {
+    if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
+    $fh = @fopen("$dir/.login_throttle.json", 'c+');
+    if ($fh === false) return;   // best-effort; never block login on IO failure
+    if (flock($fh, LOCK_EX)) {
+        $map = json_decode(stream_get_contents($fh), true);
+        if (!is_array($map)) { $map = []; }
+        $now = time();
+        // Drop stale, unlocked entries so the file can't grow unbounded.
+        foreach ($map as $k => $v) {
+            if ((int)($v['locked_until'] ?? 0) < $now
+                && ($now - (int)($v['first'] ?? 0)) > LOGIN_WINDOW) {
+                unset($map[$k]);
+            }
+        }
+        if ($success) {
+            unset($map[$ip]);
+        } else {
+            $e = $map[$ip] ?? ['fails' => 0, 'first' => $now, 'locked_until' => 0];
+            if (($now - (int)$e['first']) > LOGIN_WINDOW) {
+                $e['fails'] = 0; $e['first'] = $now;   // window elapsed -> reset
+            }
+            $e['fails'] = (int)$e['fails'] + 1;
+            if ($e['fails'] >= LOGIN_MAX_FAILS) { $e['locked_until'] = $now + LOGIN_LOCKOUT; }
+            $map[$ip] = $e;
+        }
+        ftruncate($fh, 0);
+        rewind($fh);
+        fwrite($fh, json_encode($map));
+        fflush($fh);
+        flock($fh, LOCK_UN);
+    }
+    fclose($fh);
+}
+
 // --- logout -----------------------------------------------------------------
 if (isset($_GET['logout'])) {
     $_SESSION = [];
@@ -38,13 +96,22 @@ if (isset($_GET['logout'])) {
 // --- login ------------------------------------------------------------------
 $login_error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
-    if ($configured && hash_equals($DASHBOARD_PASSWORD, (string)$_POST['password'])) {
+    $ip = login_client_ip();
+    $locked = login_locked_seconds($DATA_DIR, $ip);
+    if ($locked > 0) {
+        $login_error = 'Too many attempts. Try again in '
+            . ceil($locked / 60) . ' min.';
+    } elseif ($configured
+        && hash_equals($DASHBOARD_PASSWORD, (string)$_POST['password'])) {
+        login_record($DATA_DIR, $ip, true);      // clear the counter
         session_regenerate_id(true);
         $_SESSION['speedkam_auth'] = true;
         header('Location: ' . self_path());
         exit;
+    } else {
+        login_record($DATA_DIR, $ip, false);     // count the failure
+        $login_error = 'Incorrect password.';
     }
-    $login_error = 'Incorrect password.';
 }
 
 // --- authenticated media proxy (serves files from the .htaccess-denied dir) --
