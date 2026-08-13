@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Configuration loading with sensible defaults and dotted attribute access."""
 from __future__ import annotations
 

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Optional lens undistortion, applied to every captured frame.
 
 A wide-angle lens bends straight lines (barrel distortion). That bending

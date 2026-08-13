@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Off-site backup: mirror each event to a web domain you own.
 
 Every recorded event (CSV metadata + snapshot + clip) is POSTed over HTTPS to a

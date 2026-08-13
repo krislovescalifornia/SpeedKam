@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Pull-based remote control + heartbeat for a camera behind home NAT.
 
 The off-site host can't reach *into* your home network, so control flows the

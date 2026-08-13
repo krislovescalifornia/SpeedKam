@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Runtime-adjustable settings that survive a restart.
 
 Some knobs (the SpeedKapture capture threshold) are meant to be changed live

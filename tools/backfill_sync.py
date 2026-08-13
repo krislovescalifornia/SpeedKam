@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Push all existing local records to the off-site backup.
 
 Use this for the first-time backup, or to catch up after the camera was offline.

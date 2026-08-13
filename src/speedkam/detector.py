@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Vehicle detection by background subtraction (MOG2).
 
 This is deliberately lightweight so it runs in real time on a Raspberry Pi with

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """SpeedKam -- a camera-based vehicle speed estimator for private roads.
 
 Runs on a Windows test rig with a USB webcam and moves unchanged to a

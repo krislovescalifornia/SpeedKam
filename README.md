@@ -478,3 +478,22 @@ This is a monitoring/measurement tool for **your own private road**. It is not a
 calibrated legal-enforcement instrument. If you plan to record beyond your
 property or use footage against third parties, check your local laws on video
 recording and privacy first.
+
+## License
+
+Copyright (C) 2026 Kris Kling.
+
+SpeedKam is free software licensed under the **GNU Affero General Public License,
+version 3 or later (AGPL-3.0-or-later)** — see [`LICENSE`](LICENSE). Every source
+file carries an `SPDX-License-Identifier` header. The AGPL's network clause
+(section 13) means that if you run a modified version as a network service, you
+must offer its users the corresponding source.
+
+> **Why AGPL:** the optional vehicle-recognition feature depends on
+> [Ultralytics](https://github.com/ultralytics/ultralytics) (YOLO), which is
+> itself **AGPL-3.0**. Enabling `recognition.enabled: true` pulls that in, so the
+> project as a whole is AGPL to stay compatible. If you need a permissive
+> license, you must run with recognition **disabled** and remove the Ultralytics
+> dependency — the rest of the stack (OpenCV, NumPy, Flask, PyYAML, requests) is
+> permissively licensed. The `yolov8n.pt` weights are downloaded on demand and
+> are **not** distributed with this repository.

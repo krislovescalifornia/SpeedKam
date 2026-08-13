@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Ring-buffer video recorder + event logging.
 
 The pipeline pushes every captured frame into a rolling buffer that holds the

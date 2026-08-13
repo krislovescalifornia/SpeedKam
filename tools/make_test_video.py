@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate a synthetic road video + matching calibration to validate SpeedKam.
 
 We define a known ground-plane homography and drive a "car" along the road at a

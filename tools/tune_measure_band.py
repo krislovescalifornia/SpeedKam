@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tune the measurement gate against a video of known speed.
 
 It replays a video through the real detect -> track -> homography chain, takes

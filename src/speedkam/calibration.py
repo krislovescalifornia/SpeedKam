@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Ground-plane calibration via homography.
 
 The core idea of a fixed speed camera: the road surface is a flat plane. If we

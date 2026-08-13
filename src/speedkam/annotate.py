@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Overlay drawing for the live view and burned-in clip annotations."""
 from __future__ import annotations
 

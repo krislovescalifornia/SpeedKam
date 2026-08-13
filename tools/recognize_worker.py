@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Deferred (offloaded) vehicle recognition.
 
 Run this on a beefier machine (desktop / GPU box) against images the camera

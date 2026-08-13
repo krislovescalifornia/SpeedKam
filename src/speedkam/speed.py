@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Speed estimation from a track's metric samples.
 
 Given (t, X, Y) samples in real-world meters, estimate the vehicle's speed.

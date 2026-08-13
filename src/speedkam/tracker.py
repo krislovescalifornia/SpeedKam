@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Minimal multi-object tracker (greedy nearest-neighbour association).
 
 Associates detections across frames by proximity of their ground point (in

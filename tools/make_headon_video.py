@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate a synthetic HEAD-ON road video for tuning the head_on band preset.
 
 The companion to tools/make_sideon_video.py, for the other mounting: the camera

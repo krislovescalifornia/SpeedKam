@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Provision a fresh Raspberry Pi OS into a ready-to-clone SpeedKam node.
 #
 # Run this ONCE, on the Raspberry Pi you will turn into the golden master,

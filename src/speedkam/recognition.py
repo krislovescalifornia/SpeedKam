@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Optional, best-effort vehicle attribute recognition.
 
 Given a frame and a vehicle's bounding box, try to fill in:

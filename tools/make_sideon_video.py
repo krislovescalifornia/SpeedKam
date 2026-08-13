@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate a synthetic SIDE-ON road video for tuning the center-band gate.
 
 Unlike tools/make_test_video.py (a car receding down the road, straight up the

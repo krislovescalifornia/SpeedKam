@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Remove the SpeedKam systemd service.
 #     sudo bash deploy/uninstall-service.sh
 set -euo pipefail

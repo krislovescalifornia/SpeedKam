@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Install SpeedKam as a systemd service so it autoruns on boot.
 #
 # Usage (on the Raspberry Pi, from anywhere):

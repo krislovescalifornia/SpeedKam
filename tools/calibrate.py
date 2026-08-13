@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Interactive ground-plane calibration for SpeedKam.
 
 You do this ONCE, with the camera in its final mounted position. It builds the

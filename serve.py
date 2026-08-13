@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """SpeedKam web dashboard entry point.
 
 Runs the speed-camera pipeline AND a web UI (live view, recent clips, stats,

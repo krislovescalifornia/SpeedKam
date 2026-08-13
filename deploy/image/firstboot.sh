@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Runs ONCE on the first boot of every cloned SD card, then disables itself.
 #
 # A raw disk clone copies the master's identity onto every card. That's fine for
