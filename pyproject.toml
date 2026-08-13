@@ -60,3 +60,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 speedkam = ["webui/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Make `import speedkam` work in tests without requiring an install (CI-friendly).
+pythonpath = ["src"]
+addopts = "-q"
