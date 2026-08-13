@@ -1,5 +1,8 @@
 # SpeedKam
 
+[![CI](https://github.com/krislovescalifornia/SpeedKam/actions/workflows/ci.yml/badge.svg)](https://github.com/krislovescalifornia/SpeedKam/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
 A camera-based vehicle **speed camera** for a fixed location on a private road.
 It watches a road, detects passing vehicles, estimates their speed from
 real-world ground markers, and saves an annotated video clip + snapshot + a CSV
