@@ -9,7 +9,8 @@ Three PHP files work together, all in one folder:
 
 | File | Role |
 |---|---|
-| `speedkam_config.php` | Shared settings (secret, dashboard password, data dir). Edit this one. |
+| `speedkam_config.example.php` | Template. Copy to `speedkam_config.php` and edit that copy. |
+| `speedkam_config.php` | Your real shared settings (secret, dashboard password, data dir). Gitignored — never committed. |
 | `speedkam_receiver.php` | The endpoint the camera POSTs to (uploads + heartbeat + settings). |
 | `speedkam_dashboard.php` | The human web UI: view records, control the camera. |
 
@@ -30,6 +31,12 @@ limits — put a `.user.ini` or `php.ini` next to the scripts with:
 
 ## 2. Set the secret and the dashboard password
 
+Copy the template, then edit the copy (the real file is gitignored):
+
+```bash
+cp speedkam_config.example.php speedkam_config.php
+```
+
 Open **`speedkam_config.php`** and set two values:
 
 ```php
@@ -37,13 +44,20 @@ $SECRET             = '<long random string>';   // the CAMERA authenticates with
 $DASHBOARD_PASSWORD = '<a different password>';  // YOU type this to view the dashboard
 ```
 
-Put the **same** `$SECRET` in the camera's `config.yaml`:
+Put the **same** `$SECRET` in the camera's `config.local.yaml` (untracked
+overlay — copy it from `config.local.example.yaml`), not in `config.yaml`:
 
 ```yaml
 backup:
-  enabled: true
   url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
   secret: "<the same long random string>"
+```
+
+Then in the tracked `config.yaml`, just enable the features:
+
+```yaml
+backup:
+  enabled: true      # url/secret come from config.local.yaml
 control:
   enabled: true      # lets you change camera settings from the dashboard
 ```
@@ -102,7 +116,8 @@ number; the camera only re-applies when that number changes, so your on-camera
 
 ```
 speedkam/
-  speedkam_config.php        edit: secret + dashboard password
+  speedkam_config.example.php  template (tracked in git)
+  speedkam_config.php        your copy: secret + dashboard password (gitignored)
   speedkam_receiver.php      camera upload / heartbeat endpoint
   speedkam_dashboard.php     the web UI you open in a browser
   speedkam_data/             (created automatically; keep private)

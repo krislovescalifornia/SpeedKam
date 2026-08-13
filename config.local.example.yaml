@@ -1,0 +1,17 @@
+# =============================================================================
+# SpeedKam LOCAL overrides — template.
+#
+# Copy this to `config.local.yaml` (untracked; gitignored) and fill in your real
+# values. It is deep-merged OVER config.yaml at load time, so anything here wins.
+# Put secrets and per-deployment values here; keep config.yaml shareable.
+#
+#     cp config.local.example.yaml config.local.yaml
+#     # then edit config.local.yaml
+#
+# Generate a strong secret with:
+#     python -c "import secrets; print(secrets.token_urlsafe(32))"
+# and set the SAME value as $SECRET in the off-site host's speedkam_config.php.
+# =============================================================================
+backup:
+  url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
+  secret: "CHANGE-ME-to-a-long-random-string"

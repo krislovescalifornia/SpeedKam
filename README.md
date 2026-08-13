@@ -97,12 +97,12 @@ and retry automatically — nothing is lost. The server dedupes by event id, so
 retries never create duplicates.
 
 **Setup** (details in [`deploy/webhost/README.md`](deploy/webhost/README.md)):
-1. Upload the three PHP files in [`deploy/webhost/`](deploy/webhost/) to your
-   domain, and in
-   [`speedkam_config.php`](deploy/webhost/speedkam_config.php) set a long random
-   `$SECRET` and a `$DASHBOARD_PASSWORD`.
-2. In `config.yaml` under `backup:` set `enabled: true`, the `url`, and the same
-   `secret`.
+1. Upload the PHP files in [`deploy/webhost/`](deploy/webhost/) to your domain.
+   Copy `speedkam_config.example.php` to `speedkam_config.php` (gitignored) and
+   set a long random `$SECRET` and a `$DASHBOARD_PASSWORD`.
+2. Copy `config.local.example.yaml` to `config.local.yaml` (gitignored) and set
+   the `url` and the same `secret` there; in `config.yaml` under `backup:` just
+   set `enabled: true`.
 3. Watch the dashboard's **backup** pill go to `synced`. To push records that
    already exist locally (first-time backup / after downtime):
 
@@ -110,8 +110,9 @@ retries never create duplicates.
 python tools/backfill_sync.py
 ```
 
-> Keep `backup.secret` private and use an `https://` URL. If you keep this
-> project in git, don't commit a real secret in `config.yaml`.
+> Keep `backup.secret` private and use an `https://` URL. It lives in the
+> untracked `config.local.yaml` overlay (not `config.yaml`), so it never reaches
+> git — the tracked `config.yaml` only ever holds a placeholder.
 
 For a **complete** off-site archive, also set `backup.mirror_all: true` — see
 [Making the off-site copy a full historical archive](#making-the-off-site-copy-a-full-historical-archive).
@@ -411,7 +412,9 @@ one-time on-site calibration; nothing else is manual.
 ## Project layout
 
 ```
-config.yaml            Main configuration (commented)
+config.yaml            Main configuration (commented; secret-free, tracked)
+config.local.example.yaml  Template for the untracked secrets overlay
+config.local.yaml      Your real secrets/overrides (gitignored; merged over config.yaml)
 config.test.yaml       Config for the synthetic self-test
 run.py                 Entry point (desktop preview window)
 serve.py               Entry point (web dashboard) -- recommended
@@ -431,7 +434,8 @@ deploy/
     speedkam-firstboot.service  Runs firstboot.sh once on each clone
     README.md                 Capture + shrink + clone workflow
   webhost/             Off-site host: backup receiver + web dashboard
-    speedkam_config.php        Shared settings (secret + dashboard password)
+    speedkam_config.example.php  Template for the shared settings (tracked)
+    speedkam_config.php        Your copy: secret + dashboard password (gitignored)
     speedkam_receiver.php      Camera endpoint (uploads + heartbeat + settings)
     speedkam_dashboard.php     Password-gated web UI: view records + control camera
     htaccess-for-data-folder   Protect the backup folder from public access

@@ -1,6 +1,13 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Local, untracked config overlays holding real secrets / per-deployment values.
+# These are deep-merged over the tracked config.yaml at load time. Never commit.
+config.local.yaml
+*.local.yaml
+# The real off-site host config (copied from speedkam_config.example.php).
+deploy/webhost/speedkam_config.php
 captures/
 captures_test/
 **/.sync_queue/

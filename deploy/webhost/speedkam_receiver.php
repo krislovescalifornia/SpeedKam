@@ -8,8 +8,9 @@
  * if the camera is stolen or damaged.
  *
  * SETUP
- *  1. Edit speedkam_config.php: set $SECRET (must match config.yaml
- *     backup.secret) and $DASHBOARD_PASSWORD.
+ *  1. Copy speedkam_config.example.php to speedkam_config.php and set $SECRET
+ *     (must match backup.secret in the camera's config.local.yaml) and
+ *     $DASHBOARD_PASSWORD.
  *  2. Upload speedkam_config.php, this file, and speedkam_dashboard.php into the
  *     same folder. Make sure your host runs PHP and allows file uploads.
  *  3. For video clips, raise these in php.ini (or .htaccess/.user.ini):

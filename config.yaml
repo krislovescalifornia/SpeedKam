@@ -29,6 +29,31 @@ camera:
   # On many webcams exposure is in log2 seconds, e.g. -6 ~ 1/64s. Experiment.
   manual_exposure: -1
 
+  # Optional lens undistortion, applied to EVERY frame before detection and
+  # calibration. A wide-angle lens bends straight lines (barrel distortion),
+  # which corrupts the pixels->meters homography most at the frame edges --
+  # exactly where the measure_band gate already trims. Straightening the image
+  # first lets you widen (or drop) that band. Off by default.
+  #
+  # IMPORTANT: this changes pixel coordinates, so (re)build the calibration
+  # AFTER enabling or changing it -- the homography must be measured on the same
+  # (undistorted) frames it's later applied to.
+  #
+  # dist_coeffs is OpenCV order [k1, k2, p1, p2, k3] (k1 dominates; negative =
+  # barrel). Get real values from a checkerboard calibration; or start by nudging
+  # k1 until straight road edges look straight in the live view. Intrinsics are
+  # derived from fov_deg + frame size unless you set fx/fy/cx/cy explicitly.
+  undistort:
+    enabled: false
+    fov_deg: 70.0
+    fx: null
+    fy: null
+    cx: null
+    cy: null
+    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    # 0 = crop to valid pixels (no black border); 1 = keep all pixels.
+    alpha: 0.0
+
 detection:
   # Minimum blob area (pixels) to count as a vehicle. Tune to your framing:
   # too small -> triggers on birds/leaves; too large -> misses distant cars.
@@ -69,6 +94,48 @@ speed:
   direction_positive: "outbound"
   direction_negative: "inbound"
 
+  # --- Center-band measurement gate ----------------------------------------
+  # Only MEASURE speed while the vehicle's ground point is inside a central
+  # band of the frame; samples outside it are discarded before the speed fit.
+  # Why: with a side-on camera (mounted parallel to the road, traffic crossing
+  # L<->R) the pixels->meters mapping is most accurate dead-centre. Toward the
+  # left/right edges perspective foreshortening and lens distortion grow, so
+  # samples out there corrupt the reading. This gate times each car only across
+  # the well-mapped middle. Detection/tracking still run full-frame -- this only
+  # narrows which samples feed the speed estimate.
+  #
+  # Bounds are FRACTIONS of the frame (0 = left/top, 1 = right/bottom), so they
+  # are resolution-independent. When draw_debug is on, the excluded margins are
+  # shaded on the live view and the band is outlined in yellow.
+  measure_band:
+    enabled: true
+    # Which preset is active. Toggle live on the dashboard (Camera orientation):
+    #   parallel = camera beside the road, traffic crossing L<->R
+    #   head_on  = camera facing oncoming/receding traffic
+    orientation: parallel
+    # PARALLEL (side-on): a horizontal centre band -- the edges are where lens
+    # distortion/foreshortening bite. Tuned with tools/tune_measure_band.py
+    # against a synthetic side-on clip (30 mph, typical wide-angle lens):
+    # full-frame read +3.7%, frame edges +6-8%, this central 40% holds +2.0%.
+    # RE-TUNE per lens: python tools/make_sideon_video.py && python tools/tune_measure_band.py
+    parallel:
+      x_min: 0.3
+      x_max: 0.7
+      y_min: 0.0
+      y_max: 1.0
+    # HEAD-ON (receding): the car stays near centre-x and shrinks toward the
+    # vanishing point, where pixels-per-metre collapses and far readings become
+    # unreliable -- so measure in a near/mid VERTICAL band and drop the far top.
+    # Tuned with tools/tune_measure_band.py against a synthetic head-on clip:
+    # full-frame read +32%, this near/mid band (y 0.55-0.95) recovers -1.4%.
+    # RE-TUNE y_min/y_max to your framing (larger y = nearer the camera):
+    # python tools/make_headon_video.py && python tools/tune_measure_band.py --meta test_headon.meta.json
+    head_on:
+      x_min: 0.0
+      x_max: 1.0
+      y_min: 0.55
+      y_max: 0.95
+
 recording:
   enabled: true
   output_dir: captures
@@ -89,6 +156,11 @@ recording:
   # SpeedKapture of 35 captures a car doing 35.9 mph but not one doing 34.
   # 0 = capture every vehicle. You can also change this live on the dashboard.
   speedkapture_threshold: 25
+  # Save a lightweight JPEG for EVERY counted pass, even ones below the
+  # SpeedKapture threshold (which get no clip). Needed so the deferred
+  # recognition worker can fill in type/make/model for sub-threshold passes
+  # too -- there has to be an image on disk to look at. Cheap (one JPEG/pass).
+  always_snapshot: true
   # Dashboard-adjustable settings persist here (keeps config.yaml comments).
   state_file: captures/runtime.json
 
@@ -135,10 +207,18 @@ backup:
   # along on every clone). provision.sh refuses to build an image while the
   # secret is still the CHANGE-ME placeholder, so you can't ship a broken fleet.
   enabled: true
-  url: "https://kriskling.com/speedkam/speedkam_receiver.php"
-  secret: "CHANGE-ME-to-a-long-random-string"   # set on the master Pi (not in git)
+  # Real url + secret live in config.local.yaml (untracked; deep-merged over this
+  # file at load time). Keep the placeholders here so config.yaml stays shareable.
+  url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
+  secret: "CHANGE-ME-to-a-long-random-string"
   include_snapshots: true
   include_clips: true          # false = back up metadata + snapshots only
+  # Full historical mirror: back up EVERY counted pass off-site (its CSV row +
+  # snapshot), not just captured (above-SpeedKapture) clips. With this on, the
+  # remote holds a complete record, so when local retention trims old media the
+  # off-site copy still has everything. Clips still only exist above threshold
+  # (there's nothing to film below it) -- but every row and snapshot is mirrored.
+  mirror_all: true
   verify_tls: true             # keep true; only disable for self-signed hosts
   timeout: 30
   # If an upload fails (Pi offline), events queue on disk and retry every N s.
@@ -148,14 +228,32 @@ backup:
   # DIFFERENT knob from retention.local_days -- local and remote rotate apart.
   remote_retention_days: 0
 
+control:
+  # Pull-based remote control + heartbeat. The camera periodically checks in with
+  # the off-site host (reusing backup.url + backup.secret above), reports its
+  # status so the web dashboard shows liveness + counts even when you're away,
+  # and adopts any settings you changed on the dashboard (e.g. the SpeedKapture
+  # threshold). This is how you control a camera behind home NAT -- it reaches
+  # out; nothing has to reach in. Needs backup.enabled with a valid url/secret.
+  enabled: true
+  # How often the camera checks in / pulls settings (seconds).
+  poll_seconds: 30
+
 recognition:
   # Optional, best-effort vehicle attributes (type / make / model / year /
   # color). Fully optional: with this off -- or ultralytics/torch not installed
   # -- every pass is still counted and timed, attributes just stay blank.
   # Heavy on a Pi; enable once you've added a model and tested throughput.
   enabled: true
+  # OFFLOADED recognition. true = this node does NOT run the heavy YOLO models
+  # (color only), and a separate machine runs tools/recognize_worker.py later to
+  # fill in type/make/model. Only worth it on a BUSY road. For a low-traffic
+  # private drive keep this FALSE: the Pi recognizes each car inline (it only
+  # runs YOLO once per pass, with long gaps between cars), and nothing else has
+  # to run anywhere -- the off-site host just stores and displays the results.
+  defer: false
   # YOLO weights for vehicle TYPE (COCO classes: car/truck/bus/motorcycle).
-  # Downloaded automatically by ultralytics on first use.
+  # Used by the worker (ignored on a defer node). Downloaded by ultralytics.
   model: yolov8n.pt
   min_confidence: 0.35
   # Estimate the dominant body color from the crop (cheap, no model needed).

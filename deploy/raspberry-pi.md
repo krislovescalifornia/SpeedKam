@@ -110,16 +110,20 @@ Only a few keys change from the Windows test rig. Open `config.yaml` and set:
 | `recognition.enabled` | `false` **at first** | YOLO is the heavy part. Get speed working first, then decide (see [2.6](#26-optional-turn-on-vehicle-recognition)). |
 | `speed.speed_limit_kmh` | your limit | Used only to flag/annotate speeders. |
 | `speed.display_units` | `mph` or `kmh` | |
-| `backup.*` | your domain + secret | Only if you set up off-site backup (`deploy/webhost/README.md`). |
+| `backup.*` | your domain + secret | Set these in `config.local.yaml`, not here (see below). Only if you set up off-site backup (`deploy/webhost/README.md`). |
 
-> The shipped `config.yaml` has `recognition.enabled: true` and a real backup
-> secret. Turn recognition **off** for the first bring-up, and put your **own**
-> backup secret in. To keep your secret out of git (what the comment on the
-> `secret:` line refers to), tell git to ignore local changes to the file:
+> The shipped `config.yaml` has `recognition.enabled: true` and **placeholder**
+> backup credentials. Turn recognition **off** for the first bring-up. Put your
+> **real** backup url + secret in an untracked overlay so they never reach git:
 >
 > ```bash
-> git update-index --skip-worktree config.yaml
+> cp config.local.example.yaml config.local.yaml
+> # edit config.local.yaml -> backup.url + backup.secret
 > ```
+>
+> `config.local.yaml` is deep-merged over `config.yaml` at load time and is
+> gitignored, so `config.yaml` stays a shareable, secret-free template. On a
+> golden-master Pi, fill it in before imaging — it rides along on every clone.
 
 ### 2.3 Sanity-check the pipeline (optional but reassuring)
 

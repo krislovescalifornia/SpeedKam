@@ -184,15 +184,27 @@ def _wrap(d):
     return d
 
 
+def _load_yaml(p: Path) -> dict:
+    if p.exists():
+        return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    return {}
+
+
 def load_config(path: str | Path | None) -> Section:
     """Load a YAML config file merged over built-in defaults.
 
     A missing or None path just returns the defaults, so the app is runnable
     out of the box.
+
+    If a sibling ``*.local.yaml`` overlay exists next to the config file
+    (``config.yaml`` -> ``config.local.yaml``), it is deep-merged on TOP of the
+    main file. That overlay is untracked (gitignored) and is where real secrets
+    and per-deployment overrides live, so the tracked config stays shareable.
     """
-    user = {}
+    merged = DEFAULTS
     if path:
         p = Path(path)
-        if p.exists():
-            user = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return _wrap(_deep_merge(DEFAULTS, user))
+        merged = _deep_merge(merged, _load_yaml(p))
+        local = p.with_name(f"{p.stem}.local{p.suffix}")
+        merged = _deep_merge(merged, _load_yaml(local))
+    return _wrap(merged)

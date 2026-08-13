@@ -65,22 +65,27 @@ fi
 echo "   core stack imports OK."
 
 # --- guard: don't ship a fleet with a placeholder backup secret -------------
-# Every clone inherits config.yaml's backup block. If backup is enabled but the
-# url/secret were never filled in, all nodes would queue failing uploads. Catch
-# it here, before the image is captured.
+# The tracked config.yaml only ever holds placeholders; the REAL url/secret live
+# in the untracked config.local.yaml overlay, which rides along on every clone.
+# If backup is enabled but that overlay is missing or still has placeholders, all
+# nodes would queue failing uploads -- catch it here, before the image is taken.
 CONFIG="${PROJECT_DIR}/config.yaml"
+LOCAL="${PROJECT_DIR}/config.local.yaml"
 if grep -Eq '^[[:space:]]*enabled:[[:space:]]*true' "${CONFIG}" 2>/dev/null && \
    grep -q 'backup:' "${CONFIG}" 2>/dev/null; then
-  if grep -q 'CHANGE-ME-to-a-long-random-string' "${CONFIG}" || \
-     grep -q 'yourdomain.example' "${CONFIG}"; then
+  if [[ ! -f "${LOCAL}" ]] \
+     || ! grep -q 'secret:' "${LOCAL}" \
+     || grep -q 'CHANGE-ME-to-a-long-random-string' "${LOCAL}" \
+     || grep -q 'yourdomain.example' "${LOCAL}"; then
     echo >&2
-    echo "ERROR: backup is enabled in config.yaml but still has placeholder" >&2
-    echo "       url/secret. Every cloned node shares this backup config, so" >&2
-    echo "       set the REAL values on this master before imaging:" >&2
+    echo "ERROR: backup is enabled but config.local.yaml has no real url/secret." >&2
+    echo "       Every cloned node shares this overlay, so set the REAL values" >&2
+    echo "       on this master before imaging. Create config.local.yaml from" >&2
+    echo "       config.local.example.yaml and fill in:" >&2
     echo "         - backup.url    -> your receiver URL" >&2
-    echo "         - backup.secret -> the same long random string as the PHP" >&2
-    echo "       Then re-run this script. (Or set backup.enabled: false to ship" >&2
-    echo "       without off-site backup.)" >&2
+    echo "         - backup.secret -> the same long random string as the PHP host" >&2
+    echo "       Then re-run this script. (Or set backup.enabled: false in" >&2
+    echo "       config.yaml to ship without off-site backup.)" >&2
     exit 1
   fi
 fi
