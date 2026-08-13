@@ -1,4 +1,7 @@
-# Core dependencies (work on Windows + Raspberry Pi OS)
+# Core dependencies (work on Windows + Raspberry Pi OS).
+# These are minimum-version floors. For a REPRODUCIBLE install pinned to the
+# exact tested versions, use the lock instead:
+#     pip install -e . -c constraints.txt
 opencv-python>=4.8      # On Raspberry Pi you may prefer opencv-python-headless
 numpy>=1.24
 PyYAML>=6.0

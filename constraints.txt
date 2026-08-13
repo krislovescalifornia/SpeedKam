@@ -1,0 +1,36 @@
+# SpeedKam dependency lock (core runtime closure) -- known-good exact versions.
+#
+# Use for a REPRODUCIBLE pip install; pyproject.toml keeps compatible `>=` floors
+# for normal installs, this file pins what was actually tested:
+#
+#     pip install -e . -c constraints.txt
+#
+# Captured on CPython 3.14 (Windows). These pins target modern Python (>= 3.11,
+# per numpy/opencv); for 3.9/3.10 regenerate with `pip freeze`. Only the core
+# stack is locked -- the optional `recognition` extra pulls a large, platform-
+# and CUDA-specific ML tree (torch/ultralytics) best resolved per environment.
+#
+# NOTE: the Raspberry Pi does NOT use this file. It installs from apt
+# (deploy/image/provision.sh); its reproducibility comes from the golden image.
+
+# --- direct dependencies (mirror pyproject [project.dependencies]) ---
+opencv-python==5.0.0.93
+numpy==2.5.2
+PyYAML==6.0.3
+Flask==3.1.3
+requests==2.34.2
+
+# --- transitive: Flask ---
+Werkzeug==3.1.8
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+click==8.4.2
+itsdangerous==2.2.0
+blinker==1.9.0
+colorama==0.4.6 ; sys_platform == "win32"   # click ANSI support on Windows
+
+# --- transitive: requests ---
+certifi==2026.7.22
+charset-normalizer==3.4.9
+idna==3.18
+urllib3==2.7.0

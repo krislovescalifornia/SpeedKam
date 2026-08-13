@@ -38,7 +38,8 @@ along the whole measurement zone, and keep the camera rigidly mounted.
 # 1. Create the environment (already done once; repeat on a new machine)
 python -m venv .venv
 .venv\Scripts\python -m pip install -e .        # installs the package + deps
-#   add recognition (YOLO, AGPL, heavy):  pip install -e ".[recognition]"
+#   reproducible (exact tested versions):  pip install -e . -c constraints.txt
+#   add recognition (YOLO, AGPL, heavy):   pip install -e ".[recognition]"
 #   plain deps without packaging instead:  pip install -r requirements.txt
 
 # 2. Find your webcam index and put it in config.yaml (camera.source)
