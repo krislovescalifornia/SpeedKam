@@ -47,8 +47,7 @@ paths, `--ref`/`--repo`/`--user` options, watching it provision) is
 No bash on the machine that flashed the card? Do what `prepare-boot.sh` does, by
 hand, onto the mounted `bootfs` (FAT) partition:
 
-1. Copy **`firstrun.sh`** and **`provision-node.sh`** from this folder to the root
-   of `bootfs`.
+1. Copy **`provision-node.sh`** from this folder to the root of `bootfs`.
 2. Copy your **`config.local.yaml`** (secrets) to the root of `bootfs`.
 3. Create **`speedkam-provision.conf`** on `bootfs` with:
 
@@ -58,20 +57,52 @@ hand, onto the mounted `bootfs` (FAT) partition:
    TARGET_USER=""      # empty = auto-detect the login user on the node
    ```
 
-4. Wire the first-boot hook:
+4. Wire the first-boot provisioning:
    - **If Imager customisation is present** (there's already a `firstrun.sh` on
-     `bootfs`): rename Imager's to **`speedkam-imager-firstrun.sh`** *before* you
-     copy ours in at step 1 — ours runs it first, then does our part. `cmdline.txt`
-     already points at `firstrun.sh`, so nothing else to change.
-   - **If not:** append this to the end of the single line in **`cmdline.txt`**
-     (leading space, keep it one line), and create an empty file named **`ssh`**:
+     `bootfs`): open that `firstrun.sh` in a text editor and paste the provisioning
+     block below **immediately before its final `exit 0`** line. Don't rename or
+     replace Imager's script — you're just adding to the end of it, so Imager's
+     own setup runs untouched and yours runs right after. Leave `cmdline.txt` alone.
+
+     ```sh
+     # ===== SpeedKam provisioning =====
+     SK_BOOT=""
+     for _d in /boot/firmware /boot; do
+       if [ -f "${_d}/provision-node.sh" ]; then SK_BOOT="${_d}"; break; fi
+     done
+     if [ -n "${SK_BOOT}" ]; then
+       mkdir -p /var/lib/speedkam
+       cat > /etc/systemd/system/speedkam-provision.service <<SKUNIT
+     [Unit]
+     Description=SpeedKam first-boot online provisioning
+     Wants=network-online.target
+     After=network-online.target
+     ConditionPathExists=!/var/lib/speedkam/provision.done
+     [Service]
+     Type=oneshot
+     RemainAfterExit=yes
+     ExecStart=/bin/bash ${SK_BOOT}/provision-node.sh
+     TimeoutStartSec=2400
+     [Install]
+     WantedBy=multi-user.target
+     SKUNIT
+       systemctl enable speedkam-provision.service
+     fi
+     # ===== end SpeedKam provisioning =====
+     ```
+
+   - **If not** (no `firstrun.sh` on `bootfs`): copy **`firstrun.sh`** from this
+     folder to `bootfs`, create an empty file named **`ssh`**, and append this to
+     the end of the single line in **`cmdline.txt`** (leading space, keep it one
+     line):
 
      ```
      systemd.run=/boot/firmware/firstrun.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target
      ```
 
 `provision-node.sh` shreds `config.local.yaml` off the card after installing it,
-so the secret doesn't linger on the FAT partition.
+so the secret doesn't linger on the FAT partition. (Using `prepare-boot.sh`
+instead does all of this for you — much less error-prone than editing by hand.)
 
 ### Re-imaging after a code change
 

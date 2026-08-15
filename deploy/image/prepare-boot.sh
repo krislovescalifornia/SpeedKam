@@ -21,13 +21,15 @@
 #        on :8080. Then calibrate on-site once. That's it.
 #
 # What it does:
-#   * copies firstrun.sh + provision-node.sh onto the boot partition
+#   * copies provision-node.sh onto the boot partition
 #   * writes speedkam-provision.conf (repo URL / ref / user)
 #   * copies your config.local.yaml (secrets) so the node comes up backing up
-#   * wires the first-boot hook WITHOUT clobbering Imager's customisation:
-#       - if Imager wrote a firstrun.sh, it's moved aside and chained
-#       - otherwise we add the systemd.run hook to cmdline.txt ourselves and
-#         drop an empty `ssh` file so you can still log in
+#   * wires the first-boot provisioning WITHOUT clobbering Imager's customisation:
+#       - if Imager wrote a firstrun.sh, we APPEND our provisioning-service
+#         install to the end of it (before its `exit 0`). Imager's proven script
+#         runs verbatim (hostname/user/Wi-Fi/SSH); ours runs right after.
+#       - otherwise we drop our own firstrun.sh, add the systemd.run hook to
+#         cmdline.txt, and drop an empty `ssh` file so you can still log in
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,13 +111,64 @@ fi
 
 # --- 4. wire the first-boot hook, coexisting with Imager --------------------
 if [[ -f "${BOOT}/firstrun.sh" ]]; then
-  # Imager customisation is present. Chain it: run Imager's identity setup first,
-  # then ours. cmdline.txt already points systemd.run at firstrun.sh, so we just
-  # swap in our wrapper and keep theirs alongside.
-  mv "${BOOT}/firstrun.sh" "${BOOT}/speedkam-imager-firstrun.sh"
-  cp "${SCRIPT_DIR}/firstrun.sh" "${BOOT}/firstrun.sh"
-  echo " + firstrun.sh (chained after Imager's customisation)"
-  echo "   (kept Imager's as speedkam-imager-firstrun.sh; cmdline.txt already hooks it)"
+  # Imager customisation is present. DON'T wrap/chain it -- that proved fragile
+  # (Imager's identity setup could get skipped). Instead append our provisioning
+  # block to the END of Imager's own firstrun.sh, just before its final `exit 0`.
+  # Imager's script then runs top-to-bottom exactly as it normally would, and our
+  # block installs the online provisioning service right after. One script, one
+  # hook, nothing to skip. cmdline.txt already points systemd.run at firstrun.sh.
+  FR="${BOOT}/firstrun.sh"
+  if grep -q 'SpeedKam provisioning (appended by prepare-boot.sh)' "${FR}"; then
+    echo " ~ firstrun.sh already carries the SpeedKam provisioning block; leaving it."
+  else
+    TMP="$(mktemp)"
+    # Drop Imager's trailing 'exit 0' (its last line) so our block runs before it.
+    if [[ "$(tail -n1 "${FR}")" =~ ^[[:space:]]*exit[[:space:]]+0[[:space:]]*$ ]]; then
+      sed '$d' "${FR}" > "${TMP}"
+    else
+      cp "${FR}" "${TMP}"
+    fi
+    # The block below is written LITERALLY into firstrun.sh (outer heredoc quoted):
+    # its ${...} and inner <<SKUNIT heredoc are evaluated on the Pi at boot, not here.
+    cat >> "${TMP}" <<'SKBLOCK'
+
+# ===== SpeedKam provisioning (appended by prepare-boot.sh) =====
+# We are inside Imager's first-run here: early boot, no network. Just install a
+# oneshot service; the heavy work (apt + git clone) is deferred to it once the
+# network is up. See deploy/image/provision-node.sh.
+SK_BOOT=""
+for _d in /boot/firmware /boot; do
+  if [ -f "${_d}/provision-node.sh" ]; then SK_BOOT="${_d}"; break; fi
+done
+if [ -n "${SK_BOOT}" ]; then
+  mkdir -p /var/lib/speedkam
+  cat > /etc/systemd/system/speedkam-provision.service <<SKUNIT
+[Unit]
+Description=SpeedKam first-boot online provisioning (apt + git + service install)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/var/lib/speedkam/provision.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash ${SK_BOOT}/provision-node.sh
+TimeoutStartSec=2400
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+SKUNIT
+  systemctl enable speedkam-provision.service
+fi
+# ===== end SpeedKam provisioning =====
+SKBLOCK
+    printf '\nexit 0\n' >> "${TMP}"
+    cp "${TMP}" "${FR}"
+    rm -f "${TMP}"
+    echo " + firstrun.sh (SpeedKam provisioning appended after Imager's customisation)"
+  fi
 else
   # No Imager customisation. We own the hook: add systemd.run to cmdline.txt and
   # drop an empty `ssh` so the node is reachable. NOTE: with no Imager
