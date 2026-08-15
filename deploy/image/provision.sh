@@ -28,10 +28,16 @@ if [[ ! -f "${PROJECT_DIR}/serve.py" ]]; then
   exit 1
 fi
 
-RUN_USER="${SUDO_USER:-${USER}}"
-if [[ "${RUN_USER}" == "root" ]]; then
-  echo "Refusing to provision as root. Log in as a normal user (e.g. 'pi')" >&2
-  echo "and run with sudo so SUDO_USER is set." >&2
+# Who will own the app + run the service. Prefer sudo's invoking user, then $USER,
+# then fall back to the first normal login account (uid 1000) -- so this also works
+# when launched non-interactively (systemd-run/cron), where neither var is set.
+RUN_USER="${SUDO_USER:-${USER:-}}"
+if [[ -z "${RUN_USER}" || "${RUN_USER}" == "root" ]]; then
+  RUN_USER="$(getent passwd 1000 | cut -d: -f1)"
+fi
+if [[ -z "${RUN_USER}" || "${RUN_USER}" == "root" ]]; then
+  echo "Refusing to provision as root and could not find a normal login user." >&2
+  echo "Create a non-root user (e.g. 'pi') first, or pass SUDO_USER=<name>." >&2
   exit 1
 fi
 
