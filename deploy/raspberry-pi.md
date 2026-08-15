@@ -4,6 +4,9 @@ A single-page runbook for taking a Raspberry Pi from a bare board to a
 calibrated, self-starting speed camera you reach from your phone at
 `http://<pi-ip>:8080`.
 
+> In a hurry? [`QUICKSTART.md`](QUICKSTART.md) is the zero-touch path as a bare
+> checklist. This page is the full runbook behind it.
+
 The work splits into two kinds of steps:
 
 - **Deploy** (software) — OS, dependencies, the SpeedKam service. This is fully
