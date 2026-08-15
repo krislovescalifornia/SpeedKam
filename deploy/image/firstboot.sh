@@ -23,15 +23,13 @@ fi
 echo "[speedkam-firstboot] personalising this card..."
 
 # --- 1. fresh SSH host keys -------------------------------------------------
+# Use ssh-keygen -A directly. NOT dpkg-reconfigure: this unit runs very early
+# (before sysinit.target completes), where invoking dpkg/debconf can HANG and
+# wedge the whole boot before networking ever starts. ssh-keygen -A only touches
+# files and is safe here.
 if command -v ssh-keygen >/dev/null 2>&1; then
   rm -f /etc/ssh/ssh_host_*
-  # Regenerate the standard set. dpkg-reconfigure is the canonical way on Debian.
-  if command -v dpkg-reconfigure >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive dpkg-reconfigure openssh-server >/dev/null 2>&1 || \
-      ssh-keygen -A
-  else
-    ssh-keygen -A
-  fi
+  ssh-keygen -A >/dev/null 2>&1 || true
   echo "[speedkam-firstboot] regenerated SSH host keys"
 fi
 
@@ -56,12 +54,12 @@ else
 fi
 NEWHOST="speedkam-${SUFFIX:-unknown}"
 
-OLDHOST="$(hostnamectl --static 2>/dev/null || cat /etc/hostname)"
-if command -v hostnamectl >/dev/null 2>&1; then
-  hostnamectl set-hostname "${NEWHOST}"
-else
-  echo "${NEWHOST}" > /etc/hostname
-fi
+OLDHOST="$(cat /etc/hostname 2>/dev/null | tr -d ' \t\n\r')"
+# Write the hostname files directly. NOT hostnamectl: it talks to
+# systemd-hostnamed over D-Bus, which isn't up this early in boot, so the call
+# can hang and wedge sysinit. The kernel hostname is applied on the next boot
+# (and by systemd from /etc/hostname), which is fine -- we reboot after this.
+echo "${NEWHOST}" > /etc/hostname
 # Keep /etc/hosts consistent so sudo doesn't complain about name resolution.
 if grep -q "127.0.1.1" /etc/hosts 2>/dev/null; then
   sed -i "s/127.0.1.1.*/127.0.1.1\t${NEWHOST}/" /etc/hosts
