@@ -23,6 +23,8 @@ from urllib.parse import urlsplit
 
 import requests
 
+from .identity import node_id
+
 
 class SyncManager:
     def __init__(self, cfg, captures_dir, csv_path):
@@ -191,7 +193,7 @@ class SyncManager:
             resp = requests.post(
                 self.url,
                 headers={"X-SpeedKam-Key": self.secret},
-                data={"action": "prune",
+                data={"action": "prune", "node": node_id(),
                       "prune_older_than_days": int(older_than_days)},
                 timeout=self.timeout,
                 verify=self.verify_tls,
@@ -227,7 +229,7 @@ class SyncManager:
             resp = requests.post(
                 self.url,
                 headers={"X-SpeedKam-Key": self.secret},
-                data={"action": "enrich",
+                data={"action": "enrich", "node": node_id(),
                       "event_id": event_id,
                       "attrs": json.dumps(payload)},
                 timeout=self.timeout,
@@ -250,6 +252,7 @@ class SyncManager:
     def _upload(self, job) -> bool:
         data = {
             "event_id": job["event_id"],
+            "node": node_id(),
             "meta": json.dumps(job["meta"]),
         }
         files = {}

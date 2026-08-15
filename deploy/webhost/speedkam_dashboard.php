@@ -24,6 +24,18 @@ session_start();
 $configured = ($DASHBOARD_PASSWORD !== 'CHANGE-ME-dashboard-password'
     && $DASHBOARD_PASSWORD !== '');
 
+// --- fleet mode: which camera are we viewing? -------------------------------
+// The receiver buckets each node under $DATA_DIR/nodes/<id>/. $BASE_DIR is the
+// root (used for the global login throttle); when a node is selected, $DATA_DIR
+// points at that node's bucket so all the existing read/write logic below just
+// works. No nodes/ dir at all -> legacy single-node layout, read $DATA_DIR as-is.
+$BASE_DIR   = rtrim($DATA_DIR, '/');
+$nodes_root = "$BASE_DIR/nodes";
+$sel_node   = substr(preg_replace('/[^A-Za-z0-9_-]/', '', $_GET['node'] ?? ''), 0, 32);
+if ($sel_node !== '' && is_dir("$nodes_root/$sel_node")) {
+    $DATA_DIR = "$nodes_root/$sel_node";
+}
+
 function is_authed() { return !empty($_SESSION['speedkam_auth']); }
 function self_path() { return strtok($_SERVER['REQUEST_URI'], '?'); }
 
@@ -97,19 +109,19 @@ if (isset($_GET['logout'])) {
 $login_error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
     $ip = login_client_ip();
-    $locked = login_locked_seconds($DATA_DIR, $ip);
+    $locked = login_locked_seconds($BASE_DIR, $ip);
     if ($locked > 0) {
         $login_error = 'Too many attempts. Try again in '
             . ceil($locked / 60) . ' min.';
     } elseif ($configured
         && hash_equals($DASHBOARD_PASSWORD, (string)$_POST['password'])) {
-        login_record($DATA_DIR, $ip, true);      // clear the counter
+        login_record($BASE_DIR, $ip, true);      // clear the counter
         session_regenerate_id(true);
         $_SESSION['speedkam_auth'] = true;
         header('Location: ' . self_path());
         exit;
     } else {
-        login_record($DATA_DIR, $ip, false);     // count the failure
+        login_record($BASE_DIR, $ip, false);     // count the failure
         $login_error = 'Incorrect password.';
     }
 }
@@ -165,6 +177,16 @@ if (!is_authed()) {
     exit;
 }
 
+// --- fleet overview: no node chosen but per-node buckets exist -> list them --
+if ($sel_node === '' && is_dir($nodes_root)) {
+    $nodes = [];
+    foreach (scandir($nodes_root) as $e) {
+        if ($e === '.' || $e === '..' || !is_dir("$nodes_root/$e")) continue;
+        $nodes[] = $e;
+    }
+    if ($nodes) { render_node_list($nodes_root, $nodes); exit; }
+}
+
 // --- remote control write (authed): queue a desired SpeedKapture threshold ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_threshold'])) {
     $val = $_POST['threshold'] ?? '';
@@ -179,7 +201,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_threshold'])) {
         ];
         @file_put_contents($dfile, json_encode($desired));
     }
-    header('Location: ' . self_path());
+    header('Location: ' . self_path()
+        . ($sel_node !== '' ? '?node=' . rawurlencode($sel_node) : ''));
     exit;
 }
 
@@ -249,7 +272,7 @@ $camera_thr  = $status['speedkapture_threshold'] ?? null;
 
 render_dashboard(compact(
     'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp',
-    'view', 'filter', 'desired', 'desired_thr', 'camera_thr'
+    'view', 'filter', 'desired', 'desired_thr', 'camera_thr', 'sel_node'
 ));
 
 // ============================ rendering =====================================
@@ -328,6 +351,14 @@ function render_dashboard($d) {
     extract($d);
     page_head('SpeedKam dashboard');
 
+    // fleet breadcrumb (only when viewing a specific node)
+    if (!empty($sel_node)) {
+        echo '<div style="margin-bottom:.5rem">'
+           . '<a href="?" class="muted" style="font-size:.85rem">&lsaquo; all cameras</a>'
+           . ' <span class="muted" style="font-size:.85rem">&middot; node '
+           . '<code>' . h($sel_node) . '</code></span></div>';
+    }
+
     // header
     $sw = $online ? 'ok' : 'bad';
     echo '<h1><span class="dot ' . $sw . '"></span>SpeedKam '
@@ -374,10 +405,14 @@ function render_dashboard($d) {
     }
     echo '</div></form>';
 
+    // Node query fragment: keep ?node=<id> on every in-view link/redirect so the
+    // per-node context survives filter clicks, media requests and form posts.
+    $nq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
+
     // filter tabs
     echo '<div class="tabs">'
-       . '<a href="?filter=all" class="' . ($filter === 'all' ? 'on' : '') . '">All passes</a>'
-       . '<a href="?filter=speeders" class="' . ($filter === 'speeders' ? 'on' : '') . '">Over limit</a>'
+       . '<a href="?filter=all' . $nq . '" class="' . ($filter === 'all' ? 'on' : '') . '">All passes</a>'
+       . '<a href="?filter=speeders' . $nq . '" class="' . ($filter === 'speeders' ? 'on' : '') . '">Over limit</a>'
        . '</div>';
 
     // event table
@@ -397,8 +432,8 @@ function render_dashboard($d) {
             ])));
             echo '<tr>';
             echo '<td>' . ($snap
-                ? '<a href="?media=' . h(rawurlencode($snap)) . '" target="_blank">'
-                  . '<img class="thumb" src="?media=' . h(rawurlencode($snap)) . '" alt=""></a>'
+                ? '<a href="?media=' . h(rawurlencode($snap)) . $nq . '" target="_blank">'
+                  . '<img class="thumb" src="?media=' . h(rawurlencode($snap)) . $nq . '" alt=""></a>'
                 : '') . '</td>';
             echo '<td class="num muted">'
                . h(str_replace('T', ' ', substr($r['wall_time'] ?? '', 0, 16))) . '</td>';
@@ -407,7 +442,7 @@ function render_dashboard($d) {
             echo '<td class="muted">' . h($r['direction'] ?? '') . '</td>';
             echo '<td>' . h($veh ?: '—') . '</td>';
             echo '<td>' . ($clip
-                ? '<a href="?media=' . h(rawurlencode($clip)) . '" target="_blank">video</a>'
+                ? '<a href="?media=' . h(rawurlencode($clip)) . $nq . '" target="_blank">video</a>'
                 : '<span class="muted">—</span>') . '</td>';
             echo '</tr>';
         }
@@ -425,4 +460,57 @@ function stat_card($label, $n, $sub) {
     echo '<div class="card"><div class="n">' . h($n) . '</div>'
        . '<div class="l">' . h($label) . '</div>'
        . '<div class="s">' . h($sub) . '</div></div>';
+}
+
+// Fleet overview: one row per camera (node), linking into its own dashboard.
+function render_node_list($nodes_root, $nodes) {
+    page_head('SpeedKam fleet');
+
+    $summ = [];
+    foreach ($nodes as $n) {
+        $dir  = "$nodes_root/$n";
+        $st   = json_decode(@file_get_contents("$dir/status.json"), true) ?: [];
+        $seen = isset($st['received_at']) ? strtotime($st['received_at']) : null;
+        $online = ($seen !== null) && (time() - $seen < 120);
+        // Cheap event count: data lines in events.csv minus the header row.
+        $total = 0;
+        $csv = "$dir/events.csv";
+        if (is_file($csv)) {
+            $lines = @file($csv, FILE_SKIP_EMPTY_LINES | FILE_IGNORE_NEW_LINES);
+            if (is_array($lines)) { $total = max(0, count($lines) - 1); }
+        }
+        $summ[] = ['id' => $n, 'online' => $online, 'seen' => $seen, 'total' => $total];
+    }
+    // Online first, then most-recently-seen.
+    usort($summ, function ($a, $b) {
+        if ($a['online'] !== $b['online']) return $a['online'] ? -1 : 1;
+        return ($b['seen'] ?? 0) <=> ($a['seen'] ?? 0);
+    });
+    $online_n = count(array_filter($summ, fn($s) => $s['online']));
+    $fleet_total = array_sum(array_map(fn($s) => $s['total'], $summ));
+
+    echo '<h1>SpeedKam fleet<span class="grow"></span>'
+       . '<a href="?logout" class="muted" style="font-size:.85rem">sign out</a></h1>';
+    echo '<div class="cards">';
+    stat_card('Cameras', count($summ), $online_n . ' online');
+    stat_card('Offline', count($summ) - $online_n, 'no check-in &gt;2m');
+    stat_card('Events (all)', $fleet_total, 'across the fleet');
+    echo '</div>';
+
+    echo '<table><thead><tr><th></th><th>Camera</th><th>Last check-in</th>'
+       . '<th class="num">Events</th><th></th></tr></thead><tbody>';
+    foreach ($summ as $s) {
+        $sw  = $s['online'] ? 'ok' : 'bad';
+        $href = '?node=' . rawurlencode($s['id']);
+        echo '<tr>'
+           . '<td><span class="dot ' . $sw . '"></span></td>'
+           . '<td><a href="' . h($href) . '"><code>' . h($s['id']) . '</code></a> '
+           . '<span class="muted">' . ($s['online'] ? 'online' : 'offline') . '</span></td>'
+           . '<td class="muted">' . h(ago($s['seen'])) . '</td>'
+           . '<td class="num">' . h($s['total']) . '</td>'
+           . '<td><a href="' . h($href) . '">open &rsaquo;</a></td>'
+           . '</tr>';
+    }
+    echo '</tbody></table>';
+    page_foot();
 }

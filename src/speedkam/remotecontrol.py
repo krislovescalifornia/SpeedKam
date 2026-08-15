@@ -27,6 +27,8 @@ import time
 
 import requests
 
+from .identity import node_id
+
 
 class RemoteControl:
     def __init__(self, cfg, url, secret, camera, verify_tls=True, timeout=15):
@@ -82,7 +84,8 @@ class RemoteControl:
             resp = requests.post(
                 self.url,
                 headers={"X-SpeedKam-Key": self.secret},
-                data={"action": "sync", "status": json.dumps(self._status())},
+                data={"action": "sync", "node": node_id(),
+                      "status": json.dumps(self._status())},
                 timeout=self.timeout,
                 verify=self.verify_tls,
             )

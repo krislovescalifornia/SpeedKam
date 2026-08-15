@@ -12,6 +12,11 @@
 #     python -c "import secrets; print(secrets.token_urlsafe(32))"
 # and set the SAME value as $SECRET in the off-site host's speedkam_config.php.
 # =============================================================================
+# Fleet note: point `url` at ONE shared receiver for the whole fleet. Each camera
+# identifies itself with a stable node id (from its CPU serial) that it sends on
+# every request, and the receiver files each node's data under nodes/<id>/ on its
+# own -- so this exact same value can be baked into a golden image and cloned to
+# any number of cameras with no per-node edit.
 backup:
   url: "https://yourdomain.example/speedkam/speedkam_receiver.php"
   secret: "CHANGE-ME-to-a-long-random-string"

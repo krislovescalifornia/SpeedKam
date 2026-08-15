@@ -138,6 +138,17 @@ if ($SECRET === 'CHANGE-ME-to-a-long-random-string' || !hash_equals($SECRET, $ke
     fail(403, 'bad or missing key');
 }
 
+// --- fleet multi-tenancy: bucket every node under its own data dir -----------
+// One shared receiver URL + secret serves the whole fleet. Each camera sends a
+// stable node id (src/speedkam/identity.py, derived from its CPU serial), and we
+// route its storage into $DATA_DIR/nodes/<id>/ -- auto-created, no per-node setup
+// on the card. The id is stripped to [A-Za-z0-9_-] (no dots) so it can never be a
+// path-traversal token. No node id -> legacy single-node mode ($DATA_DIR as-is).
+$node = substr(preg_replace('/[^A-Za-z0-9_-]/', '', $_POST['node'] ?? ''), 0, 32);
+if ($node !== '') {
+    $DATA_DIR = rtrim($DATA_DIR, '/') . '/nodes/' . $node;
+}
+
 // --- camera heartbeat + settings pull (pull-based remote control) ---
 // The camera POSTs its status here every control.poll_seconds. We store the
 // status so the dashboard can show liveness + counts even when you're off the
