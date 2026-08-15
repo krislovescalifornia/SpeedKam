@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Run the auto-update shortly after each boot, then once a day.
+[Unit]
+Description=SpeedKam auto-update schedule (on boot + daily)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1d
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -125,6 +125,24 @@ sed -e "s|__DIR__|${PROJECT_DIR}|g" \
 systemctl daemon-reload
 systemctl enable speedkam-firstboot.service
 
+# --- bake in auto-update-on-network -----------------------------------------
+# So the golden image isn't frozen: every card pulls the latest code when it has
+# a network and restarts SpeedKam only if something changed. Offline boots are a
+# clean no-op. This is what makes "after-image work" happen automatically.
+echo
+echo ">> Installing auto-update (git pull on boot + daily)..."
+sed -e "s|__DIR__|${PROJECT_DIR}|g" -e "s|__USER__|${RUN_USER}|g" \
+    "${PROJECT_DIR}/deploy/speedkam-update.sh" \
+    > /usr/local/sbin/speedkam-update.sh
+chmod 0755 /usr/local/sbin/speedkam-update.sh
+# Point the unit at the installed copy (not the in-repo template path).
+sed -e "s|/bin/bash __DIR__/deploy/speedkam-update.sh|/bin/bash /usr/local/sbin/speedkam-update.sh|g" \
+    "${PROJECT_DIR}/deploy/speedkam-update.service" \
+    > /etc/systemd/system/speedkam-update.service
+cp "${PROJECT_DIR}/deploy/speedkam-update.timer" /etc/systemd/system/speedkam-update.timer
+systemctl daemon-reload
+systemctl enable speedkam-update.timer
+
 echo
 echo "=============================================================="
 echo " Provisioning complete."

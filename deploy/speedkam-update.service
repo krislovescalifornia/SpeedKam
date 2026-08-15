@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Pull latest SpeedKam code when online and restart if it changed.
+# Triggered by speedkam-update.timer, not enabled directly.
+[Unit]
+Description=SpeedKam auto-update (git pull latest, restart if changed)
+Wants=network-online.target
+After=network-online.target speedkam.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __DIR__/deploy/speedkam-update.sh
+# Don't let a slow network hold anything up.
+TimeoutStartSec=300
