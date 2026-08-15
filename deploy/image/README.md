@@ -1,16 +1,96 @@
-# SpeedKam golden-image deployment
+# SpeedKam image-based deployment
+
+Two ways to stamp out SpeedKam cards without hand-provisioning each board:
+
+- **[Zero-touch: online first boot](#zero-touch-online-first-boot)** — flash a
+  *stock* card, drop a few files on it, power on; it installs itself from the
+  internet on first boot. No build host, no `.img`, tiny artifact, and a code
+  update is just a re-clone. **Needs internet on first boot.** This is the
+  recommended path (headlined in [`../raspberry-pi.md`](../raspberry-pi.md)).
+- **[Golden master clone](#golden-master-what-ends-up-on-the-image)** — build one
+  fully-installed card, capture it to an `.img`, clone that to many cards. Works
+  **offline**, at the cost of a build host, a multi-GB image, and a re-capture on
+  every code change.
+
+Pick online unless the nodes have no internet on first boot.
+
+---
+
+## Zero-touch: online first boot
+
+Three scripts implement this path:
+
+| File | Runs | Does |
+|---|---|---|
+| `prepare-boot.sh` | on your **flashing machine** | stages the other two + your secrets onto the card's boot partition and wires the first-boot hook |
+| `firstrun.sh` | on the node, **pre-network** (first boot) | chains Imager's identity setup, then installs the provisioning service and reboots |
+| `provision-node.sh` | on the node, **online** (next boot) | `apt install` deps → `git clone` the project → drop in `config.local.yaml` → install the autostart service → self-delete |
+
+### The easy way (recommended)
+
+Flash stock **Raspberry Pi OS (64-bit) Lite** with Imager, using its OS
+customisation for user / Wi-Fi / SSH / hostname. Then, with the card still in the
+reader, run the stager against its `bootfs` volume:
+
+```bash
+sudo bash deploy/image/prepare-boot.sh \
+  --boot /media/$USER/bootfs \
+  --config-local ./config.local.yaml
+```
+
+Eject, boot the Pi, wait ~5 min → dashboard on `:8080`. Full walkthrough (Windows
+paths, `--ref`/`--repo`/`--user` options, watching it provision) is
+[Path A in `../raspberry-pi.md`](../raspberry-pi.md#a-zero-touch-first-boot--recommended).
+
+### The manual file-drop equivalent
+
+No bash on the machine that flashed the card? Do what `prepare-boot.sh` does, by
+hand, onto the mounted `bootfs` (FAT) partition:
+
+1. Copy **`firstrun.sh`** and **`provision-node.sh`** from this folder to the root
+   of `bootfs`.
+2. Copy your **`config.local.yaml`** (secrets) to the root of `bootfs`.
+3. Create **`speedkam-provision.conf`** on `bootfs` with:
+
+   ```ini
+   REPO_URL="https://github.com/krislovescalifornia/SpeedKam.git"
+   REPO_REF="main"
+   TARGET_USER=""      # empty = auto-detect the login user on the node
+   ```
+
+4. Wire the first-boot hook:
+   - **If Imager customisation is present** (there's already a `firstrun.sh` on
+     `bootfs`): rename Imager's to **`speedkam-imager-firstrun.sh`** *before* you
+     copy ours in at step 1 — ours runs it first, then does our part. `cmdline.txt`
+     already points at `firstrun.sh`, so nothing else to change.
+   - **If not:** append this to the end of the single line in **`cmdline.txt`**
+     (leading space, keep it one line), and create an empty file named **`ssh`**:
+
+     ```
+     systemd.run=/boot/firmware/firstrun.sh systemd.run_success_action=reboot systemd.unit=kernel-command-line.target
+     ```
+
+`provision-node.sh` shreds `config.local.yaml` off the card after installing it,
+so the secret doesn't linger on the FAT partition.
+
+### Re-imaging after a code change
+
+Nothing to re-image. Either bump `--ref` for the next batch of cards, or on a
+live node `git pull && sudo systemctl restart speedkam`.
+
+---
+
+## Golden master: what ends up on the image
 
 Build **one** fully-installed SpeedKam SD card, capture it to an `.img`, and
 clone that image to as many cards as you want. Each clone boots straight into
 the dashboard on port **8080** — no per-card setup beyond on-site calibration.
 
-This is the *golden-master* approach: simplest, works today, no Linux build host
-required. (A from-scratch `pi-gen` build is the more "reproducible CI" route; see
-the note at the bottom if you'd rather go that way.)
+This is the *golden-master* approach: works **offline**, no internet needed on
+first boot. (A from-scratch `pi-gen` build is the more "reproducible CI" route;
+see the note at the bottom if you'd rather go that way.)
 
----
-
-## What ends up on the image
+### What ends up on the image
 
 - Raspberry Pi OS + all SpeedKam runtime deps from **apt** (no pip/venv):
   `python3-opencv numpy pyyaml flask requests picamera2`.
