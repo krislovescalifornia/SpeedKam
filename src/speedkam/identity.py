@@ -21,6 +21,17 @@ from __future__ import annotations
 import functools
 import re
 
+# Sent on every request to the off-site receiver. Some shared-host WAFs (e.g.
+# mod_security) 406-block the default "python-requests/x.y" User-Agent, which
+# silently kills backup + heartbeat for the whole fleet -- so we present a real,
+# stable identifier instead.
+USER_AGENT = "SpeedKam/1.0"
+
+
+def http_headers(secret):
+    """Standard headers for a request to the receiver: shared auth key + UA."""
+    return {"X-SpeedKam-Key": secret, "User-Agent": USER_AGENT}
+
 
 def _from_cpuinfo():
     try:

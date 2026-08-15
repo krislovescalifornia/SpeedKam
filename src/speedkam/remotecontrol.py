@@ -27,7 +27,7 @@ import time
 
 import requests
 
-from .identity import node_id
+from .identity import http_headers, node_id
 
 
 class RemoteControl:
@@ -83,7 +83,7 @@ class RemoteControl:
         try:
             resp = requests.post(
                 self.url,
-                headers={"X-SpeedKam-Key": self.secret},
+                headers=http_headers(self.secret),
                 data={"action": "sync", "node": node_id(),
                       "status": json.dumps(self._status())},
                 timeout=self.timeout,

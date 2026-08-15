@@ -493,7 +493,7 @@ function render_node_list($nodes_root, $nodes) {
        . '<a href="?logout" class="muted" style="font-size:.85rem">sign out</a></h1>';
     echo '<div class="cards">';
     stat_card('Cameras', count($summ), $online_n . ' online');
-    stat_card('Offline', count($summ) - $online_n, 'no check-in &gt;2m');
+    stat_card('Offline', count($summ) - $online_n, 'no check-in >2m');
     stat_card('Events (all)', $fleet_total, 'across the fleet');
     echo '</div>';
 

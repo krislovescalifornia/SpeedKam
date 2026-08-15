@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .identity import node_id
+from .identity import http_headers, node_id
 
 
 class SyncManager:
@@ -192,7 +192,7 @@ class SyncManager:
         try:
             resp = requests.post(
                 self.url,
-                headers={"X-SpeedKam-Key": self.secret},
+                headers=http_headers(self.secret),
                 data={"action": "prune", "node": node_id(),
                       "prune_older_than_days": int(older_than_days)},
                 timeout=self.timeout,
@@ -228,7 +228,7 @@ class SyncManager:
         try:
             resp = requests.post(
                 self.url,
-                headers={"X-SpeedKam-Key": self.secret},
+                headers=http_headers(self.secret),
                 data={"action": "enrich", "node": node_id(),
                       "event_id": event_id,
                       "attrs": json.dumps(payload)},
@@ -270,7 +270,7 @@ class SyncManager:
                     files[key] = (name, fh, mime)
             resp = requests.post(
                 self.url,
-                headers={"X-SpeedKam-Key": self.secret},
+                headers=http_headers(self.secret),
                 data=data,
                 files=files or None,
                 timeout=self.timeout,
