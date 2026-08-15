@@ -135,3 +135,39 @@ Uploads are idempotent: the server dedupes by event id, so re-sending the same
 event never creates duplicates. Deferred attributes (make/model, on a busy-road
 setup) arrive later via the receiver's `enrich` action; on a low-traffic drive
 the camera fills them in before uploading, so you won't need that.
+
+## Dedicating a whole domain (apex hardening)
+
+If you point a **dedicated domain** at SpeedKam (e.g. an addon domain whose only
+job is off-site infrastructure), don't drop the bundle in the docroot. Put the
+three PHP files in a **subfolder** and lock down the apex around them. The files
+in [`apex/`](apex/) are drop-in templates for the docroot:
+
+| Template | Rename to | Where |
+|---|---|---|
+| `apex/index.html` | `index.html` | docroot — a dead end that reveals nothing |
+| `apex/robots.txt` | `robots.txt` | docroot — keeps the whole domain out of search |
+| `apex/htaccess-for-apex` | `.htaccess` | docroot — forces HTTPS, no listings, noindex + security headers |
+
+Resulting layout for a dedicated domain:
+
+```
+yourdomain/                       docroot (apex)
+  index.html                      dead-end page (from apex/index.html)
+  robots.txt                      Disallow: /   (from apex/robots.txt)
+  .htaccess                       HTTPS + noindex + headers (from apex/htaccess-for-apex)
+  <bundle>/                       pick your own folder name (e.g. ingest/)
+    speedkam_config.php           secret + dashboard password (gitignored)
+    speedkam_receiver.php         camera endpoint
+    speedkam_dashboard.php        the web UI
+    speedkam_data/                backups (.htaccess-denied)
+```
+
+The camera then posts to `https://yourdomain/<bundle>/speedkam_receiver.php`
+(this is `backup.url` in `config.local.yaml`) and you browse
+`https://yourdomain/<bundle>/speedkam_dashboard.php`.
+
+> **Pick the `<bundle>` folder name before you image a fleet.** It's baked into
+> every node's `backup.url` (and rides along inside a cloned SD image), so
+> changing it later means editing every deployed node. An unguessable name adds
+> cheap obscurity in front of the dashboard's password gate.

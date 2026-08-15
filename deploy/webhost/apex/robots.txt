@@ -1,0 +1,6 @@
+# Pure-infrastructure domain: keep the entire site out of search engines.
+# This covers the apex AND the node-bundle subfolder (receiver + dashboard).
+# The dashboard is password-gated regardless; this is defense-in-depth so a
+# crawler never surfaces its URL. Relax this if you add a public landing page.
+User-agent: *
+Disallow: /

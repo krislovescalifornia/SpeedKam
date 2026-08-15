@@ -1,0 +1,30 @@
+# Rename this file to ".htaccess" and place it in the docroot (apex) of a
+# domain dedicated to SpeedKam infrastructure (e.g. speedkam.com), where the
+# node bundle (receiver + dashboard + data) lives in a subfolder below.
+#
+# It does three things: forces HTTPS, disables directory listings anywhere on
+# the domain, and keeps the whole domain unindexed + hardened. The node bundle
+# inherits all of it, so the dashboard is HTTPS-only and never crawled.
+#
+# Apache 2.4+ on typical shared/cPanel hosting.
+
+# --- Force HTTPS (so the secret, password, and footage are always encrypted) --
+RewriteEngine On
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# --- Never list directory contents -------------------------------------------
+Options -Indexes
+
+<IfModule mod_headers.c>
+    # Keep every response out of search-engine indexes (belt to robots.txt).
+    Header set X-Robots-Tag "noindex, nofollow, noarchive"
+
+    # Baseline security headers for the dashboard UI.
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "no-referrer"
+    # Pin the browser to HTTPS for a year. Add `includeSubDomains` / `preload`
+    # only once every current AND future subdomain is guaranteed to serve HTTPS.
+    Header always set Strict-Transport-Security "max-age=31536000"
+</IfModule>
