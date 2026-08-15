@@ -81,6 +81,21 @@ When Imager finishes it "ejects" the card, so Windows temporarily can't see it.
 
 Remember your letter (we'll use **`E`** in the example below — substitute yours).
 
+### If `bootfs` has NO drive letter
+
+Sometimes Windows shows `bootfs` but doesn't give it a letter, so `/e/` won't
+work in Step 4. To check and fix:
+
+1. Right-click the **Start** button → **Disk Management**.
+2. Find the **`bootfs`** partition in the list. If there's no `(E:)`-style letter
+   next to it, right-click it → **Change Drive Letter and Paths…** → **Add…** →
+   pick a letter (e.g. `E`) → **OK**. (Cancel any "format" pop-up that appears.)
+3. `bootfs` now has a letter — use it in Step 4.
+
+To stop this happening on future cards, re-enable Windows automount **once**: open
+**PowerShell as Administrator** and run `mountvol /E`. New cards should then get a
+letter on their own.
+
 ---
 
 ## Step 4 — Drop the SpeedKam files onto the card
