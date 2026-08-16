@@ -86,6 +86,28 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 systemctl restart "${SERVICE_NAME}.service"
 
+# --- Wi-Fi onboarding service (AP-mode setup portal when offline) -----------
+# Optional but installed by default when NetworkManager + nmcli are present
+# (Raspberry Pi OS Bookworm). Lets a headless node be joined to a new network
+# from a phone with no re-imaging. Skipped silently on systems without nmcli.
+NETCFG_TEMPLATE="${SCRIPT_DIR}/speedkam-netcfg.service"
+if command -v nmcli >/dev/null 2>&1 && [[ -f "${NETCFG_TEMPLATE}" ]]; then
+  echo
+  echo "Installing Wi-Fi onboarding service (speedkam-netcfg)"
+  sed -e "s|__DIR__|${PROJECT_DIR}|g" \
+      -e "s|__PYTHON__|${PY}|g" \
+      "${NETCFG_TEMPLATE}" > /etc/systemd/system/speedkam-netcfg.service
+  systemctl daemon-reload
+  systemctl enable speedkam-netcfg.service
+  # Don't 'restart' here: on the provisioning host that would raise a setup AP
+  # if this box happens to be offline. It runs on next boot, where it belongs.
+  echo "  enabled; runs on next boot. Offline nodes will show a 'SpeedKam-Setup-*' Wi-Fi."
+else
+  echo
+  echo "NOTE: nmcli not found -- skipping Wi-Fi onboarding service. (It needs"
+  echo "      NetworkManager, the default on Raspberry Pi OS Bookworm.)"
+fi
+
 echo
 echo "Done. SpeedKam will now start automatically on boot."
 echo

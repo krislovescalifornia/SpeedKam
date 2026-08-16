@@ -135,6 +135,29 @@ DEFAULTS = {
         # This is a separate knob from retention.local_days on purpose.
         "remote_retention_days": 0,
     },
+    "netcfg": {
+        # Wi-Fi onboarding (speedkam-netcfg.service). On boot, if the node can't
+        # reach the internet, it raises a Wi-Fi access point named
+        # "<ap_ssid_prefix>-<nodeid>" and serves a phone-friendly setup page so
+        # you can join it to a nearby network -- no screen, no SSH, no
+        # re-imaging. Already-online boots are a no-op. See src/speedkam/netcfg.py.
+        "enabled": True,
+        # Wireless interface to host the AP on and join from.
+        "interface": "wlan0",
+        # AP name prefix; the node's short id is appended so nearby nodes differ.
+        "ap_ssid_prefix": "SpeedKam-Setup",
+        # Leave blank for an OPEN setup AP (easiest onboarding; the AP is only up
+        # while the node is offline and is torn down the moment it joins). Set a
+        # password of 8+ chars to lock the setup AP with WPA2 instead.
+        "ap_password": "",
+        # Seconds to wait for real connectivity at boot before opening the AP.
+        "online_timeout": 90,
+        # Title shown on the setup page.
+        "portal_title": "SpeedKam Wi-Fi setup",
+        # NetworkManager 'shared' mode gateway = the portal's address. Only
+        # change if it collides with the site network you're joining.
+        "captive_ip": "10.42.0.1",
+    },
     "control": {
         # Pull-based remote control + heartbeat. The camera periodically POSTs
         # its status to the SAME off-site host as backup (reusing backup.url +

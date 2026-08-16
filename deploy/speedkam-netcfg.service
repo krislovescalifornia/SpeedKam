@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Kris Kling
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# SpeedKam Wi-Fi onboarding. On every boot this checks whether the node has real
+# internet; if not, it raises a "SpeedKam-Setup-<nodeid>" access point with a
+# phone setup page so an operator can join the node to a nearby network. Once
+# joined, NetworkManager remembers the network and this is a silent no-op on
+# future boots. See src/speedkam/netcfg.py.
+#
+# Installed + enabled by deploy/install-service.sh (which fills in __PYTHON__ and
+# __DIR__). Runs as root: it drives nmcli (AP control) and binds :80 on the
+# setup network -- both need privilege. It touches networking only, never the
+# camera, so it coexists with speedkam.service.
+[Unit]
+Description=SpeedKam Wi-Fi onboarding (setup AP + captive portal when offline)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=__PYTHON__ -m speedkam.netcfg --config __DIR__/config.yaml
+WorkingDirectory=__DIR__
+Environment=PYTHONPATH=__DIR__/src
+Environment=PYTHONUNBUFFERED=1
+# When offline it opens a setup AP and waits for a human, which can take a long
+# time -- that is not a hang, so give it no start timeout.
+TimeoutStartSec=0
+# Retry on crash, but a clean exit (we got online) must NOT trigger a restart.
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

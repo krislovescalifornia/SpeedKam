@@ -202,6 +202,31 @@ web:
     username: admin
     password: ""
 
+netcfg:
+  # Wi-Fi onboarding for headless nodes (speedkam-netcfg.service). On boot, if
+  # the node can't reach the internet, it raises its own Wi-Fi access point named
+  # "SpeedKam-Setup-<nodeid>" and serves a phone-friendly setup page. Connect a
+  # phone to that AP, pick a nearby network, type the password -- the node joins
+  # it, saves the profile (so it auto-joins forever after), and tears the AP
+  # down. That's how you move a node to a NEW site with no screen, no SSH, and no
+  # re-imaging. Boots where the node is already online are a silent no-op.
+  #
+  # This is onboarding, not evasion: it only joins a network you're standing in
+  # front of and authorised to use. A node that's online but walled off from LAN
+  # peers (e.g. a guest network) counts as online and is left alone.
+  enabled: true
+  interface: wlan0
+  ap_ssid_prefix: SpeedKam-Setup
+  # Blank = OPEN setup AP (easiest; it's only up while offline and torn down the
+  # instant the node joins a real network). Set 8+ chars to lock it with WPA2.
+  ap_password: ""
+  # Seconds to wait for real connectivity at boot before opening the setup AP.
+  online_timeout: 90
+  portal_title: "SpeedKam Wi-Fi setup"
+  # NetworkManager 'shared'-mode gateway = the portal's address. Only change if
+  # it clashes with a site network you're joining.
+  captive_ip: "10.42.0.1"
+
 backup:
   # Off-site backup: mirror every event (CSV row + snapshot + clip) to a web
   # domain you own, so records survive if the camera is damaged or stolen.

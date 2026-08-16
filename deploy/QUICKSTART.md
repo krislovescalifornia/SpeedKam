@@ -168,11 +168,37 @@ own.
 
 ---
 
+## Moving a node to a different Wi-Fi (no re-imaging)
+
+When you take a node to a new site — or the Wi-Fi it knew isn't reachable (a
+walled-off **guest network**, a changed password, a different building) — you
+don't re-flash anything. The node onboards itself over its own setup hotspot:
+
+1. Power the node on where you want it. Give it ~2 minutes.
+2. If it **can't get online**, it puts out its own Wi-Fi network called
+   **`SpeedKam-Setup-XXXXXX`** (the `XXXXXX` matches the node's hostname suffix).
+3. On your phone, join that `SpeedKam-Setup-…` network. A setup page pops up on
+   its own (if it doesn't, open a browser to `http://10.42.0.1`).
+4. Pick the network you want the node to use, type its password, tap **Join**.
+5. The setup network disappears while the node switches over. If it worked, the
+   node is now on your chosen network — reconnect your phone to that same network
+   and open the dashboard on `:8080`. If `SpeedKam-Setup-…` comes back a minute
+   later, the password was wrong or the network had no internet; rejoin and retry.
+
+The node **remembers** each network it joins, so it auto-reconnects on future
+boots and only shows the setup hotspot when it truly can't get online. This is
+just onboarding — it joins networks you choose and are allowed to use; it does
+not get a node past a network that's intentionally blocking it (that guest
+network was doing its job).
+
+---
+
 ## Quick reference
 
 | Thing | Value |
 |---|---|
 | Dashboard address | `http://<your-hostname>.local:8080` |
+| Change a node's Wi-Fi | Join its `SpeedKam-Setup-XXXXXX` hotspot → pick a network (portal at `http://10.42.0.1`) |
 | The one command | `bash deploy/image/prepare-boot.sh --boot /X/ --config-local ./config.local.yaml` (X = your drive letter) |
 | First boot wait | ~5 minutes, then refresh the browser |
 | Needs internet on first boot? | **Yes** |
