@@ -33,6 +33,18 @@
   .btn:hover{filter:brightness(1.08)}
   .btn.sm{padding:5px 10px;font-size:12.5px}
   .btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+  .btn.warn{color:#ff9ab0;border-color:#5c2130}
+  .btn.warn:hover{background:#5c2130;color:#fff;filter:none}
+  #power{position:fixed;inset:0;background:rgba(0,0,0,.8);display:none;
+    align-items:center;justify-content:center;z-index:20;padding:20px}
+  #power.show{display:flex}
+  #power .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    max-width:420px;width:100%;padding:22px}
+  #power h3{margin:0 0 10px;font-size:17px}
+  #power p{margin:0 0 18px;color:var(--muted);line-height:1.5}
+  #power p b{color:var(--text)}
+  #power .row{display:flex;gap:10px;justify-content:flex-end}
+  #power .err{color:#ff9ab0}
   main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:20px;
     grid-template-columns:2fr 1fr}
   @media(max-width:900px){main{grid-template-columns:1fr}}
@@ -119,6 +131,8 @@
     <span class="pill" id="p-backup">backup —</span>
     <span class="pill" id="p-calib">calibration —</span>
     <a class="btn" href="/calibrate">Calibrate</a>
+    <button class="btn ghost sm" id="btn-restart" onclick="powerConfirm('reboot')">Restart</button>
+    <button class="btn ghost sm warn" id="btn-shutdown" onclick="powerConfirm('shutdown')">Shutdown</button>
   </div>
 </header>
 
@@ -213,6 +227,15 @@
 <div id="modal"><button class="close" onclick="closeModal()">&times;</button>
   <video id="player" controls autoplay></video></div>
 
+<div id="power"><div class="box">
+  <h3 id="pw-title"></h3>
+  <p id="pw-msg"></p>
+  <div class="row">
+    <button class="btn ghost" id="pw-cancel" onclick="powerCancel()">Cancel</button>
+    <button class="btn" id="pw-go" onclick="powerGo()">Confirm</button>
+  </div>
+</div></div>
+
 <script>
 let UNITS = "mph", LIMIT_KMH = null, SKAP = 0, ORIENT = "parallel";
 let FROM = "", TO = "";
@@ -265,6 +288,10 @@ function refreshStatus(s){
   else if(age <= 2){ fr.className='fresh live'; fr.textContent='live'; fr.title='updated '+age+'s ago'; }
   else if(age <= 5){ fr.className='fresh live'; fr.textContent='live · '+age+'s'; fr.title='updated '+age+'s ago'; }
   else { fr.className='fresh stale'; fr.textContent='stale · '+age+'s'; fr.title='no new frames for '+age+'s — camera may have stalled'; }
+
+  const pwDisp = (s.power_controls === false) ? 'none' : '';
+  q('#btn-restart').style.display = pwDisp;
+  q('#btn-shutdown').style.display = pwDisp;
 
   SKAP = s.speedkapture_threshold ?? 0;
   const unitLbl = UNITS==="mph"?"mph":"km/h";
@@ -393,6 +420,51 @@ async function refreshTop(){
 function openModal(src){ const m=q('#modal'),p=q('#player'); p.src=src; m.classList.add('show'); }
 function closeModal(){ const m=q('#modal'),p=q('#player'); p.pause(); p.src=''; m.classList.remove('show'); }
 q('#modal').addEventListener('click', e=>{ if(e.target.id==='modal') closeModal(); });
+
+// --- power controls (Restart / Shutdown the Pi) ---------------------------
+let PWACTION = null;
+function powerConfirm(action){
+  PWACTION = action;
+  const reboot = action==='reboot';
+  q('#pw-title').textContent = reboot ? 'Restart the Pi?' : 'Shut down the Pi?';
+  q('#pw-msg').innerHTML = reboot
+    ? 'The node will reboot. The dashboard disconnects for ~30–60s, then comes back on its own.'
+    : '<b>The node will power off completely.</b> It can’t be turned back on remotely — someone has to physically power-cycle it. Only do this if you can reach it in person.';
+  const go = q('#pw-go');
+  go.textContent = reboot ? 'Restart' : 'Shut down';
+  go.className = reboot ? 'btn' : 'btn warn';
+  go.style.display = '';
+  q('#pw-cancel').textContent = 'Cancel';
+  q('#pw-msg').classList.remove('err');
+  q('#power').classList.add('show');
+}
+function powerCancel(){ q('#power').classList.remove('show'); PWACTION = null; }
+async function powerGo(){
+  const action = PWACTION; if(!action) return;
+  const reboot = action==='reboot';
+  // Optimistic: the box goes down as soon as the command is accepted, so the
+  // POST response may never arrive. Say what's happening before we fire it.
+  q('#pw-title').textContent = reboot ? 'Restarting…' : 'Shutting down…';
+  q('#pw-msg').innerHTML = reboot
+    ? 'The dashboard will disconnect now and should return in about a minute.'
+    : 'The node is powering off. This page will stop responding.';
+  q('#pw-go').style.display = 'none';
+  q('#pw-cancel').textContent = 'Close';
+  let r = null;
+  try {
+    r = await fetch('/api/power', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action})}).then(x=>x.json());
+  } catch(e){ return; }   // connection dropped == it's going down; leave message
+  if(r && !r.ok){          // refused before doing anything (e.g. no sudo rule)
+    q('#pw-title').textContent = 'Couldn’t ' + (reboot?'restart':'shut down');
+    q('#pw-msg').textContent = r.error || 'The node refused the command.';
+    q('#pw-msg').classList.add('err');
+    q('#pw-go').style.display = ''; q('#pw-go').textContent = 'Retry';
+    q('#pw-cancel').textContent = 'Cancel';
+  }
+}
+q('#power').addEventListener('click', e=>{ if(e.target.id==='power') powerCancel(); });
 
 async function refreshAll(){
   const s = await fetch('/api/status').then(r=>r.json()).catch(()=>({}));

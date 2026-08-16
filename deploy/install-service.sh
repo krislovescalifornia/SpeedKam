@@ -86,6 +86,29 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 systemctl restart "${SERVICE_NAME}.service"
 
+# --- dashboard power controls (Restart / Shutdown buttons) ------------------
+# The service runs as ${RUN_USER}, not root, so grant it passwordless sudo for
+# EXACTLY `systemctl reboot` and `systemctl poweroff` -- nothing else. The
+# dashboard's /api/power endpoint calls `sudo -n systemctl reboot|poweroff`.
+SUDOERS="/etc/sudoers.d/speedkam-power"
+SYSTEMCTL="$(command -v systemctl || echo /usr/bin/systemctl)"
+echo
+echo "Installing dashboard power controls (${SUDOERS})"
+cat > "${SUDOERS}" <<EOF
+# Installed by SpeedKam install-service.sh. Lets the dashboard (running as
+# ${RUN_USER}) reboot or power off the Pi from the Restart/Shutdown buttons,
+# and nothing else.
+${RUN_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL} reboot, ${SYSTEMCTL} poweroff
+EOF
+chmod 0440 "${SUDOERS}"
+if visudo -cf "${SUDOERS}" >/dev/null 2>&1; then
+  echo "  ok: ${RUN_USER} may run 'systemctl reboot' and 'systemctl poweroff'."
+else
+  echo "  WARNING: ${SUDOERS} failed validation; removing it (power buttons will" >&2
+  echo "           report a permission error until this is fixed)." >&2
+  rm -f "${SUDOERS}"
+fi
+
 # --- Wi-Fi onboarding service (AP-mode setup portal when offline) -----------
 # Optional but installed by default when NetworkManager + nmcli are present
 # (Raspberry Pi OS Bookworm). Lets a headless node be joined to a new network

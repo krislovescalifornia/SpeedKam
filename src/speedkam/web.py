@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -107,6 +108,8 @@ class Runner:
         return {
             "running": sc.running,
             "frame_age": frame_age,
+            "power_controls": bool((self.cfg.get("web") or {})
+                                   .get("allow_power_control", True)),
             "calibrated": calib is not None,
             "calibration_points": (len(calib.image_points) if calib else 0),
             "reprojection_error_m": (round(calib.reprojection_error(), 3)
@@ -339,6 +342,36 @@ def create_app(runner: Runner) -> Flask:
         applied = runner.set_orientation(val)
         return jsonify({"ok": True, "orientation": applied,
                         "measure_band": runner.speedcam._active_band()})
+
+    @app.route("/api/power", methods=["POST"])
+    def power():
+        # Gracefully reboot / power off the whole Pi from the dashboard. Gated by
+        # config, and by a sudoers drop-in (install-service.sh) that lets the
+        # non-root service user run ONLY `systemctl reboot`/`poweroff`. `sudo -n`
+        # is non-interactive, so a node missing that rule fails fast with a clear
+        # message instead of hanging on a password prompt.
+        if not (runner.cfg.get("web") or {}).get("allow_power_control", True):
+            return jsonify({"ok": False,
+                            "error": "power control is disabled in config"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        action = data.get("action", request.form.get("action"))
+        cmd = {"reboot": "reboot", "shutdown": "poweroff"}.get(action)
+        if not cmd:
+            return jsonify({"ok": False,
+                            "error": "action must be 'reboot' or 'shutdown'"}), 400
+        try:
+            r = subprocess.run(["sudo", "-n", "systemctl", cmd],
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        if r.returncode != 0:
+            msg = (r.stderr or r.stdout or "command failed").strip()
+            if "password is required" in msg or "a terminal is required" in msg:
+                msg = ("the node hasn't granted power permission yet -- re-run "
+                       "deploy/install-service.sh on it once.")
+            return jsonify({"ok": False, "error": msg}), 500
+        # systemctl has enqueued the transition; the box goes down momentarily.
+        return jsonify({"ok": True, "action": action})
 
     @app.route("/api/events")
     def events():

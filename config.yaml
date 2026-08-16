@@ -201,6 +201,12 @@ web:
   auth:
     username: admin
     password: ""
+  # Restart/Shutdown buttons on the dashboard that reboot or power off the whole
+  # Pi (via a sudoers rule installed by install-service.sh). Set false to hide
+  # them and refuse the endpoint. NOTE: a shutdown on a remote/headless node
+  # can only be undone by physically power-cycling it -- keep that in mind before
+  # exposing it on a network you don't fully trust.
+  allow_power_control: true
 
 netcfg:
   # Wi-Fi onboarding for headless nodes (speedkam-netcfg.service). On boot, if

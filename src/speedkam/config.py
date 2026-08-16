@@ -113,6 +113,12 @@ DEFAULTS = {
         # is set (put the real one in config.local.yaml). When set, every request
         # -- pages, APIs, the live stream, and /captures -- requires it.
         "auth": {"username": "admin", "password": ""},
+        # Show Restart/Shutdown buttons on the dashboard that reboot or power off
+        # the whole Pi. Needs the sudoers drop-in from install-service.sh. Set
+        # false to hide the buttons and refuse the endpoint (e.g. if the LAN is
+        # not fully trusted -- a power-off on a remote node needs a physical
+        # visit to undo).
+        "allow_power_control": True,
     },
     "backup": {
         "enabled": False,
