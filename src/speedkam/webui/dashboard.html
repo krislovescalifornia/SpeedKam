@@ -22,6 +22,12 @@
   .pill b{color:var(--text);font-weight:600}
   .pill.ok{border-color:#215c3a;color:#8be5ab}
   .pill.bad{border-color:#5c2130;color:#ff9ab0}
+  .fresh{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.3px;
+    text-transform:none;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
+    color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .fresh::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .fresh.live{border-color:#215c3a;color:#8be5ab}
+  .fresh.stale{border-color:#5c2130;color:#ff9ab0}
   .btn{background:var(--accent);color:#04121f;border:none;border-radius:8px;
     padding:8px 14px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
   .btn:hover{filter:brightness(1.08)}
@@ -119,7 +125,7 @@
 <main>
   <div class="col">
     <div class="card live">
-      <h2>Live view</h2>
+      <h2>Live view <span class="fresh" id="p-fresh" title="live-feed freshness">—</span></h2>
       <img src="/stream.mjpg" alt="live view">
     </div>
     <div class="card">
@@ -251,6 +257,14 @@ function refreshStatus(s){
   LIMIT_KMH = s.speed_limit_kmh ?? LIMIT_KMH;
   q('#p-cam').innerHTML = 'camera <b>'+s.camera_source+'</b>';
   q('#p-fps').innerHTML = '<b>'+(s.fps||0).toFixed(1)+'</b> fps';
+
+  // Live-view freshness: seconds since the last frame (server-computed). An
+  // empty road still produces frames, so a climbing age is a real freeze.
+  const fr = q('#p-fresh'), age = s.frame_age;
+  if(age == null){ fr.className='fresh'; fr.textContent='no signal'; fr.title='no frames received yet'; }
+  else if(age <= 2){ fr.className='fresh live'; fr.textContent='live'; fr.title='updated '+age+'s ago'; }
+  else if(age <= 5){ fr.className='fresh live'; fr.textContent='live · '+age+'s'; fr.title='updated '+age+'s ago'; }
+  else { fr.className='fresh stale'; fr.textContent='stale · '+age+'s'; fr.title='no new frames for '+age+'s — camera may have stalled'; }
 
   SKAP = s.speedkapture_threshold ?? 0;
   const unitLbl = UNITS==="mph"?"mph":"km/h";

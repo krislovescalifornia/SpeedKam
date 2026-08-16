@@ -14,6 +14,7 @@ import csv
 import hmac
 import io
 import threading
+import time
 from pathlib import Path
 
 import cv2
@@ -41,6 +42,7 @@ class Runner:
 
         self._latest_jpeg = None       # annotated, for the live stream
         self._latest_raw = None        # clean frame, for calibration snapshot
+        self._last_frame_ts = None     # monotonic time of the last frame (freshness)
         self._cond = threading.Condition()
         self._stop = threading.Event()
         self._thread = None
@@ -63,6 +65,7 @@ class Runner:
         with self._cond:
             self._latest_jpeg = buf.tobytes()
             self._latest_raw = raw
+            self._last_frame_ts = time.monotonic()
             self._cond.notify_all()
 
     # --------------------------------------------------------------- streams
@@ -94,8 +97,16 @@ class Runner:
                   else {"enabled": False})
         retention = (sc.retention.status() if getattr(sc, "retention", None)
                      else {"enabled": False})
+        # Seconds since the live view last got a frame. None = none yet; a value
+        # that keeps climbing means the camera/pipeline has stalled (an empty
+        # road still produces frames, so a growing age is a real freeze, not a
+        # quiet street). The dashboard turns this into a live/stale badge.
+        with self._cond:
+            ts = self._last_frame_ts
+        frame_age = None if ts is None else round(time.monotonic() - ts, 1)
         return {
             "running": sc.running,
+            "frame_age": frame_age,
             "calibrated": calib is not None,
             "calibration_points": (len(calib.image_points) if calib else 0),
             "reprojection_error_m": (round(calib.reprojection_error(), 3)
