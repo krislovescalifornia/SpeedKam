@@ -30,7 +30,8 @@ from .undistort import Undistorter
 class Camera:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.backend = cfg["backend"]
+        self._configured_backend = cfg["backend"]
+        self.backend = None            # resolved on open: 'opencv' | 'picamera2'
         # Optional lens undistortion, applied to every frame BEFORE anything
         # downstream sees it -- so calibration and detection share one geometry.
         self.undistorter = Undistorter(cfg.get("undistort"))
@@ -42,21 +43,71 @@ class Camera:
         self._offline = False
         self._file_fps = float(cfg.get("fps", 30) or 30)
         self._frame_idx = 0
-        if self.backend == "auto":
-            self.backend = self._auto_detect_backend()
-        if self.backend == "picamera2":
-            self._open_picamera2()
-        else:
-            self._open_opencv()
+        # A camera that can't open must NOT crash the node: the web dashboard and
+        # fleet heartbeat have to stay up so the fault is visible and the node
+        # can be fixed remotely (a knocked-loose CSI cable shouldn't brick it).
+        # Opening is therefore best-effort -- on failure we stay closed and the
+        # run loop retries. `opened` reflects the current live state.
+        self.opened = False
+        self.open_error = None
+        self._open()
+
+    # ------------------------------------------------------------------- open
+    def _open(self, quiet=False):
+        """(Re)open the camera and set self.opened. Never raises: a failure just
+        leaves the camera closed with `open_error` set, so the run loop can keep
+        the node alive and retry."""
+        backend = self._configured_backend
+        if backend == "auto":
+            backend = self._auto_detect_backend(quiet=quiet)
+        self.backend = backend
+        try:
+            if backend == "picamera2":
+                self._open_picamera2()
+            else:
+                self._open_opencv()
+            self.opened = True
+            self.open_error = None
+        except Exception as exc:  # noqa: BLE001 - stay up + retry, never crash
+            self.open_error = str(exc)
+            self.opened = False
+            self._picam = None
+            self._cap = None
+        return self.opened
+
+    def reopen(self):
+        """Drop any handle and try to open again (quietly). Returns `opened`."""
+        self.mark_closed()
+        return self._open(quiet=True)
+
+    def mark_closed(self):
+        """Release the handle and mark the camera closed (after a read failure or
+        disconnect) so the run loop drops into its reopen/retry path."""
+        try:
+            self.release()
+        except Exception:  # noqa: BLE001 - best effort; we're tearing it down
+            pass
+        self._cap = None
+        self._picam = None
+        self.opened = False
+
+    @property
+    def offline(self):
+        """True for a local video file: its end means stop, whereas a live
+        camera returning nothing means a disconnect to retry."""
+        return self._offline
 
     # -------------------------------------------------------------------- auto
-    def _auto_detect_backend(self):
+    def _auto_detect_backend(self, quiet=False):
         """Pick the camera that's actually attached, at startup.
 
         Prefer the native CSI camera (the recommended global-shutter sensor for
         a speed cam); fall back to an OpenCV source (USB webcam / file / stream).
         On the Windows dev box picamera2 simply isn't installed, so 'auto'
         cleanly resolves to the webcam there too -- one config works everywhere.
+
+        `quiet` silences the chatter on retry attempts (this is polled every few
+        seconds while a camera is unplugged).
         """
         try:
             from picamera2 import Picamera2  # type: ignore
@@ -64,12 +115,16 @@ class Camera:
             cams = Picamera2.global_camera_info()
             if cams:
                 models = ", ".join(c.get("Model", "?") for c in cams) or "?"
-                print(f"[camera] auto: CSI camera present ({models}) -> picamera2")
+                if not quiet:
+                    print(f"[camera] auto: CSI camera present ({models}) -> picamera2")
                 return "picamera2"
-            print("[camera] auto: picamera2 available but no CSI camera attached")
+            if not quiet:
+                print("[camera] auto: picamera2 available but no CSI camera attached")
         except Exception as exc:  # ImportError on dev box, or libcamera hiccup
-            print(f"[camera] auto: no CSI camera ({exc})")
-        print(f"[camera] auto: falling back to OpenCV source {self.cfg['source']!r}")
+            if not quiet:
+                print(f"[camera] auto: no CSI camera ({exc})")
+        if not quiet:
+            print(f"[camera] auto: falling back to OpenCV source {self.cfg['source']!r}")
         return "opencv"
 
     # ------------------------------------------------------------------ opencv
@@ -127,27 +182,38 @@ class Camera:
 
     # -------------------------------------------------------------------- read
     def read(self):
-        """Return (t_monotonic, BGR frame) or (None, None) on failure/end."""
-        if self._picam is not None:  # pragma: no cover - Pi only
-            t = time.monotonic()
-            rgb = self._picam.capture_array()
-            frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            return t, self.undistorter.apply(frame)
+        """Return (t_monotonic, BGR frame) or (None, None) on failure/end.
 
-        ok, frame = self._cap.read()
-        if (not ok or frame is None) and self._offline and self.cfg.get("loop"):
-            # Loop a video file (handy for demos/tests): rewind and continue.
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self._frame_idx = 0
-            ok, frame = self._cap.read()
-        if not ok or frame is None:
+        A camera that vanishes mid-stream (unplugged, undervoltage) raises here;
+        we catch it, mark the camera closed, and return (None, None) so the run
+        loop retries instead of crashing the node.
+        """
+        if not self.opened:
             return None, None
-        if self._offline:
-            t = self._frame_idx / self._file_fps
-            self._frame_idx += 1
-        else:
-            t = time.monotonic()
-        return t, self.undistorter.apply(frame)
+        try:
+            if self._picam is not None:  # pragma: no cover - Pi only
+                t = time.monotonic()
+                rgb = self._picam.capture_array()
+                frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                return t, self.undistorter.apply(frame)
+
+            ok, frame = self._cap.read()
+            if (not ok or frame is None) and self._offline and self.cfg.get("loop"):
+                # Loop a video file (handy for demos/tests): rewind and continue.
+                self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self._frame_idx = 0
+                ok, frame = self._cap.read()
+            if not ok or frame is None:
+                return None, None
+            if self._offline:
+                t = self._frame_idx / self._file_fps
+                self._frame_idx += 1
+            else:
+                t = time.monotonic()
+            return t, self.undistorter.apply(frame)
+        except Exception:  # noqa: BLE001 - treat a mid-read failure as a drop
+            self.mark_closed()
+            return None, None
 
     @property
     def actual_size(self):

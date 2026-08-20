@@ -278,7 +278,9 @@ function attrsHtml(ev){
 function refreshStatus(s){
   UNITS = s.units || "mph";
   LIMIT_KMH = s.speed_limit_kmh ?? LIMIT_KMH;
-  q('#p-cam').innerHTML = 'camera <b>'+s.camera_source+'</b>';
+  const cam = q('#p-cam');
+  if(s.camera_ok === false){ cam.className='pill bad'; cam.innerHTML='camera <b>down</b>'; }
+  else { cam.className='pill'; cam.innerHTML='camera <b>'+s.camera_source+'</b>'; }
   q('#p-fps').innerHTML = '<b>'+(s.fps||0).toFixed(1)+'</b> fps';
 
   // Live-view freshness: seconds since the last frame (server-computed). An

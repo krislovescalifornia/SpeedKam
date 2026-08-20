@@ -202,13 +202,41 @@ class SpeedCamera:
         print(f"[SpeedKam] Running ({where}). Ctrl+C to stop.")
 
         try:
+            cam_down_logged = False
             while True:
                 if stop_event is not None and stop_event.is_set():
                     break
+
+                # Camera not open (never opened, or disconnected mid-run): keep
+                # the node alive -- the web dashboard and fleet heartbeat, both
+                # already started above, stay up -- and retry. A loose CSI cable
+                # must not brick a remote node; it just shows "camera down".
+                if not self.camera.opened:
+                    self.current_fps = 0.0
+                    if self.camera.reopen():
+                        print(f"[SpeedKam] camera connected ({self.camera.backend}).")
+                        cam_down_logged = False
+                    else:
+                        if not cam_down_logged:
+                            print("[SpeedKam] camera unavailable "
+                                  f"({self.camera.open_error}) -- serving dashboard "
+                                  "without video; retrying every 3s.")
+                            cam_down_logged = True
+                        if self._wait(stop_event, 3.0):
+                            break
+                        continue
+
                 t, frame = self.camera.read()
                 if frame is None:
-                    print("[SpeedKam] End of stream / camera read failed.")
-                    break
+                    if self.camera.offline:
+                        print("[SpeedKam] End of video stream.")
+                        break
+                    # A live camera returned nothing -> treat as a disconnect and
+                    # fall into the reopen/retry path above, don't kill the loop.
+                    self.current_fps = 0.0
+                    self.camera.mark_closed()
+                    continue
+
                 frames += 1
                 self._tick_fps()
                 self.frame_wh = (frame.shape[1], frame.shape[0])
@@ -252,6 +280,15 @@ class SpeedCamera:
             if dur > 0:
                 print(f"[SpeedKam] Processed {frames} frames in {dur:.1f}s "
                       f"({frames / dur:.1f} FPS).")
+
+    @staticmethod
+    def _wait(stop_event, seconds):
+        """Sleep, but wake immediately if a stop is requested. Returns True if
+        the caller should stop."""
+        if stop_event is not None:
+            return stop_event.wait(seconds)
+        time.sleep(seconds)
+        return False
 
     def _tick_fps(self):
         now = time.monotonic()

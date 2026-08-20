@@ -107,6 +107,7 @@ class Runner:
         frame_age = None if ts is None else round(time.monotonic() - ts, 1)
         return {
             "running": sc.running,
+            "camera_ok": bool(getattr(sc.camera, "opened", True)),
             "frame_age": frame_age,
             "power_controls": bool((self.cfg.get("web") or {})
                                    .get("allow_power_control", True)),
