@@ -43,8 +43,13 @@ class SpeedCamera:
         # it works even while the node is still uncalibrated (which is exactly
         # when you'd be drive-by calibrating). Guarded by its own lock because
         # the pipeline thread writes it and the Flask thread reads it.
-        self._recent_passes = deque(maxlen=20)
+        self._recent_passes = deque(maxlen=40)
         self._passes_lock = threading.Lock()
+        # When set (by the web drive-by session), also grab a small thumbnail of
+        # each finished vehicle so the operator can pick their own truck out of a
+        # list that includes random neighbour traffic. Off the rest of the time
+        # so normal operation pays no JPEG-encode cost per pass.
+        self._pass_thumbs = threading.Event()
         self.calibration = Calibration.load(cfg["speed"]["calibration_file"])
         if self.calibration is None:
             print("[SpeedKam] No calibration found -> DETECTION-ONLY mode "
@@ -306,28 +311,69 @@ class SpeedCamera:
                 self.current_fps = (len(self._fps_times) - 1) / span
 
     # ----------------------------------------------------------------- finalize
+    def set_pass_thumbs(self, enabled):
+        """Toggle per-pass thumbnail capture (see _pass_thumbs)."""
+        if enabled:
+            self._pass_thumbs.set()
+        else:
+            self._pass_thumbs.clear()
+
+    def _make_thumb(self, track):
+        """A small JPEG crop of the vehicle near mid-pass, or None.
+
+        Lets the drive-by UI show what each pass was, so the operator can tell
+        their own truck from a neighbour's car. Best-effort: needs the recorder's
+        frame buffer, and never raises into the pipeline loop.
+        """
+        if self.recorder is None or not track.samples:
+            return None
+        try:
+            s = track.samples[len(track.samples) // 2]
+            frame = self.recorder.frame_at(s.t)
+            if frame is None:
+                return None
+            h, w = frame.shape[:2]
+            x, y, bw, bh = (int(v) for v in s.bbox)
+            pad = int(0.15 * max(bw, bh))
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            x1, y1 = min(w, x + bw + pad), min(h, y + bh + pad)
+            crop = frame[y0:y1, x0:x1]
+            if crop.size == 0:
+                crop = frame
+            tw = 200
+            scale = tw / max(1, crop.shape[1])
+            small = cv2.resize(crop, (tw, max(1, int(crop.shape[0] * scale))))
+            ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 72])
+            return buf.tobytes() if ok else None
+        except Exception:  # noqa: BLE001 - a thumbnail must never break the loop
+            return None
+
     def _record_pass(self, track):
         """Snapshot a finished track's ground-point pixel trail for drive-by
         calibration. Cheap; runs for every confirmed track regardless of
-        calibration state."""
+        calibration state. Adds a thumbnail only while a drive-by session asked
+        for them."""
         trail = [(s.t, float(s.ground_px[0]), float(s.ground_px[1]))
                  for s in track.samples]
         if len(trail) < 2:
             return
+        thumb = self._make_thumb(track) if self._pass_thumbs.is_set() else None
         with self._passes_lock:
-            self._recent_passes.append(
-                {"finish_t": time.monotonic(), "id": track.id, "trail": trail})
+            self._recent_passes.append({
+                "finish_t": time.monotonic(),
+                "wall": datetime.now().strftime("%H:%M:%S"),
+                "id": track.id,
+                "trail": trail,
+                "thumb": thumb,
+            })
 
-    def latest_pass(self, after_t):
-        """Oldest recorded pass that finished strictly after `after_t`, or None.
-
-        Oldest-unseen (not newest) so several quick passes are captured in order
-        as the caller advances `after_t` past each returned pass.
-        """
+    def passes_since(self, after_t):
+        """All recorded passes that finished strictly after `after_t`, oldest
+        first. The caller advances `after_t` past what it has consumed."""
         with self._passes_lock:
             fresh = [p for p in self._recent_passes if p["finish_t"] > after_t]
         fresh.sort(key=lambda p: p["finish_t"])
-        return fresh[0] if fresh else None
+        return fresh
 
     def _finalize(self, track):
         # Record the raw pixel trail first -- the drive-by calibrator needs it

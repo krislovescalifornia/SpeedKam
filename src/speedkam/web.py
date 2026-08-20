@@ -265,22 +265,28 @@ class Runner:
         return v / MPH_PER_MS if units == "mph" else v / KMH_PER_MS
 
     def _db_summary(self):
-        """Public view of the drive-by session (no raw trails)."""
+        """Public view of the session (metadata only; no trails or thumb bytes).
+
+        Every pass that crossed the frame while recording is listed -- yours and
+        any passing traffic alike. The operator selects which are theirs
+        client-side; build() uses only the selected ids."""
         passes = [{
-            "n": len(p["trail"]),
-            "lane": p["lane"],
-            "speed_mps": round(p["speed_mps"], 2),
-            "direction": p["direction"],
+            "id": p["id"],
+            "n": p["n"],
+            "direction": p["direction"],       # "→" (right) or "←" (left)
+            "wall": p["wall"],
+            "has_thumb": p["thumb"] is not None,
         } for p in self._db["passes"]]
-        return {"armed": self._db["armed"], "passes": passes,
-                "lanes": sorted({p["lane"] for p in self._db["passes"]})}
+        return {"armed": self._db["armed"], "passes": passes, "count": len(passes)}
 
     def driveby_start(self):
+        self.speedcam.set_pass_thumbs(True)
         with self._db_lock:
             self._db = {"armed": True, "since": time.monotonic(), "passes": []}
             return self._db_summary()
 
     def driveby_stop(self):
+        self.speedcam.set_pass_thumbs(False)
         with self._db_lock:
             self._db["armed"] = False
             return self._db_summary()
@@ -291,47 +297,67 @@ class Runner:
             self._db["since"] = time.monotonic()
             return self._db_summary()
 
-    def driveby_remove(self, index):
+    def driveby_remove(self, pass_id):
         with self._db_lock:
-            if 0 <= index < len(self._db["passes"]):
-                self._db["passes"].pop(index)
+            self._db["passes"] = [p for p in self._db["passes"]
+                                  if p["id"] != pass_id]
             return self._db_summary()
 
-    def driveby_poll(self, speed_value, units, lane):
-        """While armed, adopt at most one newly finished pass, tagging it with
-        the operator-selected speed + lane. Returns the session summary plus
-        whether a new pass was just captured."""
+    def driveby_poll(self):
+        """Adopt every pass finished since the last poll. Captures all traffic;
+        the operator sorts out which are theirs later. Returns the session
+        summary plus how many new passes were just added."""
         with self._db_lock:
             if not self._db["armed"]:
-                return {**self._db_summary(), "new": False}
+                return {**self._db_summary(), "new": 0}
             since = self._db["since"]
-        p = self.speedcam.latest_pass(since)
-        new = False
-        if p is not None:
+        added = 0
+        for p in self.speedcam.passes_since(since):
             trail = p["trail"]
-            direction = "→ right" if trail[-1][1] >= trail[0][1] else "← left"
-            try:
-                speed_mps = self._kmh_to_mps(speed_value, units)
-            except (TypeError, ValueError):
-                speed_mps = 0.0
+            direction = "→" if trail[-1][1] >= trail[0][1] else "←"
+            entry = {"id": p["id"], "trail": trail, "thumb": p.get("thumb"),
+                     "direction": direction, "n": len(trail),
+                     "wall": p.get("wall", "")}
             with self._db_lock:
-                # Re-check under lock in case the session was reset mid-poll.
-                if self._db["armed"] and p["finish_t"] > self._db["since"]:
-                    self._db["passes"].append({
-                        "trail": trail, "speed_mps": speed_mps,
-                        "lane": int(lane), "direction": direction})
+                if (self._db["armed"] and p["finish_t"] > self._db["since"]
+                        and all(e["id"] != p["id"] for e in self._db["passes"])):
+                    self._db["passes"].append(entry)
                     self._db["since"] = p["finish_t"]
-                    new = True
+                    added += 1
         with self._db_lock:
-            return {**self._db_summary(), "new": new}
+            return {**self._db_summary(), "new": added}
 
-    def driveby_build(self, lane_width_m):
+    def driveby_thumb(self, pass_id):
         with self._db_lock:
-            passes = list(self._db["passes"])
+            for p in self._db["passes"]:
+                if p["id"] == pass_id:
+                    return p["thumb"]
+        return None
+
+    def driveby_build(self, speed_value, units, selected_ids, lane_width_m):
+        """Calibrate from ONLY the operator-selected passes, all driven at the
+        same known speed. Lane is inferred from travel direction: on a two-way
+        street the two directions are the two lanes, which supplies the second
+        (across-road) axis the homography needs."""
+        sel = set(selected_ids or [])
+        with self._db_lock:
+            chosen = [p for p in self._db["passes"] if p["id"] in sel]
+        if len(chosen) < 2:
+            raise driveby.DriveByError(
+                "Select at least 2 of your own passes to calibrate from.")
+        if len({p["direction"] for p in chosen}) < 2:
+            raise driveby.DriveByError(
+                "All selected passes go the same way. Select passes from BOTH "
+                "directions (some → and some ←) -- otherwise every point "
+                "lies on one line and no homography exists.")
+        speed_mps = self._kmh_to_mps(speed_value, units)
+        passes = [{"trail": p["trail"], "speed_mps": speed_mps,
+                   "lane": 0 if p["direction"] == "→" else 1} for p in chosen]
         img, world, info = driveby.build_correspondences(
             passes, self.speedcam.frame_wh, lane_width_m=float(lane_width_m))
         err = self.recalibrate(img, world, source="driveby")
         info["reprojection_error_m"] = round(err, 3)
+        info["selected"] = len(chosen)
         return info
 
 
@@ -534,27 +560,32 @@ def create_app(runner: Runner) -> Flask:
 
     @app.route("/api/driveby/poll", methods=["POST"])
     def driveby_poll():
-        data = request.get_json(force=True, silent=True) or {}
-        speed = data.get("speed")
-        units = data.get("units") or runner.speedcam.units
-        lane = data.get("lane", 0)
-        return jsonify({"ok": True, **runner.driveby_poll(speed, units, lane)})
+        return jsonify({"ok": True, **runner.driveby_poll()})
 
     @app.route("/api/driveby/remove", methods=["POST"])
     def driveby_remove():
         data = request.get_json(force=True, silent=True) or {}
         try:
-            idx = int(data.get("index"))
+            pid = int(data.get("id"))
         except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "index must be an integer"}), 400
-        return jsonify({"ok": True, **runner.driveby_remove(idx)})
+            return jsonify({"ok": False, "error": "id must be an integer"}), 400
+        return jsonify({"ok": True, **runner.driveby_remove(pid)})
+
+    @app.route("/api/driveby/pass/<int:pass_id>/thumb.jpg")
+    def driveby_thumb(pass_id):
+        data = runner.driveby_thumb(pass_id)
+        if not data:
+            return ("no thumbnail", 404)
+        return Response(data, mimetype="image/jpeg")
 
     @app.route("/api/driveby/build", methods=["POST"])
     def driveby_build():
         data = request.get_json(force=True, silent=True) or {}
         lane_width = data.get("lane_width_m", driveby.DEFAULT_LANE_WIDTH_M)
+        units = data.get("units") or runner.speedcam.units
         try:
-            info = runner.driveby_build(lane_width)
+            info = runner.driveby_build(data.get("speed"), units,
+                                        data.get("selected"), lane_width)
         except driveby.DriveByError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         except Exception as exc:  # noqa: BLE001 - report any geometry failure
