@@ -25,8 +25,12 @@ from flask import (Flask, Response, jsonify, request, send_file,
                    send_from_directory)
 
 from .calibration import Calibration
+from . import driveby
 from .pipeline import SpeedCamera
 from .recorder import CSV_COLUMNS
+
+KMH_PER_MS = 3.6
+MPH_PER_MS = 2.2369362920544
 
 WEBUI_DIR = Path(__file__).parent / "webui"
 
@@ -47,6 +51,11 @@ class Runner:
         self._cond = threading.Condition()
         self._stop = threading.Event()
         self._thread = None
+
+        # Drive-by calibration session (see driveby.py). One session at a time,
+        # which is fine for single-operator home use.
+        self._db_lock = threading.Lock()
+        self._db = {"armed": False, "since": 0.0, "passes": []}
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -239,12 +248,91 @@ class Runner:
         return buf.getvalue()
 
     # ------------------------------------------------------------- calibrate
-    def recalibrate(self, image_points, world_points):
+    def recalibrate(self, image_points, world_points, source="web"):
         calib = Calibration(image_points, world_points, meta={"units": "meters",
-                                                              "source": "web"})
+                                                              "source": source})
         calib.save(self.calibration_file)
         self.speedcam.set_calibration(calib)
         return calib.reprojection_error()
+
+    # ---------------------------------------------------------- drive-by calib
+    @staticmethod
+    def _kmh_to_mps(value, units):
+        """A user-entered display speed (mph or km/h) -> metres/second."""
+        v = float(value)
+        if v <= 0:
+            raise ValueError("speed must be positive")
+        return v / MPH_PER_MS if units == "mph" else v / KMH_PER_MS
+
+    def _db_summary(self):
+        """Public view of the drive-by session (no raw trails)."""
+        passes = [{
+            "n": len(p["trail"]),
+            "lane": p["lane"],
+            "speed_mps": round(p["speed_mps"], 2),
+            "direction": p["direction"],
+        } for p in self._db["passes"]]
+        return {"armed": self._db["armed"], "passes": passes,
+                "lanes": sorted({p["lane"] for p in self._db["passes"]})}
+
+    def driveby_start(self):
+        with self._db_lock:
+            self._db = {"armed": True, "since": time.monotonic(), "passes": []}
+            return self._db_summary()
+
+    def driveby_stop(self):
+        with self._db_lock:
+            self._db["armed"] = False
+            return self._db_summary()
+
+    def driveby_reset(self):
+        with self._db_lock:
+            self._db["passes"] = []
+            self._db["since"] = time.monotonic()
+            return self._db_summary()
+
+    def driveby_remove(self, index):
+        with self._db_lock:
+            if 0 <= index < len(self._db["passes"]):
+                self._db["passes"].pop(index)
+            return self._db_summary()
+
+    def driveby_poll(self, speed_value, units, lane):
+        """While armed, adopt at most one newly finished pass, tagging it with
+        the operator-selected speed + lane. Returns the session summary plus
+        whether a new pass was just captured."""
+        with self._db_lock:
+            if not self._db["armed"]:
+                return {**self._db_summary(), "new": False}
+            since = self._db["since"]
+        p = self.speedcam.latest_pass(since)
+        new = False
+        if p is not None:
+            trail = p["trail"]
+            direction = "→ right" if trail[-1][1] >= trail[0][1] else "← left"
+            try:
+                speed_mps = self._kmh_to_mps(speed_value, units)
+            except (TypeError, ValueError):
+                speed_mps = 0.0
+            with self._db_lock:
+                # Re-check under lock in case the session was reset mid-poll.
+                if self._db["armed"] and p["finish_t"] > self._db["since"]:
+                    self._db["passes"].append({
+                        "trail": trail, "speed_mps": speed_mps,
+                        "lane": int(lane), "direction": direction})
+                    self._db["since"] = p["finish_t"]
+                    new = True
+        with self._db_lock:
+            return {**self._db_summary(), "new": new}
+
+    def driveby_build(self, lane_width_m):
+        with self._db_lock:
+            passes = list(self._db["passes"])
+        img, world, info = driveby.build_correspondences(
+            passes, self.speedcam.frame_wh, lane_width_m=float(lane_width_m))
+        err = self.recalibrate(img, world, source="driveby")
+        info["reprojection_error_m"] = round(err, 3)
+        return info
 
 
 def _f(v):
@@ -430,5 +518,47 @@ def create_app(runner: Runner) -> Flask:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True, "reprojection_error_m": round(err, 3),
                         "points": len(img)})
+
+    # -------------------------------------------------------- drive-by calib
+    @app.route("/api/driveby/start", methods=["POST"])
+    def driveby_start():
+        return jsonify({"ok": True, **runner.driveby_start()})
+
+    @app.route("/api/driveby/stop", methods=["POST"])
+    def driveby_stop():
+        return jsonify({"ok": True, **runner.driveby_stop()})
+
+    @app.route("/api/driveby/reset", methods=["POST"])
+    def driveby_reset():
+        return jsonify({"ok": True, **runner.driveby_reset()})
+
+    @app.route("/api/driveby/poll", methods=["POST"])
+    def driveby_poll():
+        data = request.get_json(force=True, silent=True) or {}
+        speed = data.get("speed")
+        units = data.get("units") or runner.speedcam.units
+        lane = data.get("lane", 0)
+        return jsonify({"ok": True, **runner.driveby_poll(speed, units, lane)})
+
+    @app.route("/api/driveby/remove", methods=["POST"])
+    def driveby_remove():
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            idx = int(data.get("index"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "index must be an integer"}), 400
+        return jsonify({"ok": True, **runner.driveby_remove(idx)})
+
+    @app.route("/api/driveby/build", methods=["POST"])
+    def driveby_build():
+        data = request.get_json(force=True, silent=True) or {}
+        lane_width = data.get("lane_width_m", driveby.DEFAULT_LANE_WIDTH_M)
+        try:
+            info = runner.driveby_build(lane_width)
+        except driveby.DriveByError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception as exc:  # noqa: BLE001 - report any geometry failure
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, **info})
 
     return app

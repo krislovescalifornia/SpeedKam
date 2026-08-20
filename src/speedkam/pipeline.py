@@ -38,6 +38,13 @@ class SpeedCamera:
         self.tracker = Tracker(cfg["tracker"], min_hits=cfg["detection"]["min_hits"])
 
         self._calib_lock = threading.Lock()
+        # Short history of finished tracks' pixel trails, for the drive-by
+        # calibrator (web.py). Populated in _finalize BEFORE the speed step, so
+        # it works even while the node is still uncalibrated (which is exactly
+        # when you'd be drive-by calibrating). Guarded by its own lock because
+        # the pipeline thread writes it and the Flask thread reads it.
+        self._recent_passes = deque(maxlen=20)
+        self._passes_lock = threading.Lock()
         self.calibration = Calibration.load(cfg["speed"]["calibration_file"])
         if self.calibration is None:
             print("[SpeedKam] No calibration found -> DETECTION-ONLY mode "
@@ -299,7 +306,33 @@ class SpeedCamera:
                 self.current_fps = (len(self._fps_times) - 1) / span
 
     # ----------------------------------------------------------------- finalize
+    def _record_pass(self, track):
+        """Snapshot a finished track's ground-point pixel trail for drive-by
+        calibration. Cheap; runs for every confirmed track regardless of
+        calibration state."""
+        trail = [(s.t, float(s.ground_px[0]), float(s.ground_px[1]))
+                 for s in track.samples]
+        if len(trail) < 2:
+            return
+        with self._passes_lock:
+            self._recent_passes.append(
+                {"finish_t": time.monotonic(), "id": track.id, "trail": trail})
+
+    def latest_pass(self, after_t):
+        """Oldest recorded pass that finished strictly after `after_t`, or None.
+
+        Oldest-unseen (not newest) so several quick passes are captured in order
+        as the caller advances `after_t` past each returned pass.
+        """
+        with self._passes_lock:
+            fresh = [p for p in self._recent_passes if p["finish_t"] > after_t]
+        fresh.sort(key=lambda p: p["finish_t"])
+        return fresh[0] if fresh else None
+
     def _finalize(self, track):
+        # Record the raw pixel trail first -- the drive-by calibrator needs it
+        # even for tracks that yield no speed (e.g. still uncalibrated).
+        self._record_pass(track)
         result = None
         with self._calib_lock:
             calibrated = self.calibration is not None

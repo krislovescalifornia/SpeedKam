@@ -6,7 +6,8 @@
 <title>SpeedKam — Calibrate</title>
 <style>
   :root{--bg:#0f1216;--panel:#171c22;--panel2:#1e242c;--line:#2a323c;
-    --text:#e7edf3;--muted:#8b97a4;--accent:#3aa0ff;--ok:#37c871;--bad:#ff5470}
+    --text:#e7edf3;--muted:#8b97a4;--accent:#3aa0ff;--ok:#37c871;--bad:#ff5470;
+    --warn:#ffb84d}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:15px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}
@@ -22,6 +23,7 @@
   .imgwrap{position:relative;display:inline-block;width:100%;line-height:0;
     border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:crosshair}
   .imgwrap img{width:100%;display:block;background:#000}
+  .imgwrap.live{cursor:default}
   .marker{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;
     border:2px solid #fff;border-radius:50%;background:rgba(58,160,255,.5);
     color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;
@@ -29,20 +31,45 @@
   .btn{background:var(--accent);color:#04121f;border:none;border-radius:8px;
     padding:9px 14px;font-weight:600;cursor:pointer;font-size:14px}
   .btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
+  .btn.stop{background:var(--bad);color:#170608}
   .btn:hover{filter:brightness(1.08)}
-  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
   table{width:100%;border-collapse:collapse;margin-top:6px;font-size:14px}
   th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
   th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase}
   input.m{width:72px;background:var(--panel2);border:1px solid var(--line);
     color:var(--text);border-radius:6px;padding:5px 7px;font-size:14px}
+  input.w{width:96px}
+  select.m{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:6px 8px;font-size:14px}
   td .rm{color:var(--bad);cursor:pointer;background:none;border:none;font-size:16px}
   .hint{color:var(--muted);font-size:13.5px}
   .hint code{background:var(--panel2);padding:1px 5px;border-radius:4px}
-  #result{margin-top:12px;font-weight:600}
-  #result.ok{color:var(--ok)}#result.bad{color:var(--bad)}
-  ol{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13.5px}
-  ol li{margin:3px 0}
+  #result,#dbresult{margin-top:12px;font-weight:600}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+  ol,ul{margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:13.5px}
+  ol li,ul li{margin:4px 0}
+  .tabs{display:flex;gap:6px;margin:0 0 4px}
+  .tab{background:var(--panel2);color:var(--muted);border:1px solid var(--line);
+    border-bottom:none;border-radius:8px 8px 0 0;padding:9px 16px;cursor:pointer;
+    font-weight:600;font-size:14px}
+  .tab.active{background:var(--panel);color:var(--text);border-color:var(--accent)}
+  .pane{display:none}.pane.active{display:block}
+  fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0 0;padding:12px}
+  legend{color:var(--muted);font-size:12px;text-transform:uppercase;padding:0 6px}
+  label.field{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+  .lanebtns{display:flex;gap:6px}
+  .lanebtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:8px;padding:7px 13px;cursor:pointer;font-weight:600;font-size:14px}
+  .lanebtn.active{background:var(--accent);color:#04121f;border-color:var(--accent)}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted)}
+  .dot.rec{background:var(--bad);animation:pulse 1.1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .callout{background:var(--panel2);border-left:3px solid var(--warn);
+    border-radius:6px;padding:9px 12px;margin-top:12px;font-size:13.5px;color:var(--text)}
+  .callout b{color:var(--warn)}
 </style>
 </head>
 <body>
@@ -51,7 +78,13 @@
   <a class="back" href="/">← Back to dashboard</a>
 </header>
 
-<main>
+<div class="tabs" style="max-width:1200px;margin:14px auto 0;padding:0 20px">
+  <div class="tab active" data-tab="manual" onclick="switchTab('manual')">📍 Manual points</div>
+  <div class="tab" data-tab="driveby" onclick="switchTab('driveby')">🚗 Drive-by (auto)</div>
+</div>
+
+<!-- ================================ MANUAL ================================ -->
+<main class="pane active" id="pane-manual">
   <div class="card">
     <div class="imgwrap" id="wrap">
       <img id="snap" src="/api/snapshot.jpg" alt="road snapshot">
@@ -62,17 +95,27 @@
       <button class="btn ghost" onclick="undo()">Undo point</button>
       <button class="btn ghost" onclick="clearAll()">Clear</button>
     </div>
-    <p class="hint">Click a road feature you have tape-measured, then set its
-      real-world X/Y (meters) in the table. Add <b>4 or more</b>, spread across
-      the zone where cars will be timed.</p>
+    <div class="callout">
+      <b>What's a "road feature"?</b> Any spot on the road you can both see here
+      <i>and</i> physically reach with a tape measure. The easy way: draw big
+      <b>chalk X's</b> on the road, then click those.
+    </div>
+    <p class="hint">Click each point below, then type its real-world X/Y (metres).
+      Add <b>4 or more</b>, and spread them across <i>both</i> edges of the road —
+      not all on one line, or the maths fails.</p>
   </div>
 
   <div class="card">
     <h3 style="margin:0 0 4px">Measured points</h3>
     <ol>
-      <li>Choose an origin on the road = <code>(0, 0)</code>.</li>
-      <li>X = distance <i>along</i> the road, Y = <i>across</i> it (meters).</li>
-      <li>Click each point, then type its X and Y below.</li>
+      <li>Pick an <b>origin</b> on the near edge of the road = <code>(0, 0)</code>
+        (e.g. lined up with your driveway).</li>
+      <li><b>X</b> = distance <i>along</i> the road (left↔right, the way cars
+        drive). <b>Y</b> = distance <i>across</i> it (near edge → far edge).</li>
+      <li>Chalk marks along the <b>near</b> curb (X=0,3,6…, Y=0) <i>and</i> the
+        <b>far</b> curb (same X's, Y=road width). Both edges = not collinear.</li>
+      <li>Click each mark, type its X and Y. Keep them in the middle third of the
+        image — that's the only band cars are timed in.</li>
       <li>Lower reprojection error = better. Aim under ~0.3 m.</li>
     </ol>
     <table>
@@ -86,7 +129,85 @@
   </div>
 </main>
 
+<!-- ================================ DRIVE-BY ============================== -->
+<main class="pane" id="pane-driveby">
+  <div class="card">
+    <div class="imgwrap live"><img id="live" src="/stream.mjpg" alt="live view"></div>
+    <p class="hint" style="margin-top:12px">Watch your own car cross the frame
+      here. Each completed pass shows up on the right.</p>
+    <div class="callout">
+      <b>Two things matter.</b> Use a <b>phone GPS speed app</b>, not your
+      dashboard (it reads high) — the calibration is only as accurate as the
+      speed you type. And drive at a <b>steady</b> speed through the whole view.
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 4px">Drive-by calibration</h3>
+    <p class="hint">No tape measure. Drive past a few times at a known steady
+      speed; SpeedKam turns each pass into calibration points itself
+      (speed × time = distance).</p>
+    <ol>
+      <li>Set your <b>known speed</b> and pick a <b>lane</b> below.</li>
+      <li>Press <b>Start</b>, then drive past. The pass appears in the list.</li>
+      <li>Do 2–3 passes per lane. Then switch <b>lane</b> (e.g. the other
+        direction) and do 2–3 more — <b>at least two lanes are required.</b></li>
+      <li>Press <b>Build calibration</b>.</li>
+    </ol>
+
+    <fieldset>
+      <legend>This pass</legend>
+      <div class="row">
+        <label class="field">Speed
+          <input class="m" id="dbSpeed" inputmode="decimal" value="30"></label>
+        <select class="m" id="dbUnits">
+          <option value="mph">mph</option><option value="kmh">km/h</option>
+        </select>
+        <span class="hint">Lane:</span>
+        <div class="lanebtns" id="laneBtns">
+          <button class="lanebtn active" data-lane="0" onclick="setLane(0)">1</button>
+          <button class="lanebtn" data-lane="1" onclick="setLane(1)">2</button>
+          <button class="lanebtn" data-lane="2" onclick="setLane(2)">3</button>
+        </div>
+      </div>
+      <div class="row">
+        <label class="field">Lane width
+          <input class="m w" id="dbLaneW" inputmode="decimal" value="3.66"> m</label>
+        <span class="hint">(rough; only sets the across-road scale)</span>
+      </div>
+    </fieldset>
+
+    <div class="row">
+      <button class="btn" id="dbStart" onclick="dbStart()">● Start recording</button>
+      <button class="btn stop" id="dbStop" onclick="dbStop()" disabled>■ Stop</button>
+      <span class="pill"><span class="dot" id="dbDot"></span><span id="dbState">idle</span></span>
+    </div>
+
+    <table>
+      <thead><tr><th>#</th><th>lane</th><th>speed</th><th>dir</th><th>frames</th><th></th></tr></thead>
+      <tbody id="dbBody"></tbody>
+    </table>
+
+    <div class="row">
+      <button class="btn" id="dbBuild" onclick="dbBuild()">Build calibration</button>
+      <button class="btn ghost" onclick="dbReset()">Clear passes</button>
+    </div>
+    <div id="dbresult"></div>
+  </div>
+</main>
+
 <script>
+/* ------------------------------------------------------------------ tabs */
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>
+    t.classList.toggle('active', t.dataset.tab===name));
+  document.querySelectorAll('.pane').forEach(p=>
+    p.classList.toggle('active', p.id==='pane-'+name));
+  // Stop recording if the user navigates away from the drive-by tab.
+  if(name!=='driveby' && recording) dbStop();
+}
+
+/* ---------------------------------------------------------------- manual */
 const pts = [];  // {x,y (natural px), X,Y (meters)}
 const wrap = document.getElementById('wrap');
 const snap = document.getElementById('snap');
@@ -102,7 +223,6 @@ wrap.addEventListener('click', (e)=>{
 });
 
 function render(){
-  // markers
   [...wrap.querySelectorAll('.marker')].forEach(m=>m.remove());
   pts.forEach((p,i)=>{
     const m = document.createElement('div');
@@ -112,7 +232,6 @@ function render(){
     m.textContent = i+1;
     wrap.appendChild(m);
   });
-  // table
   const tb = document.getElementById('tbody');
   tb.innerHTML='';
   pts.forEach((p,i)=>{
@@ -160,6 +279,110 @@ async function submitCalib(){
       res.textContent = '✓ Saved '+j.points+' points. Reprojection error '
         + j.reprojection_error_m + ' m'
         + (j.reprojection_error_m < 0.3 ? ' (good).' : ' — consider re-measuring.');
+    }else{
+      res.className='bad'; res.textContent = '✗ '+(j.error||'Failed.');
+    }
+  }catch(e){ res.className='bad'; res.textContent='✗ '+e; }
+}
+
+/* --------------------------------------------------------------- drive-by */
+let currentLane = 0;
+let recording = false;
+let pollTimer = null;
+
+function setLane(n){
+  currentLane = n;
+  document.querySelectorAll('.lanebtn').forEach(b=>
+    b.classList.toggle('active', +b.dataset.lane===n));
+}
+
+function dbState(txt, rec){
+  document.getElementById('dbState').textContent = txt;
+  document.getElementById('dbDot').className = 'dot' + (rec ? ' rec' : '');
+}
+
+async function dbPost(path, body){
+  const r = await fetch(path, {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body||{})});
+  return r.json();
+}
+
+function renderPasses(list){
+  const tb = document.getElementById('dbBody');
+  tb.innerHTML='';
+  (list||[]).forEach((p,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>'+(i+1)+'</td>'+
+      '<td>'+(p.lane+1)+'</td>'+
+      '<td>'+p.speed_mps.toFixed(1)+' m/s</td>'+
+      '<td>'+p.direction+'</td>'+
+      '<td>'+p.n+'</td>'+
+      '<td><button class="rm" data-rm="'+i+'">&times;</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('button[data-rm]').forEach(b=>{
+    b.addEventListener('click', async e=>{
+      const j = await dbPost('/api/driveby/remove', {index:+e.target.dataset.rm});
+      renderPasses(j.passes);
+    });
+  });
+}
+
+async function dbStart(){
+  const j = await dbPost('/api/driveby/start');
+  recording = true;
+  document.getElementById('dbStart').disabled = true;
+  document.getElementById('dbStop').disabled = false;
+  dbState('recording — drive past now', true);
+  renderPasses(j.passes);
+  pollTimer = setInterval(dbPoll, 1300);
+}
+
+async function dbStop(){
+  recording = false;
+  if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
+  document.getElementById('dbStart').disabled = false;
+  document.getElementById('dbStop').disabled = true;
+  dbState('idle', false);
+  await dbPost('/api/driveby/stop');
+}
+
+async function dbPoll(){
+  if(!recording) return;
+  const body = {speed: parseFloat(document.getElementById('dbSpeed').value),
+                units: document.getElementById('dbUnits').value,
+                lane: currentLane};
+  try{
+    const j = await dbPost('/api/driveby/poll', body);
+    renderPasses(j.passes);
+    if(j.new){
+      const lanes = (j.lanes||[]).length;
+      dbState('captured pass ✓  ('+j.passes.length+' total, '+lanes+' lane'
+              +(lanes===1?'':'s')+')', true);
+    }
+  }catch(e){ /* transient; the next tick retries */ }
+}
+
+async function dbReset(){
+  const j = await dbPost('/api/driveby/reset');
+  renderPasses(j.passes);
+  document.getElementById('dbresult').textContent='';
+}
+
+async function dbBuild(){
+  const res = document.getElementById('dbresult');
+  res.className=''; res.textContent='Building…';
+  try{
+    const j = await dbPost('/api/driveby/build',
+      {lane_width_m: parseFloat(document.getElementById('dbLaneW').value)});
+    if(j.ok){
+      const err = j.reprojection_error_m;
+      res.className = err < 0.3 ? 'ok' : 'warn';
+      res.textContent = '✓ Calibrated from '+j.n_passes+' passes ('+j.n_points
+        +' points, '+j.lanes.length+' lanes). Reprojection error '+err+' m'
+        + (err < 0.3 ? ' (good).' : ' — try more passes / steadier speed.');
     }else{
       res.className='bad'; res.textContent = '✗ '+(j.error||'Failed.');
     }
