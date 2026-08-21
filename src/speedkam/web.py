@@ -53,11 +53,10 @@ class Runner:
         self._thread = None
 
         # Live-stream encode budgeting. JPEG-encoding every annotated frame at
-        # camera resolution is a real cost on the single capture core, so we only
-        # pay it while at least one browser is actually pulling the MJPEG stream,
-        # and we cap it to web.stream_fps regardless. The detection loop itself
-        # is never throttled -- this only governs how often the preview refreshes.
-        self._stream_clients = 0
+        # camera resolution is a real cost on the capture core, so we cap the
+        # preview to web.stream_fps: at most one encode per interval, regardless
+        # of how fast the detection loop runs (the loop itself is never
+        # throttled -- this only governs how often the preview image refreshes).
         self._last_encode_ts = 0.0
         stream_fps = float((cfg.get("web") or {}).get("stream_fps", 10) or 0)
         self._stream_min_dt = (1.0 / stream_fps) if stream_fps > 0 else 0.0
@@ -80,16 +79,14 @@ class Runner:
 
     def _on_frame(self, raw, annotated):
         now = time.monotonic()
-        # Always refresh the freshness timestamp and the clean-frame reference:
-        # both are cheap (no copy, no encode) and must stay current even when
-        # nobody is watching -- the dashboard's live/stale badge and the
-        # calibration snapshot depend on them. Only the expensive JPEG encode of
-        # the annotated frame is gated on an active viewer + the rate cap.
+        # Refresh the freshness timestamp and the clean-frame reference every
+        # frame (both cheap: no copy, no encode) -- the dashboard's live/stale
+        # badge and the calibration snapshot depend on them. The annotated JPEG
+        # for the live stream is encoded at most once per stream interval.
         with self._cond:
             self._latest_raw = raw
             self._last_frame_ts = now
-            encode = (self._stream_clients > 0
-                      and (now - self._last_encode_ts) >= self._stream_min_dt)
+            encode = (now - self._last_encode_ts) >= self._stream_min_dt
             if encode:
                 self._last_encode_ts = now  # reserve this slot before we release
         if not encode:
@@ -104,23 +101,15 @@ class Runner:
     # --------------------------------------------------------------- streams
     def mjpeg(self):
         boundary = b"--frame"
-        # Register as a viewer so _on_frame starts encoding; deregister on
-        # disconnect so encoding stops when the last browser goes away.
-        with self._cond:
-            self._stream_clients += 1
-        try:
-            while not self._stop.is_set():
-                with self._cond:
-                    self._cond.wait(timeout=1.0)
-                    frame = self._latest_jpeg
-                if frame is None:
-                    continue
-                yield (boundary + b"\r\nContent-Type: image/jpeg\r\n"
-                       + f"Content-Length: {len(frame)}\r\n\r\n".encode()
-                       + frame + b"\r\n")
-        finally:
+        while not self._stop.is_set():
             with self._cond:
-                self._stream_clients = max(0, self._stream_clients - 1)
+                self._cond.wait(timeout=1.0)
+                frame = self._latest_jpeg
+            if frame is None:
+                continue
+            yield (boundary + b"\r\nContent-Type: image/jpeg\r\n"
+                   + f"Content-Length: {len(frame)}\r\n\r\n".encode()
+                   + frame + b"\r\n")
 
     def snapshot(self):
         with self._cond:
