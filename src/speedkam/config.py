@@ -85,6 +85,10 @@ DEFAULTS = {
         "enabled": True,
         "output_dir": "captures",
         "clip_seconds": 8,
+        # Hard RAM ceiling for the pre-roll clip buffer. The buffer is evicted by
+        # wall-time (~clip_seconds), so this is a backstop; keep it small on a
+        # 1GB Pi (a 720p frame is ~2.7MB, so 128MB ~= 46 frames).
+        "max_buffer_mb": 128,
         "save_only_with_speed": True,
         "save_snapshot": True,
         "burn_overlay": True,

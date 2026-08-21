@@ -170,8 +170,13 @@ recording:
   enabled: true
   output_dir: captures
   # Seconds of buffered video to keep so the saved clip includes the approach
-  # BEFORE the trigger. The ring buffer holds roughly this many seconds.
+  # BEFORE the trigger. The ring buffer holds roughly this many seconds of
+  # wall-time -- its RAM scales with the ACTUAL frame rate, not a fixed count.
   clip_seconds: 8
+  # Hard RAM ceiling for that buffer (a backstop over the time window above). A
+  # 720p frame is ~2.7MB; on a 1GB Pi keep this modest so the buffer can't
+  # exhaust memory and drive the node into SD swap-thrash. Raise on a Pi 4/5.
+  max_buffer_mb: 128
   # Only save a clip when a valid speed was measured. If false, saves for every
   # tracked vehicle (useful while still calibrating).
   save_only_with_speed: true

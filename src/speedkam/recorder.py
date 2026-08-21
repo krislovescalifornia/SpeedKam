@@ -45,9 +45,18 @@ class Recorder:
         self.csv_path = Path(log_cfg["csv_file"])
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self.fps_hint = fps_hint
-        # Buffer of (t_monotonic, frame) covering ~clip_seconds.
-        maxlen = int(cfg["clip_seconds"] * max(fps_hint, 1) * 1.5)
-        self.buffer = deque(maxlen=maxlen)
+        # Rolling buffer of (t_monotonic, frame) covering ~clip_seconds. It is
+        # evicted by TIME (below), not a fixed frame count, so its RAM scales
+        # with the ACTUAL frame rate instead of an optimistic fps guess. The old
+        # count-based sizing (clip_seconds * 30fps * 1.5 = 360 frames) held ~1GB
+        # of 720p frames whatever the real rate -- fatal on a 1GB Pi, which then
+        # swap-thrashes. Keep ~1.5x the clip window of wall-time...
+        self._window_s = float(cfg["clip_seconds"]) * 1.5
+        # ...and a hard RAM ceiling as a backstop against a fast camera or a bad
+        # clock (set from the real frame size on first push).
+        self._max_buffer_bytes = float(cfg.get("max_buffer_mb", 128) or 128) * 1e6
+        self._hard_cap = None
+        self.buffer = deque()
         self._migrate_or_init_csv()
 
     # ------------------------------------------------------------------- CSV
@@ -107,7 +116,18 @@ class Recorder:
 
     # ---------------------------------------------------------------- buffer
     def push(self, t, frame):
+        if self._hard_cap is None:
+            frame_bytes = max(1, int(getattr(frame, "nbytes", 0) or frame.size))
+            self._hard_cap = max(2, int(self._max_buffer_bytes / frame_bytes))
         self.buffer.append((t, frame.copy()))
+        # Evict by wall-time so RAM tracks the real frame rate, then enforce the
+        # hard frame ceiling as a safety net (guards against a non-monotonic
+        # clock -- e.g. a looped demo file -- that would defeat the time window).
+        horizon = t - self._window_s
+        while len(self.buffer) > 1 and self.buffer[0][0] < horizon:
+            self.buffer.popleft()
+        while len(self.buffer) > self._hard_cap:
+            self.buffer.popleft()
 
     def frame_at(self, t):
         """The buffered frame whose timestamp is closest to `t`, or None."""
