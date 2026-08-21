@@ -19,6 +19,7 @@ media), so daily/weekly/monthly vehicle counts survive after clips are deleted.
 from __future__ import annotations
 
 import csv
+import threading
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -57,6 +58,12 @@ class Recorder:
         self._max_buffer_bytes = float(cfg.get("max_buffer_mb", 128) or 128) * 1e6
         self._hard_cap = None
         self.buffer = deque()
+        # The ring buffer is written by the capture thread (push) and read by the
+        # process thread (frame_at / save_media) once the pipeline runs those on
+        # separate cores, so all buffer access is guarded. The lock is held only
+        # for cheap deque ops -- never during the slow video encode, which works
+        # off a snapshot taken under the lock.
+        self._lock = threading.Lock()
         self._migrate_or_init_csv()
 
     # ------------------------------------------------------------------- CSV
@@ -116,31 +123,42 @@ class Recorder:
 
     # ---------------------------------------------------------------- buffer
     def push(self, t, frame):
-        if self._hard_cap is None:
-            frame_bytes = max(1, int(getattr(frame, "nbytes", 0) or frame.size))
-            self._hard_cap = max(2, int(self._max_buffer_bytes / frame_bytes))
-        self.buffer.append((t, frame.copy()))
-        # Evict by wall-time so RAM tracks the real frame rate, then enforce the
-        # hard frame ceiling as a safety net (guards against a non-monotonic
-        # clock -- e.g. a looped demo file -- that would defeat the time window).
-        horizon = t - self._window_s
-        while len(self.buffer) > 1 and self.buffer[0][0] < horizon:
-            self.buffer.popleft()
-        while len(self.buffer) > self._hard_cap:
-            self.buffer.popleft()
+        # Copy outside the lock (the copy is the expensive part); only the deque
+        # mutation needs guarding.
+        copy = frame.copy()
+        with self._lock:
+            if self._hard_cap is None:
+                frame_bytes = max(1, int(getattr(frame, "nbytes", 0) or frame.size))
+                self._hard_cap = max(2, int(self._max_buffer_bytes / frame_bytes))
+            self.buffer.append((t, copy))
+            # Evict by wall-time so RAM tracks the real frame rate, then enforce
+            # the hard frame ceiling as a safety net (guards against a
+            # non-monotonic clock -- e.g. a looped demo file -- that would defeat
+            # the time window).
+            horizon = t - self._window_s
+            while len(self.buffer) > 1 and self.buffer[0][0] < horizon:
+                self.buffer.popleft()
+            while len(self.buffer) > self._hard_cap:
+                self.buffer.popleft()
 
     def frame_at(self, t):
         """The buffered frame whose timestamp is closest to `t`, or None."""
-        if not self.buffer:
-            return None
-        best = min(self.buffer, key=lambda tf: abs(tf[0] - t))
-        return best[1]
+        with self._lock:
+            if not self.buffer:
+                return None
+            best = min(self.buffer, key=lambda tf: abs(tf[0] - t))
+            return best[1]
 
-    def _measured_fps(self):
-        if len(self.buffer) >= 2:
-            span = self.buffer[-1][0] - self.buffer[0][0]
+    def _snapshot(self):
+        """A stable list copy of the ring buffer for slow media work off-lock."""
+        with self._lock:
+            return list(self.buffer)
+
+    def _measured_fps(self, frames):
+        if len(frames) >= 2:
+            span = frames[-1][0] - frames[0][0]
             if span > 0:
-                fps = (len(self.buffer) - 1) / span
+                fps = (len(frames) - 1) / span
                 # Guard against bad timestamps (e.g. a looped demo file whose
                 # clock resets mid-buffer) producing an fps the encoder rejects.
                 # The MP4 (mpeg4) timebase denominator caps near 65535 and
@@ -157,13 +175,13 @@ class Recorder:
         recording.always_snapshot is on, so a deferred recognition worker has
         an image to enrich later. Returns the snapshot Path, or None.
         """
-        if not self.buffer:
+        frames = self._snapshot()
+        if not frames:
             return None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         speed_tag = (f"{result.speed_mph:.0f}mph" if units == "mph"
                      else f"{result.speed_kmh:.0f}kmh")
         base = f"{stamp}_id{track_id}_{speed_tag}"
-        frames = list(self.buffer)
         _, fr = frames[len(frames) // 2]
         snap = fr.copy()
         annotate.draw_speed_banner(snap, result, limit_kmh, units)
@@ -177,15 +195,15 @@ class Recorder:
         Returns (clip_path, snapshot_path); either may be None. Does NOT touch
         the CSV -- call log_row() for that.
         """
-        if not self.buffer:
+        frames = self._snapshot()
+        if not frames:
             return None, None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         speed_tag = (f"{result.speed_mph:.0f}mph" if units == "mph"
                      else f"{result.speed_kmh:.0f}kmh")
         base = f"{stamp}_id{track_id}_{speed_tag}"
-        fps = self._measured_fps()
+        fps = self._measured_fps(frames)
 
-        frames = list(self.buffer)
         h, w = frames[0][1].shape[:2]
         clip_path = self.output_dir / f"{base}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")

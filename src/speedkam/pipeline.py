@@ -207,7 +207,6 @@ class SpeedCamera:
         """
         show = self.cfg["display"]["show_window"] and frame_callback is None
         draw_debug = self.cfg["display"]["draw_debug"]
-        want_view = show or frame_callback is not None
         frames = 0
         t_start = time.monotonic()
         self.running = True
@@ -217,80 +216,19 @@ class SpeedCamera:
             self.remote.start()
         self.retention.start()
         where = "window" if show else "web/headless"
-        print(f"[SpeedKam] Running ({where}). Ctrl+C to stop.")
+        mode = "parallel capture+process" if frame_callback is not None else "single-thread"
+        print(f"[SpeedKam] Running ({where}, {mode}). Ctrl+C to stop.")
 
         try:
-            cam_down_logged = False
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-
-                # Camera not open (never opened, or disconnected mid-run): keep
-                # the node alive -- the web dashboard and fleet heartbeat, both
-                # already started above, stay up -- and retry. A loose CSI cable
-                # must not brick a remote node; it just shows "camera down".
-                if not self.camera.opened:
-                    self.current_fps = 0.0
-                    if self.camera.reopen():
-                        print(f"[SpeedKam] camera connected ({self.camera.backend}).")
-                        cam_down_logged = False
-                    else:
-                        if not cam_down_logged:
-                            print("[SpeedKam] camera unavailable "
-                                  f"({self.camera.open_error}) -- serving dashboard "
-                                  "without video; retrying every 3s.")
-                            cam_down_logged = True
-                        if self._wait(stop_event, 3.0):
-                            break
-                        continue
-
-                t, frame = self.camera.read()
-                if frame is None:
-                    if self.camera.offline:
-                        print("[SpeedKam] End of video stream.")
-                        break
-                    # A live camera returned nothing -> treat as a disconnect and
-                    # fall into the reopen/retry path above, don't kill the loop.
-                    self.current_fps = 0.0
-                    self.camera.mark_closed()
-                    continue
-
-                frames += 1
-                self._tick_fps()
-                self.frame_wh = (frame.shape[1], frame.shape[0])
-
-                # Prefer the camera's hardware-downscaled detection frame (the
-                # picamera2 lores stream) when it provided one -- detection then
-                # runs on a tiny frame with no software resize. Otherwise the
-                # detector downscales the full frame itself.
-                detect_frame = self.camera.detect_frame
-                if detect_frame is not None:
-                    upscale = frame.shape[1] / detect_frame.shape[1]
-                    detections, _ = self.detector.detect(detect_frame, upscale=upscale)
-                else:
-                    detections, _ = self.detector.detect(frame)
-                world = self._world_points(detections)
-                active, finished = self.tracker.update(detections, world, t)
-
-                if self.recorder is not None:
-                    self.recorder.push(t, frame)
-
-                for tr in finished:
-                    self._finalize(tr)
-
-                if want_view:
-                    view = frame.copy()
-                    if draw_debug:
-                        annotate.draw_zone(view, self.calibration)
-                        annotate.draw_measure_band(view, self._active_band())
-                        annotate.draw_tracks(view, active, self.units)
-                    annotate.draw_hud(view, self._last_result_text, self._last_over)
-                    if frame_callback is not None:
-                        frame_callback(frame, view)
-                    if show:
-                        cv2.imshow("SpeedKam", view)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
-                            break
+            if frame_callback is not None:
+                # Headless/web: overlap camera capture with detection on separate
+                # cores. The capture thread also feeds the recorder, so clips stay
+                # gap-free even when detection drops frames under load.
+                frames = self._run_parallel(frame_callback, draw_debug, stop_event)
+            else:
+                # Desktop window / pure headless: keep the simple single-threaded
+                # loop (cv2.imshow must stay on this thread).
+                frames = self._run_single(show, draw_debug, stop_event)
         except KeyboardInterrupt:
             print("\n[SpeedKam] Interrupted.")
         finally:
@@ -307,6 +245,172 @@ class SpeedCamera:
             if dur > 0:
                 print(f"[SpeedKam] Processed {frames} frames in {dur:.1f}s "
                       f"({frames / dur:.1f} FPS).")
+
+    # ------------------------------------------------------------ frame work
+    def _process_frame(self, t, frame, detect_frame, frame_callback,
+                       draw_debug, show):
+        """Detect -> track -> finalize one frame and publish the view.
+
+        Shared by the single-threaded and parallel run paths. Does NOT push to
+        the recorder (the caller owns that, so the parallel capture thread can
+        record every frame while this may see only the latest). Returns False
+        only when the desktop window asked to quit ('q'); True otherwise.
+        """
+        self.frame_wh = (frame.shape[1], frame.shape[0])
+        # Prefer the camera's hardware-downscaled detection frame (the picamera2
+        # lores stream) when present -- detection runs on a tiny frame with no
+        # software resize. Otherwise the detector downscales the full frame.
+        if detect_frame is not None:
+            upscale = frame.shape[1] / detect_frame.shape[1]
+            detections, _ = self.detector.detect(detect_frame, upscale=upscale)
+        else:
+            detections, _ = self.detector.detect(frame)
+        world = self._world_points(detections)
+        active, finished = self.tracker.update(detections, world, t)
+
+        for tr in finished:
+            self._finalize(tr)
+
+        if show or frame_callback is not None:
+            view = frame.copy()
+            if draw_debug:
+                annotate.draw_zone(view, self.calibration)
+                annotate.draw_measure_band(view, self._active_band())
+                annotate.draw_tracks(view, active, self.units)
+            annotate.draw_hud(view, self._last_result_text, self._last_over)
+            if frame_callback is not None:
+                frame_callback(frame, view)
+            if show:
+                cv2.imshow("SpeedKam", view)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    return False
+        return True
+
+    def _reopen_or_wait(self, stop_event, cam_down_logged):
+        """Shared camera-down handling: retry the open, keep the node alive.
+
+        Returns (still_down, cam_down_logged, should_stop). A loose CSI cable
+        must not brick a remote node -- the dashboard/heartbeat stay up and we
+        just report "camera down" and retry every 3s.
+        """
+        self.current_fps = 0.0
+        if self.camera.reopen():
+            print(f"[SpeedKam] camera connected ({self.camera.backend}).")
+            return False, False, False
+        if not cam_down_logged:
+            print("[SpeedKam] camera unavailable "
+                  f"({self.camera.open_error}) -- serving dashboard "
+                  "without video; retrying every 3s.")
+            cam_down_logged = True
+        return True, cam_down_logged, self._wait(stop_event, 3.0)
+
+    def _run_single(self, show, draw_debug, stop_event):
+        """Single-threaded capture+process loop (desktop window / headless)."""
+        frames = 0
+        cam_down_logged = False
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not self.camera.opened:
+                _, cam_down_logged, stop = self._reopen_or_wait(
+                    stop_event, cam_down_logged)
+                if stop:
+                    break
+                continue
+            t, frame = self.camera.read()
+            if frame is None:
+                if self.camera.offline:
+                    print("[SpeedKam] End of video stream.")
+                    break
+                self.current_fps = 0.0
+                self.camera.mark_closed()
+                continue
+            frames += 1
+            self._tick_fps()
+            if self.recorder is not None:
+                self.recorder.push(t, frame)
+            if not self._process_frame(t, frame, self.camera.detect_frame,
+                                       frame_callback=None, draw_debug=draw_debug,
+                                       show=show):
+                break
+        return frames
+
+    def _run_parallel(self, frame_callback, draw_debug, stop_event):
+        """Capture on one core, detect/track/finalize on another.
+
+        The capture thread reads frames as fast as the sensor delivers, records
+        every one, and publishes the newest to the process loop (latest wins --
+        intermediate frames are dropped for detection only, never for the clip
+        buffer). The process loop runs in this (the run) thread.
+        """
+        cond = threading.Condition()
+        state = {"item": None, "seq": 0, "end": False}
+
+        def capture_loop():
+            cam_down_logged = False
+            try:
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    if not self.camera.opened:
+                        _, cam_down_logged, stop = self._reopen_or_wait(
+                            stop_event, cam_down_logged)
+                        if stop:
+                            break
+                        continue
+                    t, frame = self.camera.read()
+                    if frame is None:
+                        if self.camera.offline:
+                            print("[SpeedKam] End of video stream.")
+                            break
+                        self.current_fps = 0.0
+                        self.camera.mark_closed()
+                        continue
+                    # Record every frame here so clips never have gaps, even if
+                    # detection can't keep up and skips some below.
+                    if self.recorder is not None:
+                        self.recorder.push(t, frame)
+                    # detect_frame is a fresh array per read (picamera2 lores is
+                    # ascontiguousarray'd; opencv path is None), so publishing the
+                    # reference is safe -- the next read won't mutate this tuple.
+                    with cond:
+                        state["item"] = (t, frame, self.camera.detect_frame)
+                        state["seq"] += 1
+                        cond.notify()
+            finally:
+                with cond:
+                    state["end"] = True
+                    cond.notify()
+
+        cap = threading.Thread(target=capture_loop, name="speedkam-capture",
+                               daemon=True)
+        cap.start()
+
+        frames = 0
+        last_seen = 0
+        try:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                with cond:
+                    cond.wait_for(
+                        lambda: state["seq"] != last_seen or state["end"]
+                        or (stop_event is not None and stop_event.is_set()),
+                        timeout=1.0)
+                    if state["end"] and state["seq"] == last_seen:
+                        break
+                    item = state["item"]
+                    last_seen = state["seq"]
+                if item is None:
+                    continue
+                t, frame, detect_frame = item
+                frames += 1
+                self._tick_fps()
+                self._process_frame(t, frame, detect_frame, frame_callback,
+                                    draw_debug=draw_debug, show=False)
+        finally:
+            cap.join(timeout=2.0)
+        return frames
 
     @staticmethod
     def _wait(stop_event, seconds):
