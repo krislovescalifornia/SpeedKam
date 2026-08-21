@@ -86,7 +86,10 @@ detection:
   # is scaled back up, so calibration and min_area/max_area below are unchanged.
   # Drop toward 0.4 for more speed; raise toward 1.0 if small/distant vehicles
   # start getting missed.
-  detect_scale: 0.5
+  # Fleet default 0.4: on a Pi 3 this measurably cut detect CPU/heat (helped a
+  # thermally-throttled node hold a higher fps). Raise toward 0.5-1.0 on a
+  # Pi 4/5 or if small/distant vehicles start getting missed.
+  detect_scale: 0.4
   # MOG2 shadow modelling. OFF is cheaper (skips a per-pixel chroma test) and is
   # the recommended default for a Pi. Trade-off: with shadows off, a hard cast
   # shadow can merge into a vehicle's blob and inflate its box; the center-band
