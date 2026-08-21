@@ -42,14 +42,27 @@ def draw_measure_band(frame, band):
 
 
 def draw_tracks(frame, tracks, units):
-    for tr in tracks:
-        x, y, w, h = [int(v) for v in tr.last_bbox]
+    draw_track_boxes(
+        frame,
+        [(tr.id, tr.last_bbox, tr.last_ground) for tr in tracks],
+    )
+
+
+def draw_track_boxes(frame, items):
+    """Draw track boxes from plain (id, bbox, ground) snapshots.
+
+    Takes immutable tuples rather than live Track objects so the drawing can run
+    on a different thread (the preview encoder) than the tracker, without racing
+    on track state.
+    """
+    for tid, bbox, ground in items:
+        x, y, w, h = [int(v) for v in bbox]
         cv2.rectangle(frame, (x, y), (x + w, y + h), GREEN, 2)
         cv2.putText(
-            frame, f"#{tr.id}", (x, max(0, y - 8)),
+            frame, f"#{tid}", (x, max(0, y - 8)),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, GREEN, 2,
         )
-        gx, gy = [int(v) for v in tr.last_ground]
+        gx, gy = [int(v) for v in ground]
         cv2.circle(frame, (gx, gy), 4, YELLOW, -1)
 
 

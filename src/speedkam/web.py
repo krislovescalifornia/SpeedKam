@@ -52,12 +52,13 @@ class Runner:
         self._stop = threading.Event()
         self._thread = None
 
-        # Live-preview JPEG encode runs on ITS OWN thread (see _encode_loop) so
-        # it never steals time from the capture/detect loop -- on a multi-core Pi
-        # this puts an otherwise-idle core to work. _on_frame just hands off the
-        # newest annotated frame under this condition and bumps a sequence so the
-        # encoder wakes; the encoder throttles to web.stream_fps itself.
-        self._latest_annotated = None
+        # Live preview runs entirely on ITS OWN thread (see _encode_loop): the
+        # copy + annotate + JPEG-encode all happen here, off the capture/detect
+        # loop, so on a multi-core Pi it uses an otherwise-idle core. _on_frame
+        # just hands off the newest (raw frame, overlay snapshot) pair and bumps
+        # a sequence so the encoder wakes; the encoder throttles to stream_fps,
+        # then renders the annotated view via speedcam.render_preview.
+        self._enc_item = None
         self._enc_cond = threading.Condition()
         self._enc_seq = 0
         self._enc_thread = None
@@ -99,29 +100,28 @@ class Runner:
         with self._enc_cond:      # wake the encoder so it can exit promptly
             self._enc_cond.notify_all()
 
-    def _on_frame(self, raw, annotated):
+    def _on_frame(self, raw, overlay):
         now = time.monotonic()
         # Runs ON the capture/detect thread, so it must stay cheap: publish
-        # references only (no copy, no encode) and wake the encoder thread. The
-        # dashboard's live/stale badge and calibration snapshot read _latest_raw
-        # / _last_frame_ts; the pipeline builds a fresh annotated array every
-        # frame, so holding a reference to it here is safe -- nothing mutates it
-        # after this hand-off.
+        # references only (no copy, no draw, no encode) and wake the encoder
+        # thread. The dashboard's live/stale badge and calibration snapshot read
+        # _latest_raw / _last_frame_ts; `overlay` is an immutable snapshot the
+        # pipeline built for this frame, so handing it off here is race-free.
         with self._cond:
             self._latest_raw = raw
             self._last_frame_ts = now
         with self._enc_cond:
-            self._latest_annotated = annotated
+            self._enc_item = (raw, overlay)
             self._enc_seq += 1
             self._enc_cond.notify()
 
     def _encode_loop(self):
-        """Resize + JPEG-encode the live preview off the capture thread.
+        """Render + JPEG-encode the live preview off the capture thread.
 
-        Waits for the newest annotated frame, throttles to web.stream_fps, and
-        publishes the encoded bytes for the MJPEG stream. Intermediate frames are
-        dropped on purpose -- the preview only needs the latest image, and
-        keeping this work off the capture loop is the entire point.
+        Waits for the newest (raw frame, overlay) pair, throttles to
+        web.stream_fps, then does the copy + annotate (render_preview) + resize +
+        encode here -- all of it off the capture/detect loop. Intermediate frames
+        are dropped on purpose; the preview only needs the latest image.
         """
         last_seen = 0
         while not self._stop.is_set():
@@ -131,19 +131,20 @@ class Runner:
                     timeout=1.0)
                 if self._stop.is_set():
                     break
-                annotated = self._latest_annotated
+                item = self._enc_item
                 last_seen = self._enc_seq
-            if annotated is None:
+            if item is None:
                 continue
             now = time.monotonic()
             if self._stream_min_dt and (now - self._last_encode_ts) < self._stream_min_dt:
                 continue  # honor stream_fps; the next frame re-triggers us
             self._last_encode_ts = now
-            preview = annotated
+            raw, overlay = item
+            preview = self.speedcam.render_preview(raw, overlay)
             mw = self._stream_max_width
-            if mw and annotated.shape[1] > mw:
-                scale = mw / annotated.shape[1]
-                preview = cv2.resize(annotated, None, fx=scale, fy=scale,
+            if mw and preview.shape[1] > mw:
+                scale = mw / preview.shape[1]
+                preview = cv2.resize(preview, None, fx=scale, fy=scale,
                                      interpolation=cv2.INTER_LINEAR)
             ok, buf = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 80])
             if not ok:

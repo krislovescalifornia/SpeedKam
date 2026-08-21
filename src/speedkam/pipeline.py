@@ -271,20 +271,44 @@ class SpeedCamera:
         for tr in finished:
             self._finalize(tr)
 
-        if show or frame_callback is not None:
-            view = frame.copy()
-            if draw_debug:
-                annotate.draw_zone(view, self.calibration)
-                annotate.draw_measure_band(view, self._active_band())
-                annotate.draw_tracks(view, active, self.units)
-            annotate.draw_hud(view, self._last_result_text, self._last_over)
-            if frame_callback is not None:
-                frame_callback(frame, view)
-            if show:
-                cv2.imshow("SpeedKam", view)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    return False
+        # Preview: the process thread only takes a tiny race-safe snapshot of
+        # what to draw; the actual copy + annotate is deferred to whoever renders
+        # (the web encoder thread for headless, or inline for the desktop
+        # window). This keeps the ~copy+draw cost off the capture/detect path.
+        if show:
+            view = self.render_preview(frame, self._overlay(active, draw_debug))
+            cv2.imshow("SpeedKam", view)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                return False
+        elif frame_callback is not None:
+            frame_callback(frame, self._overlay(active, draw_debug))
         return True
+
+    def _overlay(self, active, draw_debug):
+        """Immutable snapshot of everything the live view needs to draw, taken on
+        the process thread so a later render on another thread can't race the
+        tracker. Cheap: just reads a few numbers per active track."""
+        return {
+            "draw_debug": draw_debug,
+            "tracks": [(tr.id, tuple(tr.last_bbox), tuple(tr.last_ground))
+                       for tr in active],
+            "text": self._last_result_text,
+            "over": self._last_over,
+        }
+
+    def render_preview(self, raw, overlay):
+        """Build the annotated live-view frame from a raw frame + overlay
+        snapshot. Runs on the CALLER's thread -- the web encoder thread for the
+        headless path -- so the capture/detect loop never pays the copy+draw."""
+        view = raw.copy()
+        if overlay.get("draw_debug"):
+            with self._calib_lock:
+                calib = self.calibration
+            annotate.draw_zone(view, calib)
+            annotate.draw_measure_band(view, self._active_band())
+            annotate.draw_track_boxes(view, overlay.get("tracks", ()))
+        annotate.draw_hud(view, overlay.get("text", ""), overlay.get("over", False))
+        return view
 
     def _reopen_or_wait(self, stop_event, cam_down_logged):
         """Shared camera-down handling: retry the open, keep the node alive.
