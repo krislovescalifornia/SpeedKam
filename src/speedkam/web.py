@@ -52,14 +52,30 @@ class Runner:
         self._stop = threading.Event()
         self._thread = None
 
+        # Live-preview JPEG encode runs on ITS OWN thread (see _encode_loop) so
+        # it never steals time from the capture/detect loop -- on a multi-core Pi
+        # this puts an otherwise-idle core to work. _on_frame just hands off the
+        # newest annotated frame under this condition and bumps a sequence so the
+        # encoder wakes; the encoder throttles to web.stream_fps itself.
+        self._latest_annotated = None
+        self._enc_cond = threading.Condition()
+        self._enc_seq = 0
+        self._enc_thread = None
+
         # Live-stream encode budgeting. JPEG-encoding every annotated frame at
         # camera resolution is a real cost on the capture core, so we cap the
         # preview to web.stream_fps: at most one encode per interval, regardless
         # of how fast the detection loop runs (the loop itself is never
         # throttled -- this only governs how often the preview image refreshes).
         self._last_encode_ts = 0.0
-        stream_fps = float((cfg.get("web") or {}).get("stream_fps", 10) or 0)
+        web = cfg.get("web") or {}
+        stream_fps = float(web.get("stream_fps", 10) or 0)
         self._stream_min_dt = (1.0 / stream_fps) if stream_fps > 0 else 0.0
+        # The live preview doesn't need full camera resolution. Downscaling the
+        # annotated frame to this width before JPEG-encoding is a big win on a
+        # weak Pi: encoding 1280x720 costs ~34ms, but ~640 wide costs ~8ms.
+        # 0 = encode at full resolution.
+        self._stream_max_width = int(web.get("stream_max_width", 640) or 0)
 
         # Drive-by calibration session (see driveby.py). One session at a time,
         # which is fine for single-operator home use.
@@ -70,33 +86,71 @@ class Runner:
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Preview encoder on its own core; started here so it shares the runner's
+        # lifecycle and shuts down cleanly on stop().
+        self._enc_thread = threading.Thread(target=self._encode_loop, daemon=True)
+        self._enc_thread.start()
 
     def _run(self):
         self.speedcam.run(frame_callback=self._on_frame, stop_event=self._stop)
 
     def stop(self):
         self._stop.set()
+        with self._enc_cond:      # wake the encoder so it can exit promptly
+            self._enc_cond.notify_all()
 
     def _on_frame(self, raw, annotated):
         now = time.monotonic()
-        # Refresh the freshness timestamp and the clean-frame reference every
-        # frame (both cheap: no copy, no encode) -- the dashboard's live/stale
-        # badge and the calibration snapshot depend on them. The annotated JPEG
-        # for the live stream is encoded at most once per stream interval.
+        # Runs ON the capture/detect thread, so it must stay cheap: publish
+        # references only (no copy, no encode) and wake the encoder thread. The
+        # dashboard's live/stale badge and calibration snapshot read _latest_raw
+        # / _last_frame_ts; the pipeline builds a fresh annotated array every
+        # frame, so holding a reference to it here is safe -- nothing mutates it
+        # after this hand-off.
         with self._cond:
             self._latest_raw = raw
             self._last_frame_ts = now
-            encode = (now - self._last_encode_ts) >= self._stream_min_dt
-            if encode:
-                self._last_encode_ts = now  # reserve this slot before we release
-        if not encode:
-            return
-        ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if not ok:
-            return
-        with self._cond:
-            self._latest_jpeg = buf.tobytes()
-            self._cond.notify_all()
+        with self._enc_cond:
+            self._latest_annotated = annotated
+            self._enc_seq += 1
+            self._enc_cond.notify()
+
+    def _encode_loop(self):
+        """Resize + JPEG-encode the live preview off the capture thread.
+
+        Waits for the newest annotated frame, throttles to web.stream_fps, and
+        publishes the encoded bytes for the MJPEG stream. Intermediate frames are
+        dropped on purpose -- the preview only needs the latest image, and
+        keeping this work off the capture loop is the entire point.
+        """
+        last_seen = 0
+        while not self._stop.is_set():
+            with self._enc_cond:
+                self._enc_cond.wait_for(
+                    lambda: self._enc_seq != last_seen or self._stop.is_set(),
+                    timeout=1.0)
+                if self._stop.is_set():
+                    break
+                annotated = self._latest_annotated
+                last_seen = self._enc_seq
+            if annotated is None:
+                continue
+            now = time.monotonic()
+            if self._stream_min_dt and (now - self._last_encode_ts) < self._stream_min_dt:
+                continue  # honor stream_fps; the next frame re-triggers us
+            self._last_encode_ts = now
+            preview = annotated
+            mw = self._stream_max_width
+            if mw and annotated.shape[1] > mw:
+                scale = mw / annotated.shape[1]
+                preview = cv2.resize(annotated, None, fx=scale, fy=scale,
+                                     interpolation=cv2.INTER_LINEAR)
+            ok, buf = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                continue
+            with self._cond:
+                self._latest_jpeg = buf.tobytes()
+                self._cond.notify_all()
 
     # --------------------------------------------------------------- streams
     def mjpeg(self):

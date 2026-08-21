@@ -163,19 +163,21 @@ def main():
         print(f"NOTE: camera returned None {n_none}x during the run (drops/stalls).")
 
     print("\n" + "=" * 68)
-    print("RECORDER RING-BUFFER RAM PROJECTION")
+    print("RECORDER RING-BUFFER RAM")
     print("=" * 68)
     rec = cfg["recording"]
     if rec.get("enabled", True):
         w, h = cfg["camera"]["width"], cfg["camera"]["height"]
-        fps_hint = float(cfg["camera"].get("fps", 30) or 30)
-        maxlen = int(rec.get("clip_seconds", 8) * max(fps_hint, 1) * 1.5)
-        mb = maxlen * w * h * 3 / 1e6
-        print(f"clip_seconds={rec.get('clip_seconds', 8)}  fps_hint={fps_hint:.0f}  "
-              f"=> buffer holds up to {maxlen} frames of {w}x{h}")
-        print(f"=> up to ~{mb:.0f} MB of RAM once full.  On a 1 GB Pi 3 that is")
-        print(f"   catastrophic (swap thrash). If 'free -h' above shows swap in use")
-        print(f"   or low 'available', THIS is a prime cause of the choppiness.")
+        frame_mb = w * h * 3 / 1e6
+        cap_mb = float(rec.get("max_buffer_mb", 128) or 128)
+        window_s = float(rec.get("clip_seconds", 8)) * 1.5
+        cap_frames = max(2, int(cap_mb * 1e6 / (w * h * 3)))
+        print(f"buffer evicts by wall-time (~{window_s:.0f}s) with a {cap_mb:.0f}MB hard cap.")
+        print(f"a {w}x{h} frame is ~{frame_mb:.1f}MB, so RAM is bounded at "
+              f"~{cap_mb:.0f}MB ({cap_frames} frames).")
+        print(f"=> at your real fps it holds ~{window_s:.0f}s of frames; the cap only")
+        print(f"   bites if fps is high. Watch 'Swap' in 'free -h' while the service")
+        print(f"   runs -- it should stay at 0.")
     else:
         print("recording disabled -- no ring buffer.")
 

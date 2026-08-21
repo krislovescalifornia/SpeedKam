@@ -135,10 +135,13 @@ DEFAULTS = {
         # not fully trusted -- a power-off on a remote node needs a physical
         # visit to undo).
         "allow_power_control": True,
-        # Cap the live-preview JPEG-encode rate. Only paid while a browser is
-        # watching the stream; the detection loop is never throttled by it.
-        # 0 = unthrottled.
+        # Cap the live-preview JPEG-encode rate. The detection loop is never
+        # throttled by it. 0 = unthrottled.
         "stream_fps": 10,
+        # Downscale the live preview to this width before JPEG-encoding it -- a
+        # big CPU saving on a weak Pi (encoding 1280x720 ~34ms vs ~8ms at 640).
+        # 0 = full resolution.
+        "stream_max_width": 640,
     },
     "backup": {
         "enabled": False,
