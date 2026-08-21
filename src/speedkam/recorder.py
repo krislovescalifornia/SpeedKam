@@ -58,6 +58,17 @@ class Recorder:
         self._max_buffer_bytes = float(cfg.get("max_buffer_mb", 128) or 128) * 1e6
         self._hard_cap = None
         self.buffer = deque()
+        # Cap how often frames are STORED for clips, independent of the detection
+        # rate. The parallel pipeline's capture thread may deliver frames at the
+        # full sensor rate (~30fps), but a 1GB Pi can't hold many seconds of
+        # 720p at that rate within max_buffer_mb -- so the pre-roll would shrink
+        # to a fraction of clip_seconds. Recording at a lower rate (default 15fps,
+        # smooth enough to watch) keeps the pre-roll long AND cuts per-frame copy
+        # cost/heat. 0 = store every frame. Throttled in frame-time, so it holds
+        # for both live (monotonic) and offline (file-clock) sources.
+        record_fps = float(cfg.get("record_fps", 15) or 0)
+        self._record_min_dt = (1.0 / record_fps) if record_fps > 0 else 0.0
+        self._last_push_t = None
         # The ring buffer is written by the capture thread (push) and read by the
         # process thread (frame_at / save_media) once the pipeline runs those on
         # separate cores, so all buffer access is guarded. The lock is held only
@@ -123,6 +134,14 @@ class Recorder:
 
     # ---------------------------------------------------------------- buffer
     def push(self, t, frame):
+        # Record-rate throttle: drop frames that arrive sooner than record_fps
+        # allows. A negative delta (clock reset -- e.g. a looped demo file) is
+        # treated as a fresh start, not a skip.
+        if self._record_min_dt and self._last_push_t is not None:
+            dt = t - self._last_push_t
+            if 0.0 <= dt < self._record_min_dt:
+                return
+        self._last_push_t = t
         # Copy outside the lock (the copy is the expensive part); only the deque
         # mutation needs guarding.
         copy = frame.copy()

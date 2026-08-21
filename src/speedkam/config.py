@@ -89,6 +89,12 @@ DEFAULTS = {
         # wall-time (~clip_seconds), so this is a backstop; keep it small on a
         # 1GB Pi (a 720p frame is ~2.7MB, so 128MB ~= 46 frames).
         "max_buffer_mb": 128,
+        # Cap how many frames/sec are STORED for clips, independent of the
+        # detection rate. The parallel pipeline captures at the sensor rate
+        # (~30fps), but a 1GB Pi can't hold many seconds of 720p at that rate
+        # within max_buffer_mb -- so clips are recorded at this lower rate (still
+        # smooth to watch) to keep the pre-roll long. 0 = store every frame.
+        "record_fps": 15,
         "save_only_with_speed": True,
         "save_snapshot": True,
         "burn_overlay": True,

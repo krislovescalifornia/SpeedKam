@@ -180,6 +180,13 @@ recording:
   # 720p frame is ~2.7MB; on a 1GB Pi keep this modest so the buffer can't
   # exhaust memory and drive the node into SD swap-thrash. Raise on a Pi 4/5.
   max_buffer_mb: 128
+  # Frames/sec actually STORED for clips, independent of the detection rate. The
+  # pipeline captures at the sensor rate (~30fps), but a 1GB Pi can't buffer many
+  # seconds of 720p at 30fps within max_buffer_mb -- so the pre-roll would be
+  # tiny. Recording at ~15fps (smooth enough to watch) keeps clips their full
+  # length AND cuts per-frame copy cost/heat. Raise toward 30 on a Pi 4/5 with a
+  # bigger max_buffer_mb; 0 = store every frame.
+  record_fps: 15
   # Only save a clip when a valid speed was measured. If false, saves for every
   # tracked vehicle (useful while still calibrating).
   save_only_with_speed: true
