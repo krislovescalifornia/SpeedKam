@@ -20,7 +20,6 @@ time is only as good as that time.
 from __future__ import annotations
 
 import sys
-import threading
 import time
 
 import cv2
@@ -51,22 +50,6 @@ class Camera:
         # run loop retries. `opened` reflects the current live state.
         self.opened = False
         self.open_error = None
-
-        # Background capture: for a LIVE camera, a reader thread grabs frames
-        # continuously so the processing loop never blocks waiting on the sensor
-        # -- capture I/O overlaps with detection, and read() always returns the
-        # freshest frame (intermediate frames are dropped when processing can't
-        # keep up, which is exactly what we want: low latency, honest timestamps).
-        # Offline video files keep the old synchronous pull so their frame
-        # timeline (and the tests) are byte-for-byte unchanged.
-        self._threaded = bool(cfg.get("threaded", True))
-        self._frame_cond = threading.Condition()
-        self._latest = None            # (t, frame) most recent grab
-        self._frame_seq = 0            # bumped on every new grab
-        self._returned_seq = 0         # last seq handed to a read() caller
-        self._reader = None            # the reader thread, if running
-        self._reader_stop = threading.Event()
-
         self._open()
 
     # ------------------------------------------------------------------- open
@@ -107,9 +90,6 @@ class Camera:
         self._cap = None
         self._picam = None
         self.opened = False
-        # Wake any read() blocked waiting on the reader so it observes the close.
-        with self._frame_cond:
-            self._frame_cond.notify_all()
 
     @property
     def offline(self):
@@ -204,55 +184,10 @@ class Camera:
     def read(self):
         """Return (t_monotonic, BGR frame) or (None, None) on failure/end.
 
-        Live cameras are served from a background reader thread so grabbing a
-        frame never blocks the processing loop; offline files and threaded=false
-        fall back to a direct synchronous grab (byte-for-byte the old behaviour).
-        A camera that vanishes mid-stream yields (None, None) so the run loop
-        retries instead of crashing the node.
+        A camera that vanishes mid-stream (unplugged, undervoltage) raises here;
+        we catch it, mark the camera closed, and return (None, None) so the run
+        loop retries instead of crashing the node.
         """
-        if not self.opened:
-            return None, None
-        if self._offline or not self._threaded:
-            return self._read_raw()
-        self._ensure_reader()
-        with self._frame_cond:
-            fresh = self._frame_cond.wait_for(
-                lambda: self._frame_seq != self._returned_seq or not self.opened,
-                timeout=5.0,
-            )
-            if not fresh or not self.opened or self._latest is None:
-                # No new frame within the window (sensor hang) or a disconnect:
-                # report a drop; the run loop marks closed and reopens.
-                return None, None
-            self._returned_seq = self._frame_seq
-            return self._latest
-
-    def _ensure_reader(self):
-        """Start the background reader thread if it isn't already running."""
-        if self._reader is not None and self._reader.is_alive():
-            return
-        self._reader_stop.clear()
-        self._reader = threading.Thread(
-            target=self._reader_loop, name="speedkam-capture", daemon=True)
-        self._reader.start()
-
-    def _reader_loop(self):
-        """Grab frames as fast as the sensor delivers them, publishing the latest
-        to read(). Exits (and marks the camera closed) on the first failed grab
-        so the run loop drops into its reopen/retry path."""
-        while not self._reader_stop.is_set():
-            t, frame = self._read_raw()
-            if frame is None:
-                self.mark_closed()   # wakes any waiting read() and ends the loop
-                break
-            with self._frame_cond:
-                self._latest = (t, frame)
-                self._frame_seq += 1
-                self._frame_cond.notify_all()
-
-    def _read_raw(self):
-        """The actual synchronous grab. Runs on the reader thread for a live
-        camera, or inline for offline files / threaded=false."""
         if not self.opened:
             return None, None
         try:
@@ -290,15 +225,6 @@ class Camera:
         return (self.cfg["width"], self.cfg["height"])
 
     def release(self):
-        # Stop the background reader first so it isn't mid-grab when we tear the
-        # handle down. Never join ourselves: mark_closed()/release() can be
-        # called from the reader thread on a disconnect.
-        self._reader_stop.set()
-        with self._frame_cond:
-            self._frame_cond.notify_all()
-        r = self._reader
-        if r is not None and r.is_alive() and r is not threading.current_thread():
-            r.join(timeout=2.0)
         if self._cap is not None:
             self._cap.release()
         if self._picam is not None:  # pragma: no cover - Pi only

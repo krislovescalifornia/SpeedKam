@@ -19,9 +19,6 @@ DEFAULTS = {
         "windows_use_dshow": True,
         "manual_exposure": -1,
         "loop": False,
-        # Grab frames on a background thread so capture I/O overlaps detection
-        # (live cameras only; offline files always pull synchronously).
-        "threaded": True,
         # Optional lens undistortion applied to every frame before detection and
         # calibration. Off by default. dist_coeffs is OpenCV order [k1,k2,p1,p2,k3];
         # intrinsics are derived from fov_deg + frame size unless fx/fy/cx/cy given.

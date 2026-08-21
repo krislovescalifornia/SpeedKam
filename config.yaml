@@ -29,13 +29,6 @@ camera:
   # On many webcams exposure is in log2 seconds, e.g. -6 ~ 1/64s. Experiment.
   manual_exposure: -1
 
-  # Grab frames on a background thread so the sensor's capture/transfer time
-  # overlaps the detection work instead of stalling it -- read() always hands
-  # the processing loop the freshest frame and drops any it fell behind on.
-  # Applies to LIVE cameras only; offline video files always pull synchronously
-  # so their frame timeline stays exact. Set false to force the old in-line grab.
-  threaded: true
-
   # Optional lens undistortion, applied to EVERY frame before detection and
   # calibration. A wide-angle lens bends straight lines (barrel distortion),
   # which corrupts the pixels->meters homography most at the frame edges --

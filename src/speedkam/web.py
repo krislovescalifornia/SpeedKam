@@ -61,15 +61,6 @@ class Runner:
         self._last_encode_ts = 0.0
         stream_fps = float((cfg.get("web") or {}).get("stream_fps", 10) or 0)
         self._stream_min_dt = (1.0 / stream_fps) if stream_fps > 0 else 0.0
-        # The JPEG encode itself runs on a dedicated encoder thread, not the
-        # capture thread: _on_frame just parks the latest annotated frame here
-        # and signals; the encoder picks it up. cv2.imencode releases the GIL,
-        # so on the Pi's multiple cores this genuinely moves the cost off the
-        # detection loop. Single-slot on purpose -- a newer frame overwrites an
-        # unstarted one, so we never build a backlog.
-        self._encode_src = None
-        self._encode_cond = threading.Condition()
-        self._encoder = None
 
         # Drive-by calibration session (see driveby.py). One session at a time,
         # which is fine for single-operator home use.
@@ -78,9 +69,6 @@ class Runner:
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
-        self._encoder = threading.Thread(
-            target=self._encode_loop, name="speedkam-encode", daemon=True)
-        self._encoder.start()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -89,9 +77,6 @@ class Runner:
 
     def stop(self):
         self._stop.set()
-        # Wake the encoder so it observes the stop and exits promptly.
-        with self._encode_cond:
-            self._encode_cond.notify_all()
 
     def _on_frame(self, raw, annotated):
         now = time.monotonic()
@@ -109,29 +94,12 @@ class Runner:
                 self._last_encode_ts = now  # reserve this slot before we release
         if not encode:
             return
-        # Hand the frame to the encoder thread; do NOT encode here on the capture
-        # thread. Overwriting an unstarted frame is fine -- we always want the
-        # newest one on the wire.
-        with self._encode_cond:
-            self._encode_src = annotated
-            self._encode_cond.notify()
-
-    def _encode_loop(self):
-        """Encode the latest annotated frame to JPEG off the capture thread and
-        publish it to the MJPEG stream."""
-        while not self._stop.is_set():
-            with self._encode_cond:
-                self._encode_cond.wait(timeout=1.0)
-                src = self._encode_src
-                self._encode_src = None
-            if src is None:
-                continue
-            ok, buf = cv2.imencode(".jpg", src, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if not ok:
-                continue
-            with self._cond:
-                self._latest_jpeg = buf.tobytes()
-                self._cond.notify_all()
+        ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            return
+        with self._cond:
+            self._latest_jpeg = buf.tobytes()
+            self._cond.notify_all()
 
     # --------------------------------------------------------------- streams
     def mjpeg(self):

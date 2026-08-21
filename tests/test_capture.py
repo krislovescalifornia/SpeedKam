@@ -9,10 +9,6 @@ import pytest
 from speedkam import capture
 
 
-# These exercise the synchronous open/reopen/grab CONTRACT, so they pin
-# threaded=False for deterministic single-grab behaviour. The background reader
-# (a live-camera optimization) is covered separately below with a source that
-# yields frames endlessly, the way a real camera does.
 CFG = {
     "backend": "opencv",
     "source": 0,
@@ -22,7 +18,6 @@ CFG = {
     "windows_use_dshow": False,
     "manual_exposure": -1,
     "undistort": None,
-    "threaded": False,
 }
 
 
@@ -89,45 +84,3 @@ def test_successful_open_reads_frames(monkeypatch):
     cam = capture.Camera(CFG)
     assert cam.opened is True and cam.backend == "opencv"
     assert cam.read()[1] is not None
-
-
-def test_threaded_reader_delivers_frames(monkeypatch):
-    """With threaded capture on (the live-camera default), the background reader
-    keeps handing the newest frame to read()."""
-    class Live(FakeCap):
-        def read(self):                       # a live camera never runs dry
-            return True, _frame()
-    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: Live(opened=True))
-    cam = capture.Camera(dict(CFG, threaded=True))
-    try:
-        assert cam.opened is True
-        for _ in range(5):
-            t, frame = cam.read()
-            assert frame is not None and t is not None
-    finally:
-        cam.release()
-
-
-def test_threaded_reader_marks_closed_on_disconnect(monkeypatch):
-    """A live disconnect (read starts failing) must propagate through the reader
-    thread: read() reports a drop and the camera is flagged for the retry loop."""
-    class Flaky(FakeCap):
-        def __init__(self, **kw):
-            super().__init__(**kw)
-            self._n = 0
-
-        def read(self):
-            self._n += 1
-            if self._n <= 2:
-                return True, _frame()
-            return False, None                # unplugged after 2 frames
-    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: Flaky(opened=True))
-    cam = capture.Camera(dict(CFG, threaded=True))
-    try:
-        # Drain until the reader observes the disconnect and read() reports None.
-        for _ in range(50):
-            if cam.read() == (None, None):
-                break
-        assert cam.opened is False
-    finally:
-        cam.release()
