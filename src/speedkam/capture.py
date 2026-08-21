@@ -173,12 +173,41 @@ class Camera:
                 "On Raspberry Pi OS: sudo apt install -y python3-picamera2"
             ) from exc
         self._picam = Picamera2()
+        controls = self._picamera2_controls()
         config = self._picam.create_video_configuration(
-            main={"size": (self.cfg["width"], self.cfg["height"]), "format": "RGB888"}
+            main={"size": (self.cfg["width"], self.cfg["height"]), "format": "RGB888"},
+            controls=controls,
         )
         self._picam.configure(config)
         self._picam.start()
-        time.sleep(0.5)  # let auto-exposure settle
+        time.sleep(0.5)  # let auto-exposure/gain settle
+
+    def _picamera2_controls(self):
+        """Camera controls for the CSI sensor.
+
+        The critical one is FrameDurationLimits: on a global-shutter sensor the
+        frame rate is bounded by exposure time, and libcamera's auto-exposure
+        will pick a long exposure in dim light -- collapsing FPS to single digits
+        AND motion-blurring fast vehicles (exactly what a global shutter is meant
+        to avoid). Pinning the frame duration from `fps` caps the exposure so the
+        rate stays up; auto-exposure then compensates with gain, not time.
+
+        Optionally pin a fixed short exposure (`exposure_us`) to freeze motion
+        outright, and/or a fixed `analogue_gain`. Both 0 = leave on auto (still
+        bounded by the frame-duration cap above).
+        """
+        cfg = self.cfg
+        fps = float(cfg.get("fps", 30) or 30)
+        frame_us = int(1_000_000 / max(fps, 1.0))
+        controls = {"FrameDurationLimits": (frame_us, frame_us)}
+        exposure_us = int(cfg.get("exposure_us", 0) or 0)
+        if exposure_us > 0:
+            controls["ExposureTime"] = exposure_us
+            controls["AeEnable"] = False
+        gain = float(cfg.get("analogue_gain", 0) or 0)
+        if gain > 0:
+            controls["AnalogueGain"] = gain
+        return controls
 
     # -------------------------------------------------------------------- read
     def read(self):

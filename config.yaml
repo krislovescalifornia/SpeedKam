@@ -27,7 +27,24 @@ camera:
 
   # Cap exposure to freeze motion (reduce blur on fast cars). -1 = auto/leave.
   # On many webcams exposure is in log2 seconds, e.g. -6 ~ 1/64s. Experiment.
+  # (USB/OpenCV backend only -- see exposure_us below for the Pi CSI camera.)
   manual_exposure: -1
+
+  # --- Raspberry Pi CSI camera (picamera2) sensor controls -------------------
+  # On a GLOBAL-SHUTTER sensor (e.g. IMX296) the frame rate is bounded by the
+  # exposure time. With fully-automatic exposure, libcamera picks a long
+  # exposure in dim light -- which collapses FPS (2-4 fps indoors/shade) AND
+  # motion-blurs fast cars. `fps` above is pushed to the sensor as a frame-
+  # duration cap so exposure can't run longer than 1/fps; auto-exposure then
+  # keeps brightness up with GAIN instead of time. This alone often takes a
+  # dim-light node from ~2 fps to its real ceiling.
+  #
+  # For the sharpest plates on fast traffic, pin a short fixed exposure too:
+  #   exposure_us: 4000     # 4 ms freezes motion; raise if the image is too dark
+  #   analogue_gain: 8.0    # compensate the shorter exposure (higher = noisier)
+  # 0 = leave on auto (still bounded by the fps frame-duration cap).
+  exposure_us: 0
+  analogue_gain: 0
 
   # Optional lens undistortion, applied to EVERY frame before detection and
   # calibration. A wide-angle lens bends straight lines (barrel distortion),

@@ -18,6 +18,11 @@ DEFAULTS = {
         "fps": 30,
         "windows_use_dshow": True,
         "manual_exposure": -1,
+        # Raspberry Pi CSI (picamera2) sensor controls. exposure_us/analogue_gain
+        # of 0 = auto; `fps` (above) always caps the frame duration so auto-
+        # exposure can't strangle the frame rate in dim light.
+        "exposure_us": 0,
+        "analogue_gain": 0,
         "loop": False,
         # Optional lens undistortion applied to every frame before detection and
         # calibration. Off by default. dist_coeffs is OpenCV order [k1,k2,p1,p2,k3];

@@ -84,3 +84,28 @@ def test_successful_open_reads_frames(monkeypatch):
     cam = capture.Camera(CFG)
     assert cam.opened is True and cam.backend == "opencv"
     assert cam.read()[1] is not None
+
+
+class _Stub:
+    """Minimal carrier so we can exercise the pure control-building logic
+    without opening a real CSI camera (picamera2 is Pi-only)."""
+
+
+def test_picamera2_controls_caps_frame_duration():
+    """`fps` must be pushed to the sensor as a frame-duration cap so auto-
+    exposure can't strangle the frame rate; auto exposure/gain stay on."""
+    s = _Stub()
+    s.cfg = {"fps": 30, "exposure_us": 0, "analogue_gain": 0}
+    c = capture.Camera._picamera2_controls(s)
+    assert c["FrameDurationLimits"] == (33333, 33333)   # 30 fps => 33.3 ms cap
+    assert "ExposureTime" not in c and "AeEnable" not in c
+    assert "AnalogueGain" not in c
+
+
+def test_picamera2_controls_fixed_exposure_and_gain():
+    s = _Stub()
+    s.cfg = {"fps": 15, "exposure_us": 4000, "analogue_gain": 8.0}
+    c = capture.Camera._picamera2_controls(s)
+    assert c["FrameDurationLimits"] == (66666, 66666)
+    assert c["ExposureTime"] == 4000 and c["AeEnable"] is False
+    assert c["AnalogueGain"] == 8.0
