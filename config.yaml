@@ -243,11 +243,13 @@ web:
   # exposing it on a network you don't fully trust.
   allow_power_control: true
   # Max frames/sec the live MJPEG preview is JPEG-encoded at. The encode is a
-  # real cost on the capture core, so it is only paid while a browser is
-  # actually watching the stream (zero cost when the dashboard is closed) and is
-  # capped here regardless. The detection loop always runs at full speed; this
-  # only limits how often the preview image is refreshed. 0 = unthrottled.
+  # real cost on the capture core, so it is capped here. The detection loop
+  # always runs at full speed; this only limits preview refresh. 0 = unthrottled.
   stream_fps: 10
+  # Downscale the live preview to this width before encoding. The browser view
+  # doesn't need full camera resolution, and encoding a 1280x720 JPEG costs
+  # ~34ms on a Pi 3 vs ~8ms at 640 wide -- a big win. 0 = full resolution.
+  stream_max_width: 640
 
 netcfg:
   # Wi-Fi onboarding for headless nodes (speedkam-netcfg.service). On boot, if
@@ -331,7 +333,11 @@ recognition:
   # private drive keep this FALSE: the Pi recognizes each car inline (it only
   # runs YOLO once per pass, with long gaps between cars), and nothing else has
   # to run anywhere -- the off-site host just stores and displays the results.
-  defer: false
+  #
+  # SET TO true ON THE PI 3: inline YOLO ran on the capture thread and stalled
+  # the loop for ~1-5s per car (pinning fps ~3 with two cores idle). Deferring
+  # keeps the cheap inline color pass and offloads type/make/model to a worker.
+  defer: true
   # YOLO weights for vehicle TYPE (COCO classes: car/truck/bus/motorcycle).
   # Used by the worker (ignored on a defer node). Downloaded by ultralytics.
   model: yolov8n.pt
