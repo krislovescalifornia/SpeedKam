@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from speedkam import capture
+from speedkam.detector import MotionDetector
 
 
 CFG = {
@@ -109,3 +110,37 @@ def test_picamera2_controls_fixed_exposure_and_gain():
     assert c["FrameDurationLimits"] == (66666, 66666)
     assert c["ExposureTime"] == 4000 and c["AeEnable"] is False
     assert c["AnalogueGain"] == 8.0
+
+
+def test_lores_size_from_detect_scale(monkeypatch):
+    """A picamera2 node sizes its hardware detection stream from detect_scale;
+    default (1.0) means no lores stream."""
+    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: FakeCap(opened=True))
+    cam = capture.Camera(CFG, detect_scale=0.5)          # 320x240 -> 160x120
+    assert cam._lores_size == (160, 120)
+    assert capture.Camera(CFG, detect_scale=1.0)._lores_size is None
+
+
+def test_lores_disabled_when_undistort_on(monkeypatch):
+    """The lores frame isn't undistorted, so it must not be used when lens
+    undistortion is enabled (its coordinates wouldn't match the calibration)."""
+    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: FakeCap(opened=True))
+    cfg = dict(CFG, undistort={"enabled": True, "dist_coeffs": [0, 0, 0, 0, 0]})
+    assert capture.Camera(cfg, detect_scale=0.5)._lores_size is None
+
+
+def test_detect_upscale_maps_to_full_resolution():
+    """Detection on a hardware-downscaled frame reports full-resolution
+    coordinates via the upscale factor (no software resize)."""
+    cfg = {"min_area": 1500, "max_area": 500000, "history": 50, "var_threshold": 40,
+           "detect_shadows": False, "morph_kernel": 5, "detect_scale": 0.5}
+    det = MotionDetector(cfg)
+    lw, lh = 640, 360
+    for _ in range(30):
+        det.detect(np.zeros((lh, lw), np.uint8), upscale=2.0)   # prime background
+    f = np.zeros((lh, lw), np.uint8)
+    f[200:240, 400:460] = 255                                   # lores-space blob
+    dets, _ = det.detect(f, upscale=2.0)
+    assert len(dets) == 1
+    x, y, w, h = dets[0].bbox
+    assert (round(x), round(y), round(w), round(h)) == (800, 400, 120, 80)

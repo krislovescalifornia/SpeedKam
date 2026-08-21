@@ -33,7 +33,13 @@ from .tracker import Tracker
 class SpeedCamera:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.camera = Camera(cfg["camera"])
+        # Tell the camera the detection downscale so a picamera2 node can emit a
+        # hardware "lores" detection stream at that size (see Camera). One knob
+        # (detect_scale) drives detection resolution on both backends.
+        self.camera = Camera(
+            cfg["camera"],
+            detect_scale=float(cfg["detection"].get("detect_scale", 1.0) or 1.0),
+        )
         self.detector = MotionDetector(cfg["detection"])
         self.tracker = Tracker(cfg["tracker"], min_hits=cfg["detection"]["min_hits"])
 
@@ -253,7 +259,16 @@ class SpeedCamera:
                 self._tick_fps()
                 self.frame_wh = (frame.shape[1], frame.shape[0])
 
-                detections, _ = self.detector.detect(frame)
+                # Prefer the camera's hardware-downscaled detection frame (the
+                # picamera2 lores stream) when it provided one -- detection then
+                # runs on a tiny frame with no software resize. Otherwise the
+                # detector downscales the full frame itself.
+                detect_frame = self.camera.detect_frame
+                if detect_frame is not None:
+                    upscale = frame.shape[1] / detect_frame.shape[1]
+                    detections, _ = self.detector.detect(detect_frame, upscale=upscale)
+                else:
+                    detections, _ = self.detector.detect(frame)
                 world = self._world_points(detections)
                 active, finished = self.tracker.update(detections, world, t)
 

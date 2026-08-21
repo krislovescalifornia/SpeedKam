@@ -23,12 +23,13 @@ import sys
 import time
 
 import cv2
+import numpy as np
 
 from .undistort import Undistorter
 
 
 class Camera:
-    def __init__(self, cfg):
+    def __init__(self, cfg, detect_scale=1.0):
         self.cfg = cfg
         self._configured_backend = cfg["backend"]
         self.backend = None            # resolved on open: 'opencv' | 'picamera2'
@@ -37,6 +38,25 @@ class Camera:
         self.undistorter = Undistorter(cfg.get("undistort"))
         self._picam = None
         self._cap = None
+
+        # Hardware detection stream (picamera2 only): the ISP can emit a second,
+        # downscaled "lores" frame alongside the full-res "main" frame at no CPU
+        # cost. We run motion detection on that tiny frame and keep `main` just
+        # for clips/annotation -- a big win on a weak Pi, where software
+        # downscaling the full frame every tick is itself expensive. Sized from
+        # the detector's detect_scale so one knob controls detection resolution
+        # on both backends. Disabled when undistortion is on (the lores frame
+        # isn't undistorted, so its coordinates wouldn't match the calibration).
+        self._lores_size = None        # (w, h) or None if no lores stream
+        ds = float(detect_scale or 1.0)
+        if 0.0 < ds < 1.0 and not self.undistorter.enabled:
+            lw = int(round(cfg["width"] * ds)) & ~1   # even dims for YUV420
+            lh = int(round(cfg["height"] * ds)) & ~1
+            if lw >= 64 and lh >= 64:
+                self._lores_size = (lw, lh)
+        # The most recent detection frame (grayscale, lores-sized) captured in
+        # lock-step with the main frame, or None when there's no lores stream.
+        self.detect_frame = None
         # Offline video files must be timed by the file's own frame clock, not
         # wall-clock read time (we process faster than real time). Live sources
         # (webcam index, RTSP/HTTP stream) are timed by the monotonic clock.
@@ -174,11 +194,24 @@ class Camera:
             ) from exc
         self._picam = Picamera2()
         controls = self._picamera2_controls()
-        config = self._picam.create_video_configuration(
-            main={"size": (self.cfg["width"], self.cfg["height"]), "format": "RGB888"},
-            controls=controls,
-        )
-        self._picam.configure(config)
+        main = {"size": (self.cfg["width"], self.cfg["height"]), "format": "RGB888"}
+        # A rejected lores config must NOT brick a remote node: fall back to
+        # main-only (software detection) rather than leave the camera unopenable.
+        if self._lores_size is not None:
+            try:
+                # lores is always YUV420 on the Pi; its Y plane is a ready-made
+                # grayscale detection frame, produced by the ISP for free.
+                cfg = self._picam.create_video_configuration(
+                    main=main, controls=controls,
+                    lores={"size": self._lores_size, "format": "YUV420"})
+                self._picam.configure(cfg)
+            except Exception as exc:  # noqa: BLE001 - degrade, don't die
+                print(f"[camera] lores stream {self._lores_size} rejected "
+                      f"({exc}); using main-only + software downscale.")
+                self._lores_size = None
+        if self._lores_size is None:
+            cfg = self._picam.create_video_configuration(main=main, controls=controls)
+            self._picam.configure(cfg)
         self._picam.start()
         time.sleep(0.5)  # let auto-exposure/gain settle
 
@@ -222,10 +255,27 @@ class Camera:
         try:
             if self._picam is not None:  # pragma: no cover - Pi only
                 t = time.monotonic()
+                if self._lores_size is not None:
+                    # Grab main + lores from ONE request so they're the same
+                    # instant. The lores Y plane (first `lh` rows of the YUV420
+                    # array) is our grayscale detection frame -- no software
+                    # downscale, no colour convert on the detection path.
+                    req = self._picam.capture_request()
+                    try:
+                        rgb = req.make_array("main")
+                        yuv = req.make_array("lores")
+                    finally:
+                        req.release()
+                    lw, lh = self._lores_size
+                    self.detect_frame = np.ascontiguousarray(yuv[:lh, :lw])
+                    frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    return t, self.undistorter.apply(frame)
                 rgb = self._picam.capture_array()
+                self.detect_frame = None
                 frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                 return t, self.undistorter.apply(frame)
 
+            self.detect_frame = None
             ok, frame = self._cap.read()
             if (not ok or frame is None) and self._offline and self.cfg.get("loop"):
                 # Loop a video file (handy for demos/tests): rewind and continue.

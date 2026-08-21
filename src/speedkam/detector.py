@@ -47,12 +47,29 @@ class MotionDetector:
         scale = float(cfg.get("detect_scale", 1.0) or 1.0)
         self.scale = scale if 0.0 < scale <= 1.0 else 1.0
 
-    def detect(self, frame):
-        if self.scale < 1.0:
+    def detect(self, frame, upscale=None):
+        """Detect moving blobs and return (detections, mask).
+
+        `frame` is what MOG2 runs on. Two ways to feed it a smaller frame (both
+        quarter the work when halving each side):
+          * software (default): pass the full-resolution frame and leave
+            `upscale=None`; we downscale it here by `detect_scale`.
+          * hardware: pass a frame that is ALREADY downscaled (e.g. a picamera2
+            `lores` stream the ISP produced for free) and give `upscale` = the
+            factor that maps its pixels back to full resolution. No software
+            resize happens, which is the whole point on a weak CPU.
+        Either way, all output coordinates/areas are in full-resolution pixels.
+        """
+        if upscale is not None:
+            small = frame                  # already at detection resolution
+            inv = float(upscale)
+        elif self.scale < 1.0:
             small = cv2.resize(frame, None, fx=self.scale, fy=self.scale,
                                interpolation=cv2.INTER_AREA)
+            inv = 1.0 / self.scale
         else:
             small = frame
+            inv = 1.0
 
         mask = self.bg.apply(small)
         # Shadows are painted 127 by MOG2; drop them to keep only hard motion.
@@ -65,7 +82,6 @@ class MotionDetector:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         # Map detection-space pixels back to full-resolution pixels. Areas scale
         # by the square of the linear factor.
-        inv = 1.0 / self.scale
         area_scale = inv * inv
         detections = []
         for c in contours:
