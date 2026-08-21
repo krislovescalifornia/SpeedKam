@@ -52,6 +52,25 @@ class Runner:
         self._stop = threading.Event()
         self._thread = None
 
+        # Live-stream encode budgeting. JPEG-encoding every annotated frame at
+        # camera resolution is a real cost on the single capture core, so we only
+        # pay it while at least one browser is actually pulling the MJPEG stream,
+        # and we cap it to web.stream_fps regardless. The detection loop itself
+        # is never throttled -- this only governs how often the preview refreshes.
+        self._stream_clients = 0
+        self._last_encode_ts = 0.0
+        stream_fps = float((cfg.get("web") or {}).get("stream_fps", 10) or 0)
+        self._stream_min_dt = (1.0 / stream_fps) if stream_fps > 0 else 0.0
+        # The JPEG encode itself runs on a dedicated encoder thread, not the
+        # capture thread: _on_frame just parks the latest annotated frame here
+        # and signals; the encoder picks it up. cv2.imencode releases the GIL,
+        # so on the Pi's multiple cores this genuinely moves the cost off the
+        # detection loop. Single-slot on purpose -- a newer frame overwrites an
+        # unstarted one, so we never build a backlog.
+        self._encode_src = None
+        self._encode_cond = threading.Condition()
+        self._encoder = None
+
         # Drive-by calibration session (see driveby.py). One session at a time,
         # which is fine for single-operator home use.
         self._db_lock = threading.Lock()
@@ -59,6 +78,9 @@ class Runner:
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
+        self._encoder = threading.Thread(
+            target=self._encode_loop, name="speedkam-encode", daemon=True)
+        self._encoder.start()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -67,29 +89,70 @@ class Runner:
 
     def stop(self):
         self._stop.set()
+        # Wake the encoder so it observes the stop and exits promptly.
+        with self._encode_cond:
+            self._encode_cond.notify_all()
 
     def _on_frame(self, raw, annotated):
-        ok, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
-        if not ok:
-            return
+        now = time.monotonic()
+        # Always refresh the freshness timestamp and the clean-frame reference:
+        # both are cheap (no copy, no encode) and must stay current even when
+        # nobody is watching -- the dashboard's live/stale badge and the
+        # calibration snapshot depend on them. Only the expensive JPEG encode of
+        # the annotated frame is gated on an active viewer + the rate cap.
         with self._cond:
-            self._latest_jpeg = buf.tobytes()
             self._latest_raw = raw
-            self._last_frame_ts = time.monotonic()
-            self._cond.notify_all()
+            self._last_frame_ts = now
+            encode = (self._stream_clients > 0
+                      and (now - self._last_encode_ts) >= self._stream_min_dt)
+            if encode:
+                self._last_encode_ts = now  # reserve this slot before we release
+        if not encode:
+            return
+        # Hand the frame to the encoder thread; do NOT encode here on the capture
+        # thread. Overwriting an unstarted frame is fine -- we always want the
+        # newest one on the wire.
+        with self._encode_cond:
+            self._encode_src = annotated
+            self._encode_cond.notify()
+
+    def _encode_loop(self):
+        """Encode the latest annotated frame to JPEG off the capture thread and
+        publish it to the MJPEG stream."""
+        while not self._stop.is_set():
+            with self._encode_cond:
+                self._encode_cond.wait(timeout=1.0)
+                src = self._encode_src
+                self._encode_src = None
+            if src is None:
+                continue
+            ok, buf = cv2.imencode(".jpg", src, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                continue
+            with self._cond:
+                self._latest_jpeg = buf.tobytes()
+                self._cond.notify_all()
 
     # --------------------------------------------------------------- streams
     def mjpeg(self):
         boundary = b"--frame"
-        while not self._stop.is_set():
+        # Register as a viewer so _on_frame starts encoding; deregister on
+        # disconnect so encoding stops when the last browser goes away.
+        with self._cond:
+            self._stream_clients += 1
+        try:
+            while not self._stop.is_set():
+                with self._cond:
+                    self._cond.wait(timeout=1.0)
+                    frame = self._latest_jpeg
+                if frame is None:
+                    continue
+                yield (boundary + b"\r\nContent-Type: image/jpeg\r\n"
+                       + f"Content-Length: {len(frame)}\r\n\r\n".encode()
+                       + frame + b"\r\n")
+        finally:
             with self._cond:
-                self._cond.wait(timeout=1.0)
-                frame = self._latest_jpeg
-            if frame is None:
-                continue
-            yield (boundary + b"\r\nContent-Type: image/jpeg\r\n"
-                   + f"Content-Length: {len(frame)}\r\n\r\n".encode()
-                   + frame + b"\r\n")
+                self._stream_clients = max(0, self._stream_clients - 1)
 
     def snapshot(self):
         with self._cond:

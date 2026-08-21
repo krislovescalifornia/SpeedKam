@@ -19,6 +19,9 @@ DEFAULTS = {
         "windows_use_dshow": True,
         "manual_exposure": -1,
         "loop": False,
+        # Grab frames on a background thread so capture I/O overlaps detection
+        # (live cameras only; offline files always pull synchronously).
+        "threaded": True,
         # Optional lens undistortion applied to every frame before detection and
         # calibration. Off by default. dist_coeffs is OpenCV order [k1,k2,p1,p2,k3];
         # intrinsics are derived from fov_deg + frame size unless fx/fy/cx/cy given.
@@ -35,7 +38,14 @@ DEFAULTS = {
         "max_area": 500000,
         "history": 400,
         "var_threshold": 40,
-        "detect_shadows": True,
+        # Run detection on a downscaled copy of each frame (1.0 = full res).
+        # 0.5 quarters the per-frame cost -- the biggest Pi FPS win. Coordinates
+        # and areas are scaled back to full resolution, so nothing downstream
+        # (calibration, min_area/max_area, annotation) changes.
+        "detect_scale": 0.5,
+        # MOG2 shadow modelling off by default: cheaper, and shadows are dropped
+        # downstream anyway. See config.yaml for the accuracy trade-off.
+        "detect_shadows": False,
         "morph_kernel": 5,
         "min_hits": 3,
     },
@@ -119,6 +129,10 @@ DEFAULTS = {
         # not fully trusted -- a power-off on a remote node needs a physical
         # visit to undo).
         "allow_power_control": True,
+        # Cap the live-preview JPEG-encode rate. Only paid while a browser is
+        # watching the stream; the detection loop is never throttled by it.
+        # 0 = unthrottled.
+        "stream_fps": 10,
     },
     "backup": {
         "enabled": False,

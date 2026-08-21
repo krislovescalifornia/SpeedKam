@@ -37,21 +37,43 @@ class MotionDetector:
         )
         k = cfg["morph_kernel"]
         self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        # Detection can run on a DOWNSCALED copy of each frame -- MOG2 +
+        # morphology + findContours all cost roughly one op per pixel, so
+        # halving each dimension quarters the work and is the single biggest
+        # win for FPS on a Raspberry Pi. All coordinates and areas below are
+        # scaled back UP to full-resolution pixels before we hand them out, so
+        # the calibration homography, min_area/max_area and the annotator are
+        # completely unaware detection ever saw a smaller frame.
+        scale = float(cfg.get("detect_scale", 1.0) or 1.0)
+        self.scale = scale if 0.0 < scale <= 1.0 else 1.0
 
     def detect(self, frame):
-        mask = self.bg.apply(frame)
+        if self.scale < 1.0:
+            small = cv2.resize(frame, None, fx=self.scale, fy=self.scale,
+                               interpolation=cv2.INTER_AREA)
+        else:
+            small = frame
+
+        mask = self.bg.apply(small)
         # Shadows are painted 127 by MOG2; drop them to keep only hard motion.
+        # (Only meaningful when detect_shadows is on -- with it off, MOG2 skips
+        # the per-pixel shadow test entirely, which is cheaper.)
         _, mask = cv2.threshold(mask, 200, 255, cv2.THRESH_BINARY)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.kernel, iterations=2)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Map detection-space pixels back to full-resolution pixels. Areas scale
+        # by the square of the linear factor.
+        inv = 1.0 / self.scale
+        area_scale = inv * inv
         detections = []
         for c in contours:
-            area = cv2.contourArea(c)
+            area = cv2.contourArea(c) * area_scale
             if area < self.cfg["min_area"] or area > self.cfg["max_area"]:
                 continue
             x, y, w, h = cv2.boundingRect(c)
+            x, y, w, h = x * inv, y * inv, w * inv, h * inv
             detections.append(
                 Detection(
                     bbox=(x, y, w, h),

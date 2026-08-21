@@ -29,6 +29,13 @@ camera:
   # On many webcams exposure is in log2 seconds, e.g. -6 ~ 1/64s. Experiment.
   manual_exposure: -1
 
+  # Grab frames on a background thread so the sensor's capture/transfer time
+  # overlaps the detection work instead of stalling it -- read() always hands
+  # the processing loop the freshest frame and drops any it fell behind on.
+  # Applies to LIVE cameras only; offline video files always pull synchronously
+  # so their frame timeline stays exact. Set false to force the old in-line grab.
+  threaded: true
+
   # Optional lens undistortion, applied to EVERY frame before detection and
   # calibration. A wide-angle lens bends straight lines (barrel distortion),
   # which corrupts the pixels->meters homography most at the frame edges --
@@ -62,7 +69,20 @@ detection:
   # Background-subtraction history + sensitivity.
   history: 400
   var_threshold: 40
-  detect_shadows: true
+  # Run detection on a downscaled copy of each frame (1.0 = full res). Detection
+  # cost is ~linear in pixel count, so 0.5 quarters the work -- by far the
+  # biggest FPS win on a Pi. Clips are still recorded at full camera resolution;
+  # only the motion-detection stage sees the smaller frame, and every coordinate
+  # is scaled back up, so calibration and min_area/max_area below are unchanged.
+  # Drop toward 0.4 for more speed; raise toward 1.0 if small/distant vehicles
+  # start getting missed.
+  detect_scale: 0.5
+  # MOG2 shadow modelling. OFF is cheaper (skips a per-pixel chroma test) and is
+  # the recommended default for a Pi. Trade-off: with shadows off, a hard cast
+  # shadow can merge into a vehicle's blob and inflate its box; the center-band
+  # gate + bottom-centre ground point mostly absorb this, but if you see speeds
+  # read off shadow edges, turn this back on (and re-check min_area).
+  detect_shadows: false
   # Morphology kernel size to clean up the motion mask.
   morph_kernel: 5
   # A detection must persist this many frames before it becomes a track.
@@ -207,6 +227,12 @@ web:
   # can only be undone by physically power-cycling it -- keep that in mind before
   # exposing it on a network you don't fully trust.
   allow_power_control: true
+  # Max frames/sec the live MJPEG preview is JPEG-encoded at. The encode is a
+  # real cost on the capture core, so it is only paid while a browser is
+  # actually watching the stream (zero cost when the dashboard is closed) and is
+  # capped here regardless. The detection loop always runs at full speed; this
+  # only limits how often the preview image is refreshed. 0 = unthrottled.
+  stream_fps: 10
 
 netcfg:
   # Wi-Fi onboarding for headless nodes (speedkam-netcfg.service). On boot, if
