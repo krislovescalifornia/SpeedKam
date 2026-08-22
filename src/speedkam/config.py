@@ -41,10 +41,10 @@ DEFAULTS = {
         "history": 400,
         "var_threshold": 40,
         # Run detection on a downscaled copy of each frame (1.0 = full res).
-        # 0.5 quarters the per-frame cost -- the biggest Pi FPS win. Coordinates
-        # and areas are scaled back to full resolution, so nothing downstream
-        # (calibration, min_area/max_area, annotation) changes.
-        "detect_scale": 0.5,
+        # Downscaling is the biggest Pi FPS win (0.4 cuts per-frame cost to ~16%).
+        # Coordinates and areas are scaled back to full resolution, so nothing
+        # downstream (calibration, min_area/max_area, annotation) changes.
+        "detect_scale": 0.4,
         # MOG2 shadow modelling off by default: cheaper, and shadows are dropped
         # downstream anyway. See config.yaml for the accuracy trade-off.
         "detect_shadows": False,
@@ -91,10 +91,11 @@ DEFAULTS = {
         "max_buffer_mb": 128,
         # Cap how many frames/sec are STORED for clips, independent of the
         # detection rate. The parallel pipeline captures at the sensor rate
-        # (~30fps), but a 1GB Pi can't hold many seconds of 720p at that rate
-        # within max_buffer_mb -- so clips are recorded at this lower rate (still
-        # smooth to watch) to keep the pre-roll long. 0 = store every frame.
-        "record_fps": 15,
+        # (~30fps). 0 = store every frame for true full-rate clips (the default):
+        # setting the throttle equal to the sensor rate backfires -- jitter drops
+        # ~1 in 4 frames and you get only ~22fps clips. Set a value BELOW the
+        # sensor rate only to stretch the pre-roll within max_buffer_mb.
+        "record_fps": 0,
         "save_only_with_speed": True,
         "save_snapshot": True,
         "burn_overlay": True,
