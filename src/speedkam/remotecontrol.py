@@ -65,9 +65,14 @@ class RemoteControl:
     # ------------------------------------------------------------------ status
     def _status(self):
         cam = self.camera
+        # Calibration + camera health, so the off-site dashboard can mirror the
+        # on-Pi status pills (calibrated/points/error, camera up/down). Read
+        # defensively -- a heartbeat must never crash the poll loop.
+        calib = getattr(cam, "calibration", None)
         return {
             "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "running": cam.running,
+            "camera_ok": bool(getattr(getattr(cam, "camera", None), "opened", True)),
             "fps": round(cam.current_fps, 1),
             "total_count": cam.total_count,
             "speeder_count": cam.speeder_count,
@@ -75,6 +80,10 @@ class RemoteControl:
             "orientation": cam.orientation,
             "speed_limit_kmh": cam.limit_kmh,
             "units": cam.units,
+            "calibrated": calib is not None,
+            "calibration_points": (len(calib.image_points) if calib else 0),
+            "reprojection_error_m": (round(calib.reprojection_error(), 3)
+                                     if calib else None),
             "last_event": cam.last_event,
         }
 

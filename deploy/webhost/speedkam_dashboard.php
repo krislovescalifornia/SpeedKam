@@ -260,21 +260,40 @@ function disp_speed($r, $units) {
     return is_numeric($v) ? rtrim(rtrim(number_format((float)$v, 1), '0'), '.') : '?';
 }
 
-// --- aggregate counts -------------------------------------------------------
-$today = date('Y-m-d');
-$c  = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => count($rows)];
-$sp = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => 0];
-$wk = strtotime('-7 days'); $mo = strtotime('-30 days');
+// --- aggregate counts + direction breakdown ---------------------------------
+// Period windows mirror the node's /api/summary EXACTLY so the off-site numbers
+// match the on-Pi dashboard: "today" is the calendar day, "week" is since Monday
+// of the current ISO week, "month" is the current calendar month. We also tally
+// travel direction per period, the same breakdown the node shows under "Traffic
+// summary".
+$today        = date('Y-m-d');
+$week_start   = date('Y-m-d', strtotime('monday this week'));
+$month_prefix = date('Y-m');
+$c   = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => count($rows)];
+$sp  = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => 0];
+$dir = ['today' => [], 'week' => [], 'month' => []];   // direction => count
 foreach ($rows as $r) {
-    $d = substr($r['wall_time'] ?? '', 0, 10);
-    $ts = $d ? strtotime($d) : false;
+    $d    = substr($r['wall_time'] ?? '', 0, 10);
     $over = is_over($r, $limit_kmh);
     if ($over) $sp['total']++;
-    if ($ts === false) continue;
-    if ($d === $today) { $c['today']++; if ($over) $sp['today']++; }
-    if ($ts >= $wk)    { $c['week']++;  if ($over) $sp['week']++; }
-    if ($ts >= $mo)    { $c['month']++; if ($over) $sp['month']++; }
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) continue;
+    $dr = trim($r['direction'] ?? '');
+    foreach (['today', 'week', 'month'] as $p) {
+        $in = ($p === 'today') ? ($d === $today)
+            : (($p === 'week')  ? ($d >= $week_start)
+                                : (substr($d, 0, 7) === $month_prefix));
+        if (!$in) continue;
+        $c[$p]++;
+        if ($over) $sp[$p]++;
+        if ($dr !== '') $dir[$p][$dr] = ($dir[$p][$dr] ?? 0) + 1;
+    }
 }
+
+// --- top 10 fastest passes (mirrors the node's "Top 10 speeders" panel) ------
+$top = $rows;
+usort($top, fn($a, $b) =>
+    (float)($b['speed_kmh'] ?? -1) <=> (float)($a['speed_kmh'] ?? -1));
+$top = array_slice($top, 0, 10);
 
 // --- table view (optionally filtered to speeders) ---------------------------
 $filter = ($_GET['filter'] ?? 'all') === 'speeders' ? 'speeders' : 'all';
@@ -289,8 +308,8 @@ $camera_thr  = $status['speedkapture_threshold'] ?? null;
 $desired_limit_kmh = $desired['speed_limit_kmh'] ?? null;  // queued, not yet applied
 
 render_dashboard(compact(
-    'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp',
-    'view', 'filter', 'desired', 'desired_thr', 'camera_thr',
+    'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp', 'dir',
+    'top', 'view', 'filter', 'desired', 'desired_thr', 'camera_thr',
     'desired_limit_kmh', 'sel_node'
 ));
 
@@ -344,6 +363,33 @@ function page_head($title) {
        . '.tabs a{padding:.3rem .7rem;border:1px solid var(--line);border-radius:999px;color:var(--fg)}'
        . '.tabs a.on{background:var(--accent);border-color:var(--accent);color:#fff}'
        . '.center{min-height:80vh;display:flex;align-items:center;justify-content:center}'
+       // latest reading
+       . '.latest{display:flex;align-items:center;gap:1rem;background:var(--card);'
+       . 'border:1px solid var(--line);border-radius:12px;padding:1rem 1.25rem;margin:1rem 0}'
+       . '.latest .big{font-size:2.4rem;font-weight:800;line-height:1;'
+       . 'font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:.35rem}'
+       . '.latest .big.over{color:var(--bad)}'
+       . '.latest .big .u{font-size:.9rem;font-weight:500;color:var(--muted)}'
+       . '.latest .meta{color:var(--fg);font-size:.95rem}'
+       // badge + chips (direction/attribute tags), shared by cards + latest
+       . '.badge{display:inline-block;background:var(--bad);color:#fff;border-radius:6px;'
+       . 'padding:.1rem .45rem;font-size:.7rem;font-weight:700;letter-spacing:.04em}'
+       . '.chips{display:flex;gap:.3rem;flex-wrap:wrap;margin-top:.4rem}'
+       . '.chip{border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem;'
+       . 'font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}'
+       // section heading + top-speeders list
+       . 'h2.sec{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;'
+       . 'color:var(--muted);margin:1.5rem 0 .5rem}'
+       . 'ol.toplist{list-style:none;counter-reset:t;margin:0;padding:0;'
+       . 'background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}'
+       . 'ol.toplist li{counter-increment:t;display:flex;align-items:center;gap:.75rem;'
+       . 'padding:.55rem .8rem;border-top:1px solid var(--line)}'
+       . 'ol.toplist li:first-child{border-top:0}'
+       . 'ol.toplist li::before{content:counter(t);color:var(--muted);font-weight:700;'
+       . 'width:1.4rem;text-align:right;font-variant-numeric:tabular-nums}'
+       . 'ol.toplist .sp{font-weight:700;min-width:5.5rem;font-variant-numeric:tabular-nums}'
+       . 'ol.toplist .sp.over{color:var(--bad)}'
+       . 'ol.toplist .dt{margin-left:auto;font-size:.82rem}'
        . '</style></head><body><div class="wrap">';
 }
 function page_foot() { echo '</div></body></html>'; }
@@ -387,22 +433,57 @@ function render_dashboard($d) {
        . h(ago($last_seen)) . '</span> '
        . '<a href="?logout" class="muted" style="font-size:.85rem">sign out</a></h1>';
 
-    // live camera line
+    // live camera line -- mirrors the on-Pi status pills (limit, fps, capture
+    // threshold, mount orientation, calibration) so both dashboards read the same.
     $limit_disp = ($limit_kmh !== null)
         ? (($units === 'mph') ? round($limit_kmh / 1.609) . ' mph'
                               : round($limit_kmh) . ' km/h')
         : 'not set';
+    $orient = (($status['orientation'] ?? '') === 'head_on') ? 'head-on' : 'parallel';
+    $calib_txt = !empty($status['calibrated'])
+        ? ('calibrated ' . h($status['calibration_points'] ?? '?') . 'pts'
+            . (isset($status['reprojection_error_m']) && $status['reprojection_error_m'] !== null
+                ? ' ±' . h($status['reprojection_error_m']) . 'm' : ''))
+        : 'not calibrated';
     echo '<div class="muted" style="font-size:.9rem;margin-top:-.5rem">'
        . 'Speed limit ' . h($limit_disp)
        . ' &middot; live FPS ' . h($status['fps'] ?? '?')
        . ' &middot; capturing above ' . h($camera_thr ?? '?') . ' ' . h($units)
+       . ' &middot; mount ' . h($orient)
+       . ' &middot; ' . $calib_txt
        . '</div>';
 
-    // stat cards
+    // latest reading -- the node's most recent pass, straight from the heartbeat.
+    $ev = $status['last_event'] ?? null;
+    if (is_array($ev)) {
+        $ev_sp = ($units === 'mph') ? ($ev['speed_mph'] ?? null)
+                                    : ($ev['speed_kmh'] ?? null);
+        $ev_over = !empty($ev['over_limit']);
+        $chips = trim(implode(' ', array_filter([
+            $ev['color'] ?? '', $ev['vehicle_type'] ?? '',
+            $ev['make'] ?? '', $ev['model'] ?? '', $ev['year'] ?? '',
+        ])));
+        echo '<div class="latest">'
+           . '<div class="big' . ($ev_over ? ' over' : '') . '">'
+           . h($ev_sp !== null ? round((float)$ev_sp) : '—')
+           . '<span class="u">' . h($units) . '</span></div>'
+           . '<div class="meta">'
+           . ($ev_over ? '<span class="badge">SPEEDING</span> ' : '')
+           . (isset($ev['captured']) && !$ev['captured']
+                ? '<span class="chip">not captured</span> ' : '')
+           . h($ev['direction'] ?? '')
+           . '<div class="muted" style="font-size:.8rem">'
+           . h(str_replace('T', ' ', substr($ev['time'] ?? '', 0, 16))) . '</div>'
+           . ($chips ? '<div class="chips">' . h($chips) . '</div>' : '')
+           . '</div></div>';
+    }
+
+    // stat cards -- counts + over-limit + travel-direction breakdown per period,
+    // matching the node's "Traffic summary". "All time" spans the whole mirror.
     echo '<div class="cards">';
-    stat_card('Today', $c['today'], $sp['today'] . ' over limit');
-    stat_card('This week', $c['week'], $sp['week'] . ' over limit');
-    stat_card('This month', $c['month'], $sp['month'] . ' over limit');
+    stat_card('Today', $c['today'], $sp['today'] . ' over limit', dir_chips($dir['today']));
+    stat_card('This week', $c['week'], $sp['week'] . ' over limit', dir_chips($dir['week']));
+    stat_card('This month', $c['month'], $sp['month'] . ' over limit', dir_chips($dir['month']));
     stat_card('All time', $c['total'], $sp['total'] . ' over limit');
     echo '</div>';
 
@@ -453,6 +534,25 @@ function render_dashboard($d) {
     // per-node context survives filter clicks, media requests and form posts.
     $nq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
 
+    // top 10 speeders -- the fastest mirrored passes, matching the node's panel.
+    if ($top) {
+        echo '<h2 class="sec">Top 10 speeders</h2><ol class="toplist">';
+        foreach ($top as $r) {
+            $over = is_over($r, $limit_kmh);
+            $clip = trim($r['clip'] ?? '');
+            echo '<li>'
+               . '<span class="sp' . ($over ? ' over' : '') . '">'
+               . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+               . '<span class="muted">' . h($r['direction'] ?? '') . '</span>'
+               . '<span class="dt muted">'
+               . h(str_replace('T', ' ', substr($r['wall_time'] ?? '', 0, 16))) . '</span>'
+               . ($clip
+                    ? '<a href="?media=' . h(rawurlencode($clip)) . $nq . '" target="_blank">video</a>'
+                    : '') . '</li>';
+        }
+        echo '</ol>';
+    }
+
     // filter tabs
     echo '<div class="tabs">'
        . '<a href="?filter=all' . $nq . '" class="' . ($filter === 'all' ? 'on' : '') . '">All passes</a>'
@@ -500,10 +600,24 @@ function render_dashboard($d) {
     page_foot();
 }
 
-function stat_card($label, $n, $sub) {
+function stat_card($label, $n, $sub, $extra = '') {
     echo '<div class="card"><div class="n">' . h($n) . '</div>'
        . '<div class="l">' . h($label) . '</div>'
-       . '<div class="s">' . h($sub) . '</div></div>';
+       . '<div class="s">' . h($sub) . '</div>'
+       . ($extra ?: '') . '</div>';
+}
+
+// Render a period's travel-direction tally as chips ("→ 12", "← 9"), mirroring
+// the direction breakdown the node shows under "Traffic summary". $dir is a
+// map of direction-label => count.
+function dir_chips($dir) {
+    if (!$dir) return '';
+    arsort($dir);
+    $out = '<div class="chips">';
+    foreach ($dir as $k => $v) {
+        $out .= '<span class="chip">' . h($k) . ' ' . h($v) . '</span>';
+    }
+    return $out . '</div>';
 }
 
 // Fleet overview: one row per camera (node), linking into its own dashboard.
