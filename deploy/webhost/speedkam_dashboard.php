@@ -601,6 +601,7 @@ function render_login($configured, $error) {
 
 // donut (inline SVG), returns html
 function render_donut($colors) {
+    $colors = is_array($colors) ? $colors : [];  // never let a null/scalar fatal the whole page (PHP 8 array_sum)
     $total = array_sum($colors);
     if (!$total) return '<div class="muted">No data</div>';
     arsort($colors);
@@ -742,7 +743,8 @@ function render_dashboard($d) {
 function render_analytics($d) {
     extract($d);
     // period selector via ?p=
-    $p = in_array($_GET['p'] ?? 'today', ['today','week','month','all'], true) ? $_GET['p'] : 'today';
+    $p = $_GET['p'] ?? 'today';
+    if (!in_array($p, ['today', 'week', 'month', 'all'], true)) { $p = 'today'; }
     $nq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
     echo '<div class="panel"><h3>Analytics</h3>';
     echo '<div class="tabs">';
