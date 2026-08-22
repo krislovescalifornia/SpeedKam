@@ -70,8 +70,8 @@ DEFAULTS = {
         "min_vehicle_span_m": 1.0,
         "speed_limit_kmh": 40.2336,   # 25 mph
         "display_units": "mph",
-        "direction_positive": "outbound",
-        "direction_negative": "inbound",
+        "direction_positive": "Westbound",
+        "direction_negative": "Eastbound",
         # Center-band measurement gate: only time a vehicle while its ground
         # point is inside a band of the frame (fractions of width/height), where
         # the pixels->meters map is trustworthy. The right band depends on how

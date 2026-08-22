@@ -143,8 +143,8 @@ speed:
   # Report units shown in overlays/logs: "kmh" or "mph".
   display_units: mph
   # Human labels for the two travel directions (sign of motion along the road).
-  direction_positive: "outbound"
-  direction_negative: "inbound"
+  direction_positive: "Westbound"
+  direction_negative: "Eastbound"
 
   # --- Center-band measurement gate ----------------------------------------
   # Only MEASURE speed while the vehicle's ground point is inside a central

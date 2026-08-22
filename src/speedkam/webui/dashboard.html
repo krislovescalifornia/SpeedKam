@@ -358,7 +358,7 @@
       <div class="go">
         <button class="btn" onclick="runReport()">Run report</button>
         <button class="btn ghost sm" onclick="resetReport()">Reset</button>
-        <span class="q" id="rb-q">e.g. red · outbound · Thursdays → your query in plain English shows here</span>
+        <span class="q" id="rb-q">e.g. red · westbound · Thursdays → your query in plain English shows here</span>
       </div>
       <div class="rb-res" id="rb-res"></div>
     </div>
@@ -678,7 +678,7 @@ function resetReport(){
   ['rb-from','rb-to','rb-min','rb-max','rb-hf','rb-ht'].forEach(id=>q('#'+id).value='');
   q('#rb-color').value='';q('#rb-dir').value='';
   DOW_SEL.clear();qa('#rb-dow button').forEach(b=>b.classList.remove('on'));
-  q('#rb-res').innerHTML='';q('#rb-q').textContent='e.g. red · outbound · Thursdays → your query in plain English shows here';
+  q('#rb-res').innerHTML='';q('#rb-q').textContent='e.g. red · westbound · Thursdays → your query in plain English shows here';
 }
 
 function setPeriod(p){PERIOD=p;qa('#an-seg button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));renderPeriod();}
