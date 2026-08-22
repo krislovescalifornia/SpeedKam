@@ -119,6 +119,23 @@ speed:
   # Reject implausible readings (km/h).
   min_speed_kmh: 3
   max_speed_kmh: 200
+  # --- Automatic false-positive rejection ----------------------------------
+  # Cyclists, pedestrians, and wind-blown foreground plants get tracked and
+  # timed just like cars (inline recognition is deferred, so there's no "is it a
+  # car?" gate before speed). Two cheap, geometry-based checks throw the junk out
+  # automatically -- it's still LOGGED (visible in the dashboard's auto-reject
+  # bin, restorable) but kept out of every count, average and graph.
+  #   max_track_distance_m: a real pass crosses only a few metres of the measured
+  #     scene; a reading whose vehicle "traveled" farther than this is a phantom
+  #     track (two blobs stitched together, or vegitation near the lens mapped to
+  #     absurd world coordinates). Catches the classic 100+ mph ghosts.
+  #   min_vehicle_span_m: the object's real-world ground footprint (bbox bottom
+  #     edge mapped through the calibration). A car is >~1.3 m; a bike+rider is
+  #     <~0.8 m -- so this rejects the cyclist/pedestrian passes that otherwise
+  #     look like plausible speeders. Needs a calibration to apply.
+  # Both are live-tunable from either dashboard and persist per node. 0 disables.
+  max_track_distance_m: 45.0
+  min_vehicle_span_m: 1.0
   # "My Road Speed Limit": flags/annotates speeders (over-limit line). This is
   # only the shipped default that seeds a newly imaged node; each node's live
   # value is editable from the dashboard and persists in its runtime state.

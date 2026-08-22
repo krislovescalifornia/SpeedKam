@@ -58,6 +58,16 @@ DEFAULTS = {
         "min_samples": 6,
         "min_speed_kmh": 3,
         "max_speed_kmh": 200,
+        # False-positive auto-reject (dashboard-tunable, persisted per node):
+        #   max_track_distance_m -- a reading whose vehicle "traveled" farther than
+        #     this across the scene is a phantom track (noise/vegetation stitched
+        #     into a path) and is rejected. Real passes here cover only a few metres
+        #     through the measure band; 45 m is a generous ceiling.
+        #   min_vehicle_span_m -- the object's real-world ground footprint; below
+        #     this it's sub-car-sized (a cyclist or pedestrian) and rejected. A car
+        #     is >~1.3 m; a bike+rider <~0.8 m. 0 disables either gate.
+        "max_track_distance_m": 45.0,
+        "min_vehicle_span_m": 1.0,
         "speed_limit_kmh": 40.2336,   # 25 mph
         "display_units": "mph",
         "direction_positive": "outbound",

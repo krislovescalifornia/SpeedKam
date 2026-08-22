@@ -17,6 +17,7 @@ from collections import deque
 from datetime import datetime
 
 import cv2
+import numpy as np
 
 from . import annotate, speed as speed_mod
 from .calibration import Calibration
@@ -117,6 +118,17 @@ class SpeedCamera:
              # Dashboard-toggleable (parallel = side-on, head_on = receding).
              "orientation": speed_mod.normalize_orientation(
                  (cfg["speed"].get("measure_band") or {}).get("orientation")),
+             # False-positive auto-reject envelope (dashboard-tunable, persisted).
+             # A reading whose vehicle "traveled" farther than max_track_distance_m
+             # across the scene is a phantom track (noise/vegetation stitched into
+             # a path); one whose ground footprint is narrower than
+             # min_vehicle_span_m is sub-car-sized (a cyclist/pedestrian). Either
+             # is auto-rejected: logged for review but kept out of every stat.
+             # 0 disables that gate.
+             "max_track_distance_m":
+                 float(cfg["speed"].get("max_track_distance_m", 0) or 0),
+             "min_vehicle_span_m":
+                 float(cfg["speed"].get("min_vehicle_span_m", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
              "remote_rev": None},
         )
@@ -183,6 +195,78 @@ class SpeedCamera:
         v = max(0.0, float(value))
         self.state.set("speed_limit_kmh", v)
         return v
+
+    # ------------------------------------------------------- false-positive gate
+    @property
+    def max_track_distance_m(self) -> float:
+        """Max plausible across-scene travel (m); above it a reading is a phantom
+        track and auto-rejected. 0 disables the gate."""
+        return float(self.state.get("max_track_distance_m") or 0)
+
+    @property
+    def min_vehicle_span_m(self) -> float:
+        """Min real-world ground footprint (m) for a real vehicle; below it the
+        object is a cyclist/pedestrian and auto-rejected. 0 disables the gate."""
+        return float(self.state.get("min_vehicle_span_m") or 0)
+
+    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None) -> dict:
+        """Live-tune the auto-reject envelope; persists across restarts."""
+        if max_distance_m is not None:
+            self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
+        if min_span_m is not None:
+            self.state.set("min_vehicle_span_m", max(0.0, float(min_span_m)))
+        return {"max_track_distance_m": self.max_track_distance_m,
+                "min_vehicle_span_m": self.min_vehicle_span_m}
+
+    def _vehicle_span_m(self, track):
+        """Approx real-world ground footprint of the tracked object (meters).
+
+        Maps each sample's bbox bottom edge (its ground-contact line) through the
+        homography and takes a robust high percentile (75th) of the per-frame
+        widths. A car spans well over a metre; a cyclist or pedestrian well under
+        one -- so this cleanly separates real vehicles from the bike/pedestrian
+        passes that would otherwise be timed as speeders. The 75th percentile (not
+        the max) ignores a single bad frame where two blobs merged. Returns None
+        when uncalibrated or the track is too short to judge."""
+        with self._calib_lock:
+            calib = self.calibration
+        if calib is None or len(track.samples) < 2:
+            return None
+        lefts, rights = [], []
+        for s in track.samples:
+            x, y, w, h = s.bbox
+            if w <= 0 or h <= 0:
+                continue
+            lefts.append((x, y + h))
+            rights.append((x + w, y + h))
+        if len(lefts) < 2:
+            return None
+        try:
+            wl = np.asarray(calib.image_to_world(lefts), dtype=np.float64)
+            wr = np.asarray(calib.image_to_world(rights), dtype=np.float64)
+        except Exception:  # noqa: BLE001 - a bad homography must not break the loop
+            return None
+        spans = np.linalg.norm(wl - wr, axis=1)
+        spans = spans[np.isfinite(spans)]
+        if spans.size == 0:
+            return None
+        return float(np.percentile(spans, 75))
+
+    def _classify_reading(self, result, span_m):
+        """Auto-reject physically-implausible readings so junk never pollutes the
+        stats. Returns (status, reason): "ok" for a real pass, else "rejected"
+        with a human explanation (shown in the dashboards' auto-reject bin)."""
+        max_dist = self.max_track_distance_m
+        if max_dist > 0 and result.distance_m > max_dist:
+            return ("rejected",
+                    f"traveled {result.distance_m:.0f} m across the scene "
+                    f"(max plausible {max_dist:.0f} m) — phantom track")
+        min_span = self.min_vehicle_span_m
+        if min_span > 0 and span_m is not None and span_m < min_span:
+            return ("rejected",
+                    f"object ~{span_m:.1f} m wide — smaller than a vehicle "
+                    f"(likely a cyclist or pedestrian)")
+        return ("ok", "")
 
     # --------------------------------------------------------------- orientation
     @property
@@ -554,7 +638,16 @@ class SpeedCamera:
 
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
-        capture = self._should_capture(display_speed)
+
+        # False-positive gate: is this a real vehicle, or a phantom/cyclist/
+        # pedestrian? A rejected reading is logged (for the review bin) but never
+        # counted, never flagged as a speeder, and never films a clip.
+        span_m = self._vehicle_span_m(track)
+        status, reason = self._classify_reading(result, span_m)
+        rejected = status == "rejected"
+        # A rejected reading can never be a "captured speeder"; keep a snapshot
+        # only when we'd have kept one anyway, so the bin has something to show.
+        capture = (not rejected) and self._should_capture(display_speed)
 
         # Best-effort attributes (type/make/model/year/color) -- run for EVERY
         # counted pass, even ones below the SpeedKapture threshold.
@@ -562,19 +655,23 @@ class SpeedCamera:
 
         self._last_result_text = (
             f"#{track.id}: {result.display(self.units)} {result.direction}"
-            + ("  SPEEDING" if over else "")
-            + ("" if capture else "  (below SpeedKapture)")
+            + ("  REJECTED" if rejected
+               else ("  SPEEDING" if over else "")
+               + ("" if capture else "  (below SpeedKapture)"))
         )
-        self._last_over = over
-        tag = "!!" if over else "  "
+        self._last_over = over and not rejected
+        tag = "XX" if rejected else ("!!" if over else "  ")
         extra = self._attr_label(attrs)
+        span_txt = f", span={span_m:.1f}m" if span_m is not None else ""
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
-              f"({result.direction}, {result.distance_m:.1f} m, "
+              f"({result.direction}, {result.distance_m:.1f} m{span_txt}, "
               f"conf={result.confidence}){extra}"
-              + ("" if capture else "  [not captured]"))
+              + (f"  [REJECTED: {reason}]" if rejected
+                 else ("" if capture else "  [not captured]")))
 
-        # Save a clip only when above the SpeedKapture threshold; always log the
-        # row so counts + attributes are recorded even for uncaptured passes.
+        # Save a clip only when above the SpeedKapture threshold AND not rejected;
+        # always log the row so counts + attributes are recorded even for
+        # uncaptured passes. Rejected readings still keep a snapshot for review.
         clip_name = snap_name = None
         if self.recorder is not None:
             if capture:
@@ -586,27 +683,35 @@ class SpeedCamera:
                 snap_name = snap.name if snap else None
                 if clip:
                     print(f"[SpeedKam]    saved {clip.name}")
-            elif self.cfg["recording"].get("always_snapshot"):
-                # Below SpeedKapture: no clip, but keep a JPEG so a deferred
-                # recognition worker can still fill in type/make/model later.
+            elif rejected or self.cfg["recording"].get("always_snapshot"):
+                # No clip, but keep a JPEG: for rejects so the bin is reviewable,
+                # for sub-threshold passes so a deferred worker can enrich later.
                 snap = self.recorder.save_snapshot_only(
                     track.id, result, self.units, self.limit_kmh)
                 snap_name = snap.name if snap else None
             self.recorder.log_row(track.id, result, self.units, attrs,
-                                  clip_name, snap_name, captured=capture)
+                                  clip_name, snap_name, captured=capture,
+                                  status=status, review_reason=reason)
 
-        self.total_count += 1
-        if over:
-            self.speeder_count += 1
-        self.last_event = {
+        # A rejected reading is junk: it must not touch the live counters.
+        if not rejected:
+            self.total_count += 1
+            if over:
+                self.speeder_count += 1
+
+        event = {
             "track_id": track.id,
             "speed_kmh": round(result.speed_kmh, 1),
             "speed_mph": round(result.speed_mph, 1),
             "direction": result.direction,
             "confidence": result.confidence,
             "distance_m": round(result.distance_m, 1),
-            "over_limit": over,
+            "duration_s": round(result.duration_s, 2),
+            "n_samples": result.n_samples,
+            "over_limit": over and not rejected,
             "captured": capture,
+            "status": status,
+            "review_reason": reason,
             "vehicle_type": attrs.get("vehicle_type"),
             "make": attrs.get("make"),
             "model": attrs.get("model"),
@@ -616,10 +721,14 @@ class SpeedCamera:
             "clip": clip_name,
             "snapshot": snap_name,
         }
-        # Mirror off-site: captured events always; every counted pass when
-        # backup.mirror_all is on (so the remote is a full historical record).
+        # "Latest reading" tracks the last REAL vehicle -- a rejected phantom
+        # shouldn't hijack the headline panel/heartbeat.
+        if not rejected:
+            self.last_event = event
+        # Mirror off-site: captured events always; every pass (incl. rejects, so
+        # the off-site bin + stats stay consistent) when backup.mirror_all is on.
         if self.sync is not None and (capture or self._mirror_all):
-            self.sync.enqueue(self.last_event)
+            self.sync.enqueue(event)
 
     # --------------------------------------------------------------- recognition
     def _recognize(self, track):

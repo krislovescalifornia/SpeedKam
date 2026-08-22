@@ -31,11 +31,43 @@ from . import annotate
 # Column order for the event log. Attribute columns sit before clip/snapshot;
 # `captured` is 1 when a clip was actually saved (above the SpeedKapture
 # threshold), 0 for a counted-but-not-filmed pass.
+#
+# `status` is the false-positive verdict: "ok" (a real, counted pass) or
+# "rejected" (auto-flagged junk -- a cyclist, pedestrian, or phantom track --
+# excluded from every stat). `review_reason` says why. Older logs predate these
+# columns; the migration back-fills blanks, and readers treat an empty status as
+# "ok" so historical rows still count. `duration_s`/`n_samples` are the raw
+# track quality signals (seconds in frame, samples fitted) -- extra fidelity that
+# also explains a rejection.
 CSV_COLUMNS = [
     "wall_time", "track_id", "speed_kmh", "speed_mph", "direction",
-    "confidence", "distance_m", "vehicle_type", "make", "model", "year",
-    "color", "captured", "clip", "snapshot",
+    "confidence", "distance_m", "duration_s", "n_samples",
+    "vehicle_type", "make", "model", "year", "color",
+    "status", "review_reason", "captured", "clip", "snapshot",
 ]
+
+# Attribute columns a deferred recognition worker may fill in later.
+ATTR_COLUMNS = ["vehicle_type", "make", "model", "year", "color"]
+
+
+def row_key(row):
+    """The stable identifier for an event row, matching set_status()'s ``key``.
+
+    Prefers the clip stem, then the snapshot stem (so snapshot-only passes are
+    addressable too), falling back to ``"<wall_time>|<track_id>"`` for a row with
+    no media at all."""
+    from pathlib import PurePosixPath
+    clip = (row.get("clip") or "").strip()
+    snap = (row.get("snapshot") or "").strip()
+    if clip:
+        return PurePosixPath(clip).stem
+    if snap:
+        return PurePosixPath(snap).stem
+    return f"{row.get('wall_time', '')}|{row.get('track_id', '')}"
+
+
+def _row_key_matches(row, key):
+    return row_key(row) == key
 
 
 class Recorder:
@@ -109,8 +141,14 @@ class Recorder:
               f"schema (kept {len(rows)} existing rows).")
 
     def log_row(self, track_id, result, units, attrs=None, clip_name=None,
-                snapshot_name=None, captured=False):
-        """Append one event row: metadata + recognized attributes + media names."""
+                snapshot_name=None, captured=False, status="ok",
+                review_reason=""):
+        """Append one event row: metadata + recognized attributes + media names.
+
+        ``status`` is the false-positive verdict ("ok" or "rejected") and
+        ``review_reason`` the human explanation for a rejection; both feed the
+        dashboards' auto-reject bin and keep junk out of the stats.
+        """
         attrs = attrs or {}
         row = {
             "wall_time": datetime.now().isoformat(timespec="seconds"),
@@ -120,17 +158,51 @@ class Recorder:
             "direction": result.direction,
             "confidence": result.confidence,
             "distance_m": f"{result.distance_m:.1f}",
+            "duration_s": f"{result.duration_s:.2f}",
+            "n_samples": result.n_samples,
             "vehicle_type": attrs.get("vehicle_type") or "",
             "make": attrs.get("make") or "",
             "model": attrs.get("model") or "",
             "year": attrs.get("year") or "",
             "color": attrs.get("color") or "",
+            "status": status or "ok",
+            "review_reason": review_reason or "",
             "captured": 1 if captured else 0,
             "clip": clip_name or "",
             "snapshot": snapshot_name or "",
         }
         with self.csv_path.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=CSV_COLUMNS).writerow(row)
+
+    def set_status(self, key, status, review_reason=""):
+        """Rewrite the ``status``/``review_reason`` of a logged row in place.
+
+        Powers the dashboards' manual "not a real car" (reject) and "restore"
+        actions. ``key`` matches a row by the stem of its clip or snapshot
+        filename, or by ``"<wall_time>|<track_id>"`` for media-less rows. Returns
+        the number of rows updated (0 if none matched). The whole file is rewritten
+        under no lock -- fine for the single-writer pipeline + occasional UI edit.
+        """
+        if not self.csv_path.exists():
+            return 0
+        with self.csv_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        updated = 0
+        for r in rows:
+            if _row_key_matches(r, key):
+                r["status"] = status
+                r["review_reason"] = review_reason or ""
+                updated += 1
+        if updated:
+            tmp = self.csv_path.with_suffix(".csv.tmp")
+            with tmp.open("w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=CSV_COLUMNS,
+                                   extrasaction="ignore")
+                w.writeheader()
+                for r in rows:
+                    w.writerow({c: r.get(c, "") for c in CSV_COLUMNS})
+            tmp.replace(self.csv_path)
+        return updated
 
     # ---------------------------------------------------------------- buffer
     def push(self, t, frame):

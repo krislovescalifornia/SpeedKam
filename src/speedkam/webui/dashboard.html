@@ -6,238 +6,397 @@
 <title>SpeedKam</title>
 <style>
   :root{
-    --bg:#0f1216; --panel:#171c22; --panel2:#1e242c; --line:#2a323c;
-    --text:#e7edf3; --muted:#8b97a4; --accent:#3aa0ff; --ok:#37c871; --bad:#ff5470;
+    --bg:#0d1017; --panel:#151b23; --panel2:#1c232d; --line:#28313d;
+    --text:#e8eef5; --muted:#8a97a6; --accent:#3aa0ff; --accent2:#7c5cff;
+    --ok:#37c871; --bad:#ff5470; --warn:#ffb020;
+    --grad1:#3aa0ff; --grad2:#7c5cff;
+    --shadow:0 6px 24px rgba(0,0,0,.35);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);
-    font:15px/1.45 system-ui,Segoe UI,Roboto,Arial,sans-serif}
-  header{display:flex;align-items:center;gap:16px;padding:14px 20px;
-    background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
-  header h1{font-size:19px;margin:0;letter-spacing:.5px}
-  header h1 span{color:var(--accent)}
-  .pills{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  body{margin:0;background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(124,92,255,.10), transparent 60%),
+      radial-gradient(1000px 500px at -10% 0%, rgba(58,160,255,.10), transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font:15px/1.45 system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  h1,h2,h3{font-family:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:13px 20px;
+    background:rgba(21,27,35,.85);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);position:sticky;top:0;z-index:15}
+  header h1{font-size:20px;margin:0;letter-spacing:.3px;font-weight:800}
+  header h1 span{background:linear-gradient(90deg,var(--grad1),var(--grad2));
+    -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .pills{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto;align-items:center}
   .pill{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
-    padding:5px 11px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+    padding:5px 11px;font-size:12px;color:var(--muted);white-space:nowrap}
   .pill b{color:var(--text);font-weight:600}
   .pill.ok{border-color:#215c3a;color:#8be5ab}
   .pill.bad{border-color:#5c2130;color:#ff9ab0}
-  .fresh{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.3px;
-    text-transform:none;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
-    color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .fresh{font-size:11px;font-weight:600;letter-spacing:.3px;padding:3px 9px;
+    border-radius:999px;border:1px solid var(--line);color:var(--muted);
+    display:inline-flex;align-items:center;gap:5px}
   .fresh::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
-  .fresh.live{border-color:#215c3a;color:#8be5ab}
+  .fresh.live{border-color:#215c3a;color:#8be5ab;animation:pulse 2s infinite}
   .fresh.stale{border-color:#5c2130;color:#ff9ab0}
-  .btn{background:var(--accent);color:#04121f;border:none;border-radius:8px;
-    padding:8px 14px;font-weight:600;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  .btn{background:linear-gradient(90deg,var(--grad1),var(--grad2));color:#fff;
+    border:none;border-radius:9px;padding:8px 14px;font-weight:600;font-size:14px;
+    cursor:pointer;text-decoration:none;display:inline-block}
   .btn:hover{filter:brightness(1.08)}
   .btn.sm{padding:5px 10px;font-size:12.5px}
   .btn.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line)}
-  .btn.warn{color:#ff9ab0;border-color:#5c2130}
+  .btn.warn{background:var(--panel2);color:#ff9ab0;border:1px solid #5c2130}
   .btn.warn:hover{background:#5c2130;color:#fff;filter:none}
-  #power{position:fixed;inset:0;background:rgba(0,0,0,.8);display:none;
-    align-items:center;justify-content:center;z-index:20;padding:20px}
-  #power.show{display:flex}
-  #power .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    max-width:420px;width:100%;padding:22px}
-  #power h3{margin:0 0 10px;font-size:17px}
-  #power p{margin:0 0 18px;color:var(--muted);line-height:1.5}
-  #power p b{color:var(--text)}
-  #power .row{display:flex;gap:10px;justify-content:flex-end}
-  #power .err{color:#ff9ab0}
-  main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:20px;
-    grid-template-columns:2fr 1fr}
-  @media(max-width:900px){main{grid-template-columns:1fr}}
+  main{max-width:1280px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:20px}
+  .row2{display:grid;gap:20px;grid-template-columns:1.7fr 1fr}
+  @media(max-width:960px){.row2{grid-template-columns:1fr}}
   .col{display:grid;gap:20px;align-content:start}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);
-    margin:0;padding:12px 16px;border-bottom:1px solid var(--line);
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;box-shadow:var(--shadow)}
+  .card h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);
+    margin:0;padding:13px 16px;border-bottom:1px solid var(--line);
     display:flex;align-items:center;gap:8px}
   .card h2 .tools{margin-left:auto;display:flex;gap:6px;align-items:center}
   .live img{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}
   .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
-  .stat{background:var(--panel);padding:16px}
-  .stat .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-  .stat .v{font-size:26px;font-weight:700;margin-top:4px}
+  .stat{background:var(--panel);padding:15px 16px}
+  .stat .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .stat .v{font-size:26px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
   .stat .v.small{font-size:20px}
-  .big{padding:18px 16px;display:flex;align-items:baseline;gap:10px}
-  .big .num{font-size:44px;font-weight:800;line-height:1}
+  .big{padding:18px 16px;display:flex;align-items:baseline;gap:12px}
+  .big .num{font-size:48px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;
+    background:linear-gradient(180deg,#fff,#b9c6d6);-webkit-background-clip:text;
+    background-clip:text;-webkit-text-fill-color:transparent}
   .big .unit{color:var(--muted);font-size:16px}
   .big .dir{margin-left:auto;color:var(--muted);font-size:14px;text-align:right}
   .badge{display:inline-block;background:var(--bad);color:#fff;border-radius:6px;
     padding:2px 8px;font-size:11px;font-weight:700;letter-spacing:.5px}
   .filter{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px}
   .filter label{font-size:12px;color:var(--muted)}
-  .filter input[type=date]{background:var(--panel2);border:1px solid var(--line);
-    color:var(--text);border-radius:6px;padding:5px 8px;font-size:13px}
+  .filter input[type=date],.rb input,.rb select{background:var(--panel2);
+    border:1px solid var(--line);color:var(--text);border-radius:7px;
+    padding:6px 9px;font-size:13px}
   .clips{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px}
   @media(max-width:520px){.clips{grid-template-columns:1fr}}
   .clip{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
-    overflow:hidden;cursor:pointer;transition:border-color .15s}
+    overflow:hidden;transition:border-color .15s;position:relative}
   .clip:hover{border-color:var(--accent)}
-  .clip .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
+  .clip .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block;cursor:pointer}
   .clip .meta{padding:8px 10px;display:flex;align-items:center;gap:8px}
   .clip .sp{font-weight:700}.clip .sp.over{color:var(--bad)}
   .clip .t{color:var(--muted);font-size:12px;margin-left:auto}
+  .reject-x{position:absolute;top:6px;right:6px;width:26px;height:26px;border-radius:8px;
+    background:rgba(10,12,16,.72);border:1px solid var(--line);color:#ff9ab0;cursor:pointer;
+    font-size:14px;line-height:1;display:flex;align-items:center;justify-content:center;opacity:0;transition:.15s}
+  .clip:hover .reject-x{opacity:1}
+  .reject-x:hover{background:#5c2130;color:#fff}
   .toplist{list-style:none;margin:0;padding:6px 0}
   .toplist li{display:flex;align-items:center;gap:12px;padding:9px 16px;
     border-bottom:1px solid var(--line);cursor:pointer}
   .toplist li:last-child{border-bottom:none}
   .toplist li:hover{background:var(--panel2)}
   .toplist .rank{width:22px;text-align:center;color:var(--muted);font-weight:700}
-  .toplist .sp{font-weight:700;font-size:17px;min-width:74px}
+  .toplist .sp{font-weight:700;font-size:17px;min-width:74px;font-variant-numeric:tabular-nums}
   .toplist .sp.over{color:var(--bad)}
   .toplist .dt{color:var(--muted);font-size:12.5px;margin-left:auto;text-align:right}
   .empty{color:var(--muted);padding:24px 16px;text-align:center}
   .skap{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
   .skap .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  .skap input[type=number]{width:90px;background:var(--panel2);border:1px solid var(--line);
-    color:var(--text);border-radius:6px;padding:7px 9px;font-size:15px}
+  .skap input[type=number]{width:88px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--text);border-radius:7px;padding:7px 9px;font-size:15px}
   .skap .u{color:var(--muted)}
   .skap .hint{color:var(--muted);font-size:12.5px}
-  .skap .saved,.orient .saved{color:var(--ok);font-size:12.5px;opacity:0;transition:opacity .2s}
-  .skap .saved.show,.orient .saved.show{opacity:1}
-  .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
-  .summary .p{background:var(--panel);padding:14px 12px;text-align:center}
-  .summary .p .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-  .summary .p .v{font-size:28px;font-weight:800;margin:4px 0}
-  .summary .p .d{font-size:11.5px;color:var(--muted);line-height:1.5}
-  .attrs{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
-  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
-    padding:1px 8px;font-size:11px;color:var(--muted);text-transform:capitalize}
-  .clip .attrs{padding:0 10px 8px}
-  #modal{position:fixed;inset:0;background:rgba(0,0,0,.8);display:none;
-    align-items:center;justify-content:center;padding:20px;z-index:20}
-  #modal.show{display:flex}
-  #modal video{max-width:100%;max-height:85vh;border-radius:10px;background:#000}
-  #modal .close{position:absolute;top:16px;right:20px;font-size:30px;color:#fff;
-    cursor:pointer;background:none;border:none}
+  .saved{color:var(--ok);font-size:12.5px;opacity:0;transition:opacity .2s}
+  .saved.show{opacity:1}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
   .seg button{background:var(--panel2);color:var(--muted);border:none;cursor:pointer;
-    padding:9px 16px;font-size:13.5px;font-weight:600;font-family:inherit}
+    padding:8px 14px;font-size:13px;font-weight:600;font-family:inherit}
   .seg button:not(:last-child){border-right:1px solid var(--line)}
-  .seg button.on{background:var(--accent,#3b82f6);color:#fff}
-  .orient .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .seg button.on{background:linear-gradient(90deg,var(--grad1),var(--grad2));color:#fff}
+  /* analytics */
+  .an-grid{display:grid;gap:16px;padding:16px;grid-template-columns:repeat(2,1fr)}
+  @media(max-width:760px){.an-grid{grid-template-columns:1fr}}
+  .metric{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;
+    background:var(--line)}
+  .metric .m{background:var(--panel);padding:14px 15px}
+  .metric .m .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .metric .m .v{font-size:23px;font-weight:800;margin-top:3px;font-variant-numeric:tabular-nums}
+  .metric .m .s{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .chart{padding:4px 8px 12px}
+  .chart .ct{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;
+    padding:8px 8px 6px;font-weight:600}
+  .donutwrap{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:8px}
+  .legend{display:flex;flex-direction:column;gap:6px;font-size:13px;min-width:150px;flex:1}
+  .legend .li{display:flex;align-items:center;gap:8px}
+  .legend .sw{width:12px;height:12px;border-radius:3px;flex:none;border:1px solid rgba(255,255,255,.15)}
+  .legend .nm{text-transform:capitalize}
+  .legend .pc{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+  .bars{display:flex;flex-direction:column;gap:7px;padding:6px 10px 10px}
+  .bar{display:grid;grid-template-columns:74px 1fr auto;align-items:center;gap:10px;font-size:12.5px}
+  .bar .lbl{color:var(--muted);text-transform:capitalize;text-align:right;white-space:nowrap}
+  .bar .track{background:var(--panel2);border-radius:6px;height:16px;overflow:hidden}
+  .bar .fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--grad1),var(--grad2));min-width:2px}
+  .bar .val{color:var(--text);font-variant-numeric:tabular-nums;min-width:44px;text-align:right}
+  .vbars{display:flex;align-items:flex-end;gap:3px;height:120px;padding:8px 10px 4px}
+  .vbars .vb{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;height:100%}
+  .vbars .vb .col{width:100%;border-radius:4px 4px 0 0;
+    background:linear-gradient(180deg,var(--grad1),var(--grad2));min-height:2px;transition:height .3s}
+  .vbars .vb .cap{font-size:9px;color:var(--muted);white-space:nowrap}
+  .axis{display:flex;justify-content:space-between;padding:2px 10px 8px;font-size:9.5px;color:var(--muted)}
+  /* report builder */
+  .rb{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+  .rb .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .rb .fld{display:flex;flex-direction:column;gap:4px}
+  .rb .fld label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .rb input,.rb select{width:100%}
+  .dow{display:flex;gap:4px;flex-wrap:wrap}
+  .dow button{flex:1;min-width:38px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--muted);border-radius:7px;padding:6px 0;font-size:12px;cursor:pointer;font-family:inherit}
+  .dow button.on{background:linear-gradient(90deg,var(--grad1),var(--grad2));color:#fff;border-color:transparent}
+  .rb .go{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .rb .q{color:var(--muted);font-size:13px;font-style:italic;flex:1;min-width:220px}
+  .rb-res{border-top:1px solid var(--line);margin:0 -16px -14px;padding:0}
+  .rb-head{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:1px;background:var(--line)}
+  .rb-head .m{background:var(--panel);padding:13px 15px}
+  .rb-head .m .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .rb-head .m .v{font-size:24px;font-weight:800;margin-top:3px;font-variant-numeric:tabular-nums}
+  table.rep{width:100%;border-collapse:collapse;font-size:13px}
+  table.rep th,table.rep td{padding:8px 12px;text-align:left;border-top:1px solid var(--line)}
+  table.rep th{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+  table.rep td.num{font-variant-numeric:tabular-nums}
+  .repwrap{max-height:340px;overflow:auto}
+  .chipset{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;
+    padding:1px 9px;font-size:11px;color:var(--muted);text-transform:capitalize}
+  .attrs{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+  .clip .attrs{padding:0 10px 8px}
+  /* rejected bin */
+  details.rejbin{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    overflow:hidden;box-shadow:var(--shadow)}
+  details.rejbin>summary{list-style:none;cursor:pointer;font-size:12.5px;text-transform:uppercase;
+    letter-spacing:.9px;color:var(--muted);padding:13px 16px;display:flex;align-items:center;gap:8px}
+  details.rejbin>summary::-webkit-details-marker{display:none}
+  details.rejbin>summary .cnt{background:var(--panel2);border:1px solid var(--line);
+    border-radius:999px;padding:2px 9px;color:var(--warn);font-weight:700}
+  .rejlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:12px 16px 16px}
+  .rej{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .rej img{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block}
+  .rej .b{padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+  .rej .sp{font-weight:700}
+  .rej .rsn{color:var(--warn);font-size:11.5px;line-height:1.35}
+  .rej .t{color:var(--muted);font-size:11px}
+  #modal,#power{position:fixed;inset:0;background:rgba(0,0,0,.82);display:none;
+    align-items:center;justify-content:center;padding:20px;z-index:30}
+  #modal.show,#power.show{display:flex}
+  #modal video{max-width:100%;max-height:85vh;border-radius:10px;background:#000}
+  #modal .close{position:absolute;top:16px;right:20px;font-size:30px;color:#fff;cursor:pointer;background:none;border:none}
+  #power .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:420px;width:100%;padding:22px}
+  #power h3{margin:0 0 10px;font-size:17px}
+  #power p{margin:0 0 18px;color:var(--muted);line-height:1.5}
+  #power p b{color:var(--text)}
+  #power .rowb{display:flex;gap:10px;justify-content:flex-end}
+  #power .err{color:#ff9ab0}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 16px;
+    box-shadow:var(--shadow);opacity:0;transition:.25s;z-index:40;font-size:13.5px;pointer-events:none}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .u{color:var(--accent);cursor:pointer;margin-left:10px;font-weight:600;pointer-events:auto}
 </style>
 </head>
 <body>
 <header>
   <h1>Speed<span>Kam</span></h1>
   <div class="pills">
+    <span class="fresh" id="p-fresh" title="live-feed freshness">—</span>
     <span class="pill" id="p-cam">camera —</span>
     <span class="pill" id="p-fps">— fps</span>
     <span class="pill" id="p-skap">SpeedKapture —</span>
     <span class="pill" id="p-orient">mount —</span>
     <span class="pill" id="p-backup">backup —</span>
     <span class="pill" id="p-calib">calibration —</span>
-    <a class="btn" href="/calibrate">Calibrate</a>
+    <a class="btn sm" href="/calibrate">Calibrate</a>
     <button class="btn ghost sm" id="btn-restart" onclick="powerConfirm('reboot')">Restart</button>
-    <button class="btn ghost sm warn" id="btn-shutdown" onclick="powerConfirm('shutdown')">Shutdown</button>
+    <button class="btn warn sm" id="btn-shutdown" onclick="powerConfirm('shutdown')">Shutdown</button>
   </div>
 </header>
 
 <main>
-  <div class="col">
-    <div class="card live">
-      <h2>Live view <span class="fresh" id="p-fresh" title="live-feed freshness">—</span></h2>
-      <img src="/stream.mjpg" alt="live view">
-    </div>
-    <div class="card">
-      <h2>Latest reading</h2>
-      <div class="big" id="latest">
-        <div class="num" id="l-num">—</div><div class="unit" id="l-unit"></div>
-        <div class="dir" id="l-dir"></div>
+  <!-- ROW: live + latest + controls -->
+  <div class="row2">
+    <div class="col">
+      <div class="card live">
+        <h2>Live view <span class="fresh" id="p-fresh2" style="margin-left:auto"></span></h2>
+        <img src="/stream.mjpg" alt="live view">
       </div>
-    </div>
-    <div class="card">
-      <div class="stats">
-        <div class="stat"><div class="k">Vehicles</div><div class="v" id="s-total">0</div></div>
-        <div class="stat"><div class="k">Over limit</div><div class="v" id="s-speeders">0</div></div>
-        <div class="stat"><div class="k">Speed limit</div><div class="v small" id="s-limit">—</div></div>
-      </div>
-    </div>
-    <div class="card">
-      <h2>My Road Speed Limit</h2>
-      <div class="skap">
-        <div class="row">
-          <span>Limit on this road</span>
-          <input type="number" id="limit-val" min="1" step="1">
-          <span class="u" id="limit-unit">mph</span>
-          <button class="btn sm" onclick="saveLimit()">Save</button>
-          <span class="saved" id="limit-saved">saved ✓</span>
+      <div class="card">
+        <h2>Latest reading</h2>
+        <div class="big" id="latest">
+          <div class="num" id="l-num">—</div><div class="unit" id="l-unit"></div>
+          <div class="dir" id="l-dir"></div>
         </div>
-        <div class="hint"><b>Tip:</b> set this to the posted speed limit for your
-          street. Vehicles above it are flagged as <b>SPEEDING</b> (and counted in
-          "Over limit"); everything else is still logged. This is stored on the
-          node and survives restarts.</div>
       </div>
-    </div>
-    <div class="card">
-      <h2>SpeedKapture</h2>
-      <div class="skap">
-        <div class="row">
-          <span>Capture &amp; post clips above</span>
-          <input type="number" id="skap-val" min="0" step="1">
-          <span class="u" id="skap-unit">mph</span>
-          <button class="btn sm" onclick="saveSkap()">Save</button>
-          <span class="saved" id="skap-saved">saved ✓</span>
+      <div class="card">
+        <div class="stats">
+          <div class="stat"><div class="k">Vehicles (session)</div><div class="v" id="s-total">0</div></div>
+          <div class="stat"><div class="k">Over limit</div><div class="v" id="s-speeders">0</div></div>
+          <div class="stat"><div class="k">Speed limit</div><div class="v small" id="s-limit">—</div></div>
         </div>
-        <div class="hint"><b>Tip:</b> set this to your street's speed limit, so only vehicles
-          that are actually speeding record a clip. Slower vehicles are still counted (with
-          direction, speed and recognized attributes) — they just don't record a clip.
-          Set 0 to capture everything.</div>
       </div>
     </div>
-    <div class="card">
-      <h2>Camera orientation</h2>
-      <div class="orient">
-        <div class="row">
-          <span>Mounted</span>
-          <div class="seg" id="orient-seg">
-            <button data-o="parallel" onclick="saveOrient('parallel')">Parallel (side-on)</button>
-            <button data-o="head_on" onclick="saveOrient('head_on')">Head-on</button>
+
+    <div class="col">
+      <div class="card">
+        <h2>My Road Speed Limit</h2>
+        <div class="skap">
+          <div class="row">
+            <span>Limit on this road</span>
+            <input type="number" id="limit-val" min="1" step="1">
+            <span class="u" id="limit-unit">mph</span>
+            <button class="btn sm" onclick="saveLimit()">Save</button>
+            <span class="saved" id="limit-saved">saved ✓</span>
           </div>
-          <span class="saved" id="orient-saved">saved ✓</span>
+          <div class="hint">Vehicles above this are flagged <b>SPEEDING</b>. Stored on the node, survives restarts.</div>
         </div>
-        <div class="hint"><b>Parallel:</b> camera beside the road, traffic crossing left↔right —
-          speed is measured across a horizontal centre band. <b>Head-on:</b> camera facing
-          oncoming/receding traffic — measured in a near/mid vertical band, dropping the far
-          distance. Pick the one matching this camera so the correct measurement band is used.</div>
       </div>
-    </div>
-    <div class="card">
-      <h2>Traffic summary</h2>
-      <div class="summary" id="summary">
-        <div class="p"><div class="k">Today</div><div class="v" id="sum-today">0</div><div class="d" id="dir-today"></div></div>
-        <div class="p"><div class="k">This week</div><div class="v" id="sum-week">0</div><div class="d" id="dir-week"></div></div>
-        <div class="p"><div class="k">This month</div><div class="v" id="sum-month">0</div><div class="d" id="dir-month"></div></div>
+      <div class="card">
+        <h2>SpeedKapture</h2>
+        <div class="skap">
+          <div class="row">
+            <span>Capture clips above</span>
+            <input type="number" id="skap-val" min="0" step="1">
+            <span class="u" id="skap-unit">mph</span>
+            <button class="btn sm" onclick="saveSkap()">Save</button>
+            <span class="saved" id="skap-saved">saved ✓</span>
+          </div>
+          <div class="hint">Only vehicles this fast record a clip. Slower ones are still counted. 0 = capture all.</div>
+        </div>
       </div>
-    </div>
-    <div class="card">
-      <h2>Top 10 speeders
-        <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span>
-      </h2>
-      <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
+      <div class="card">
+        <h2>Camera orientation</h2>
+        <div class="skap">
+          <div class="row">
+            <span>Mounted</span>
+            <div class="seg" id="orient-seg">
+              <button data-o="parallel" onclick="saveOrient('parallel')">Parallel</button>
+              <button data-o="head_on" onclick="saveOrient('head_on')">Head-on</button>
+            </div>
+            <span class="saved" id="orient-saved">saved ✓</span>
+          </div>
+          <div class="hint"><b>Parallel:</b> beside the road (L↔R). <b>Head-on:</b> facing traffic.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>False-positive filter</h2>
+        <div class="skap">
+          <div class="row">
+            <span>Max travel</span>
+            <input type="number" id="rej-dist" min="0" step="1">
+            <span class="u">m</span>
+            <span>Min vehicle size</span>
+            <input type="number" id="rej-span" min="0" step="0.1">
+            <span class="u">m</span>
+            <button class="btn sm" onclick="saveReject()">Save</button>
+            <span class="saved" id="rej-saved">saved ✓</span>
+          </div>
+          <div class="hint">Auto-rejects phantom tracks (traveled &gt; max) and cyclists/pedestrians
+            (footprint &lt; min size). <b id="rej-count">0</b> readings auto-rejected so far — see the bin below.</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="col">
-    <div class="card">
-      <h2>Records filter</h2>
-      <div class="filter">
-        <label>From <input type="date" id="f-from"></label>
-        <label>To <input type="date" id="f-to"></label>
-        <button class="btn ghost sm" onclick="applyFilter()">Apply</button>
-        <button class="btn ghost sm" onclick="clearFilter()">Clear</button>
+  <!-- ANALYTICS -->
+  <div class="card">
+    <h2>Analytics
+      <span class="tools">
+        <div class="seg" id="an-seg">
+          <button data-p="today" class="on" onclick="setPeriod('today')">Today</button>
+          <button data-p="week" onclick="setPeriod('week')">Week</button>
+          <button data-p="month" onclick="setPeriod('month')">Month</button>
+          <button data-p="all" onclick="setPeriod('all')">All time</button>
+        </div>
+      </span>
+    </h2>
+    <div class="metric" id="an-metrics"></div>
+    <div class="an-grid">
+      <div class="chart"><div class="ct">Colour breakdown — <span id="cd-period">today</span></div>
+        <div class="donutwrap"><div id="donut"></div><div class="legend" id="donut-legend"></div></div>
+      </div>
+      <div class="chart"><div class="ct">Average speed by direction</div><div class="bars" id="dir-bars"></div></div>
+      <div class="chart"><div class="ct">Traffic &amp; average speed by day of week</div><div class="bars" id="dow-bars"></div></div>
+      <div class="chart"><div class="ct">Speed distribution</div>
+        <div class="vbars" id="speed-hist"></div><div class="axis" id="speed-axis"></div>
       </div>
     </div>
-    <div class="card">
-      <h2>Recent clips
-        <span class="tools"><a class="btn ghost sm" id="exp-events">Export CSV</a></span>
-      </h2>
-      <div class="clips" id="clips"><div class="empty">No captures yet.</div></div>
+    <div class="chart"><div class="ct">Traffic by hour of day</div>
+      <div class="vbars" id="hour-hist"></div><div class="axis" id="hour-axis"></div>
     </div>
   </div>
+
+  <!-- REPORT BUILDER -->
+  <div class="card">
+    <h2>Report builder <span class="tools"><a class="btn ghost sm" id="rb-export">Export CSV</a></span></h2>
+    <div class="rb">
+      <div class="grid">
+        <div class="fld"><label>From</label><input type="date" id="rb-from"></div>
+        <div class="fld"><label>To</label><input type="date" id="rb-to"></div>
+        <div class="fld"><label>Colour</label><select id="rb-color"><option value="">any</option></select></div>
+        <div class="fld"><label>Direction</label><select id="rb-dir"><option value="">any</option></select></div>
+        <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rb-min" min="0" placeholder="any"></div>
+        <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rb-max" min="0" placeholder="any"></div>
+        <div class="fld"><label>From hour</label><input type="number" id="rb-hf" min="0" max="23" placeholder="0"></div>
+        <div class="fld"><label>To hour</label><input type="number" id="rb-ht" min="0" max="23" placeholder="23"></div>
+      </div>
+      <div class="fld"><label>Days of week</label>
+        <div class="dow" id="rb-dow">
+          <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
+          <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
+          <button data-d="6">Sun</button>
+        </div>
+      </div>
+      <div class="go">
+        <button class="btn" onclick="runReport()">Run report</button>
+        <button class="btn ghost sm" onclick="resetReport()">Reset</button>
+        <span class="q" id="rb-q">e.g. red · outbound · Thursdays → your query in plain English shows here</span>
+      </div>
+      <div class="rb-res" id="rb-res"></div>
+    </div>
+  </div>
+
+  <!-- TOP + CLIPS -->
+  <div class="row2">
+    <div class="col">
+      <div class="card">
+        <h2>Top 10 speeders <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span></h2>
+        <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <h2>Records filter</h2>
+        <div class="filter">
+          <label>From <input type="date" id="f-from"></label>
+          <label>To <input type="date" id="f-to"></label>
+          <button class="btn ghost sm" onclick="applyFilter()">Apply</button>
+          <button class="btn ghost sm" onclick="clearFilter()">Clear</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Recent clips <span class="tools"><a class="btn ghost sm" id="exp-events">Export CSV</a></span></h2>
+        <div class="clips" id="clips"><div class="empty">No captures yet.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REJECTED BIN -->
+  <details class="rejbin" id="rejbin">
+    <summary>🚫 Auto-rejected readings <span class="cnt" id="rej-cnt">0</span>
+      <span style="margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0">
+        cyclists, pedestrians &amp; phantom tracks — excluded from all stats. Click Restore if one is a real vehicle.</span>
+    </summary>
+    <div class="rejlist" id="rejlist"><div class="empty">Nothing rejected.</div></div>
+  </details>
 </main>
 
 <div id="modal"><button class="close" onclick="closeModal()">&times;</button>
@@ -246,269 +405,384 @@
 <div id="power"><div class="box">
   <h3 id="pw-title"></h3>
   <p id="pw-msg"></p>
-  <div class="row">
+  <div class="rowb">
     <button class="btn ghost" id="pw-cancel" onclick="powerCancel()">Cancel</button>
     <button class="btn" id="pw-go" onclick="powerGo()">Confirm</button>
   </div>
 </div></div>
 
+<div class="toast" id="toast"></div>
+
 <script>
-let UNITS = "mph", LIMIT_KMH = null, SKAP = 0, ORIENT = "parallel";
-let FROM = "", TO = "";
+let UNITS="mph", LIMIT_KMH=null, SKAP=0, ORIENT="parallel";
+let FROM="", TO="", PERIOD="today";
+const KMH_PER_MPH=1.609344;
+const q=s=>document.querySelector(s);
+const qa=s=>document.querySelectorAll(s);
 
-const q = s => document.querySelector(s);
-function speedVal(ev){ return UNITS==="mph"? ev.speed_mph : ev.speed_kmh; }
-function fmtSpeed(ev){
-  const v = speedVal(ev);
-  return (v==null? "—" : Math.round(v)) + " " + (UNITS==="mph"?"mph":"km/h");
-}
-function isOver(ev){ return LIMIT_KMH!=null && ev.speed_kmh!=null && ev.speed_kmh>LIMIT_KMH; }
-function timeShort(iso){
-  if(!iso) return ""; const d=new Date(iso);
-  return isNaN(d)? iso : d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-}
-function dayShort(iso){
-  if(!iso) return ""; const d=new Date(iso);
-  return isNaN(d)? iso : d.toLocaleDateString([], {month:'short',day:'numeric'})
-    + " " + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-}
-function qs(extra){
-  const p = new URLSearchParams();
-  if(FROM) p.set('from', FROM);
-  if(TO) p.set('to', TO);
-  for(const k in (extra||{})) p.set(k, extra[k]);
-  const s = p.toString();
-  return s? '?'+s : '';
-}
+// Colour name -> swatch, so the donut/legend show the real colours we recorded.
+const COLOR_MAP={red:"#e5484d",orange:"#f76b15",yellow:"#f5d90a",green:"#30a46c",
+  teal:"#12a4b4",blue:"#3b82f6",purple:"#8b5cf6",pink:"#e93d82",white:"#e7edf3",
+  gray:"#8a97a6",grey:"#8a97a6",silver:"#c0c7cf",black:"#3a4250",brown:"#a06a42"};
+const swatch=n=>COLOR_MAP[(n||"").toLowerCase()]||"#5b6675";
 
-function applyFilter(){ FROM=q('#f-from').value; TO=q('#f-to').value; refreshAll(); }
-function clearFilter(){ FROM=""; TO=""; q('#f-from').value=""; q('#f-to').value=""; refreshAll(); }
+function toDisp(kmh){return kmh==null?null:(UNITS==="mph"?kmh/KMH_PER_MPH:kmh);}
+function uLbl(){return UNITS==="mph"?"mph":"km/h";}
+function speedVal(ev){return UNITS==="mph"?ev.speed_mph:ev.speed_kmh;}
+function fmtSpeed(ev){const v=speedVal(ev);return (v==null?"—":Math.round(v))+" "+uLbl();}
+function isOver(ev){return LIMIT_KMH!=null&&ev.speed_kmh!=null&&ev.speed_kmh>LIMIT_KMH;}
+function timeShort(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+function dayShort(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleDateString([],{month:'short',day:'numeric'})+" "+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+function qs(extra){const p=new URLSearchParams();if(FROM)p.set('from',FROM);if(TO)p.set('to',TO);for(const k in(extra||{}))p.set(k,extra[k]);const s=p.toString();return s?'?'+s:'';}
+function applyFilter(){FROM=q('#f-from').value;TO=q('#f-to').value;refreshAll();}
+function clearFilter(){FROM="";TO="";q('#f-from').value="";q('#f-to').value="";refreshAll();}
+
+let toastT=null;
+function toast(msg,undo){
+  const t=q('#toast');t.innerHTML=msg+(undo?'<span class="u">Undo</span>':'');
+  t.classList.add('show');
+  if(undo){t.querySelector('.u').onclick=()=>{undo();t.classList.remove('show');};}
+  clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('show'),5000);
+}
 
 function attrsHtml(ev){
-  const bits = [ev.color, ev.vehicle_type, ev.make, ev.model, ev.year]
-    .map(x => (x==null? "" : String(x)).trim()).filter(Boolean);
-  if(!bits.length) return "";
+  const bits=[ev.color,ev.vehicle_type,ev.make,ev.model,ev.year].map(x=>(x==null?"":String(x)).trim()).filter(Boolean);
+  if(!bits.length)return"";
   return '<div class="attrs">'+bits.map(b=>'<span class="chip">'+b+'</span>').join('')+'</div>';
 }
 
 function refreshStatus(s){
-  UNITS = s.units || "mph";
-  LIMIT_KMH = s.speed_limit_kmh ?? LIMIT_KMH;
-  const cam = q('#p-cam');
-  if(s.camera_ok === false){ cam.className='pill bad'; cam.innerHTML='camera <b>down</b>'; }
-  else { cam.className='pill'; cam.innerHTML='camera <b>'+s.camera_source+'</b>'; }
-  q('#p-fps').innerHTML = '<b>'+(s.fps||0).toFixed(1)+'</b> fps';
+  UNITS=s.units||"mph"; LIMIT_KMH=s.speed_limit_kmh??LIMIT_KMH;
+  qa('.ru').forEach(e=>e.textContent=uLbl());
+  const cam=q('#p-cam');
+  if(s.camera_ok===false){cam.className='pill bad';cam.innerHTML='camera <b>down</b>';}
+  else{cam.className='pill';cam.innerHTML='camera <b>'+s.camera_source+'</b>';}
+  q('#p-fps').innerHTML='<b>'+(s.fps||0).toFixed(1)+'</b> fps';
+  const age=s.frame_age;
+  [q('#p-fresh'),q('#p-fresh2')].forEach(fr=>{
+    if(!fr)return;
+    if(age==null){fr.className='fresh';fr.textContent='no signal';}
+    else if(age<=2){fr.className='fresh live';fr.textContent='live';}
+    else if(age<=5){fr.className='fresh live';fr.textContent='live · '+age+'s';}
+    else{fr.className='fresh stale';fr.textContent='stale · '+age+'s';}
+  });
+  const pwDisp=(s.power_controls===false)?'none':'';
+  q('#btn-restart').style.display=pwDisp;q('#btn-shutdown').style.display=pwDisp;
 
-  // Live-view freshness: seconds since the last frame (server-computed). An
-  // empty road still produces frames, so a climbing age is a real freeze.
-  const fr = q('#p-fresh'), age = s.frame_age;
-  if(age == null){ fr.className='fresh'; fr.textContent='no signal'; fr.title='no frames received yet'; }
-  else if(age <= 2){ fr.className='fresh live'; fr.textContent='live'; fr.title='updated '+age+'s ago'; }
-  else if(age <= 5){ fr.className='fresh live'; fr.textContent='live · '+age+'s'; fr.title='updated '+age+'s ago'; }
-  else { fr.className='fresh stale'; fr.textContent='stale · '+age+'s'; fr.title='no new frames for '+age+'s — camera may have stalled'; }
+  SKAP=s.speedkapture_threshold??0;
+  q('#skap-unit').textContent=uLbl();
+  q('#p-skap').innerHTML='SpeedKapture <b>'+(SKAP>0?('>'+SKAP+' '+uLbl()):'all')+'</b>';
+  const skI=q('#skap-val');if(document.activeElement!==skI)skI.value=SKAP;
 
-  const pwDisp = (s.power_controls === false) ? 'none' : '';
-  q('#btn-restart').style.display = pwDisp;
-  q('#btn-shutdown').style.display = pwDisp;
+  ORIENT=s.orientation||ORIENT;
+  q('#p-orient').innerHTML='mount <b>'+(ORIENT==="head_on"?"head-on":"parallel")+'</b>';
+  qa('#orient-seg button').forEach(b=>b.classList.toggle('on',b.dataset.o===ORIENT));
 
-  SKAP = s.speedkapture_threshold ?? 0;
-  const unitLbl = UNITS==="mph"?"mph":"km/h";
-  q('#skap-unit').textContent = unitLbl;
-  q('#p-skap').innerHTML = 'SpeedKapture <b>'+(SKAP>0? ('>'+SKAP+' '+unitLbl) : 'all')+'</b>';
-  const skInput = q('#skap-val');
-  if(document.activeElement !== skInput) skInput.value = SKAP;
+  const c=q('#p-calib');
+  if(s.calibrated){c.className='pill ok';c.innerHTML='calibrated <b>'+s.calibration_points+'pts</b> ±'+s.reprojection_error_m+'m';}
+  else{c.className='pill bad';c.innerHTML='not calibrated';}
 
-  ORIENT = s.orientation || ORIENT;
-  const orientLbl = ORIENT==="head_on" ? "head-on" : "parallel";
-  q('#p-orient').innerHTML = 'mount <b>'+orientLbl+'</b>';
-  document.querySelectorAll('#orient-seg button').forEach(b =>
-    b.classList.toggle('on', b.dataset.o === ORIENT));
+  const b=q('#p-backup'),bk=s.backup||{};
+  if(!bk.enabled){b.className='pill';b.innerHTML='backup <b>off</b>';}
+  else if(bk.last_error&&bk.pending>0){b.className='pill bad';b.innerHTML='backup <b>'+bk.pending+' queued</b>';b.title=bk.last_error;}
+  else if(bk.pending>0){b.className='pill';b.innerHTML='backup <b>'+bk.pending+' queued</b>';}
+  else{b.className='pill ok';b.innerHTML='backup <b>synced</b>';}
 
-  const c = q('#p-calib');
-  if(s.calibrated){ c.className='pill ok';
-    c.innerHTML='calibrated <b>'+s.calibration_points+'pts</b> ±'+s.reprojection_error_m+'m'; }
-  else { c.className='pill bad'; c.innerHTML='not calibrated'; }
+  q('#s-total').textContent=s.total_count;
+  q('#s-speeders').textContent=s.speeder_count;
+  const limitDisp=Math.round(toDisp(s.speed_limit_kmh));
+  q('#s-limit').textContent=limitDisp+" "+uLbl();
+  q('#limit-unit').textContent=uLbl();
+  const limI=q('#limit-val');if(document.activeElement!==limI)limI.value=limitDisp;
 
-  const b = q('#p-backup'), bk = s.backup||{};
-  if(!bk.enabled){ b.className='pill'; b.innerHTML='backup <b>off</b>'; }
-  else if(bk.last_error && bk.pending>0){ b.className='pill bad';
-    b.innerHTML='backup <b>'+bk.pending+' queued</b>'; b.title=bk.last_error; }
-  else if(bk.pending>0){ b.className='pill'; b.innerHTML='backup <b>'+bk.pending+' queued</b>'; }
-  else { b.className='pill ok'; b.innerHTML='backup <b>synced</b> → '+(bk.host||''); }
+  // reject config
+  const rd=q('#rej-dist'),rs=q('#rej-span');
+  if(document.activeElement!==rd)rd.value=s.max_track_distance_m??"";
+  if(document.activeElement!==rs)rs.value=s.min_vehicle_span_m??"";
+  q('#rej-count').textContent=s.rejected_count||0;
+  q('#rej-cnt').textContent=s.rejected_count||0;
 
-  q('#s-total').textContent = s.total_count;
-  q('#s-speeders').textContent = s.speeder_count;
-  const limitDisp = UNITS==="mph"? Math.round(s.speed_limit_kmh/1.609344)
-                                 : Math.round(s.speed_limit_kmh);
-  q('#s-limit').textContent = limitDisp + (UNITS==="mph"?" mph":" km/h");
-  q('#limit-unit').textContent = unitLbl;
-  const limInput = q('#limit-val');
-  if(document.activeElement !== limInput) limInput.value = limitDisp;
-  const ev = s.last_event;
+  const ev=s.last_event;
   if(ev){
-    q('#l-num').textContent = Math.round(speedVal(ev));
-    q('#l-num').style.color = ev.over_limit? 'var(--bad)':'var(--ok)';
-    q('#l-unit').textContent = UNITS==="mph"?"mph":"km/h";
-    q('#l-dir').innerHTML = (ev.over_limit?'<span class="badge">SPEEDING</span> ':'')
-      + (ev.captured===false?'<span class="chip">not captured</span> ':'')
-      + ev.direction + '<br><small>'+timeShort(ev.time)+'</small>'
-      + attrsHtml(ev);
+    q('#l-num').textContent=Math.round(speedVal(ev));
+    q('#l-num').style.webkitTextFillColor=ev.over_limit?'var(--bad)':'';
+    q('#l-num').style.background=ev.over_limit?'none':'';
+    q('#l-unit').textContent=uLbl();
+    q('#l-dir').innerHTML=(ev.over_limit?'<span class="badge">SPEEDING</span> ':'')
+      +(ev.captured===false?'<span class="chip">not captured</span> ':'')
+      +ev.direction+'<br><small>'+timeShort(ev.time)+'</small>'+attrsHtml(ev);
   }
 }
 
-function dirLine(directions){
-  const keys = Object.keys(directions||{});
-  if(!keys.length) return "";
-  return keys.map(k=>k+' '+directions[k]).join('<br>');
+// ---- charts (pure SVG/CSS, no libs) ----
+function renderDonut(colors){
+  const entries=Object.entries(colors||{}).sort((a,b)=>b[1]-a[1]);
+  const total=entries.reduce((s,[,v])=>s+v,0);
+  const el=q('#donut'),leg=q('#donut-legend');
+  if(!total){el.innerHTML='<div class="empty" style="width:150px">No data</div>';leg.innerHTML='';return;}
+  const R=54,C=2*Math.PI*R,cx=64,cy=64;let off=0;
+  let segs='';
+  for(const [name,v] of entries){
+    const frac=v/total,len=frac*C;
+    segs+=`<circle cx="${cx}" cy="${cy}" r="${R}" fill="none" stroke="${swatch(name)}"
+      stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      transform="rotate(-90 ${cx} ${cy})"></circle>`;
+    off+=len;
+  }
+  el.innerHTML=`<svg width="128" height="128" viewBox="0 0 128 128">${segs}
+    <text x="64" y="60" text-anchor="middle" fill="#e8eef5" font-size="22" font-weight="800">${total}</text>
+    <text x="64" y="78" text-anchor="middle" fill="#8a97a6" font-size="10">vehicles</text></svg>`;
+  leg.innerHTML=entries.map(([n,v])=>`<div class="li"><span class="sw" style="background:${swatch(n)}"></span>
+    <span class="nm">${n}</span><span class="pc">${Math.round(v/total*100)}% · ${v}</span></div>`).join('');
 }
 
+function renderHBars(el,items){
+  // items: [{label, value, sub}]
+  const max=Math.max(1,...items.map(i=>i.value||0));
+  el.innerHTML=items.length?items.map(i=>`<div class="bar"><span class="lbl">${i.label}</span>
+    <span class="track"><span class="fill" style="width:${(i.value||0)/max*100}%"></span></span>
+    <span class="val">${i.sub||''}</span></div>`).join(''):'<div class="empty">No data</div>';
+}
+
+function renderVBars(elId,axisId,items,labelFn){
+  const el=q('#'+elId),ax=q('#'+axisId);
+  const max=Math.max(1,...items.map(i=>i.count||0));
+  el.innerHTML=items.map(i=>{
+    const h=(i.count||0)/max*100;
+    const tip=(i.count||0)+" veh"+(i.avg!=null?" · "+Math.round(i.avg)+" "+uLbl():"");
+    return `<div class="vb" title="${labelFn(i)}: ${tip}"><div class="col" style="height:${h}%"></div>
+      <div class="cap">${i.count||''}</div></div>`;
+  }).join('');
+  ax.innerHTML=items.map(i=>`<span>${i.axis??''}</span>`).join('');
+}
+
+let SUMMARY=null;
 async function refreshSummary(){
-  const s = await fetch('/api/summary').then(r=>r.json()).catch(()=>null);
-  if(!s) return;
-  for(const p of ['today','week','month']){
-    q('#sum-'+p).textContent = (s[p]&&s[p].count)||0;
-    q('#dir-'+p).innerHTML = dirLine(s[p]&&s[p].directions);
-  }
+  SUMMARY=await fetch('/api/summary').then(r=>r.json()).catch(()=>null);
+  renderPeriod();
+}
+function renderPeriod(){
+  if(!SUMMARY)return;
+  const p=SUMMARY[PERIOD]||{};
+  q('#cd-period').textContent=PERIOD==="all"?"all time":PERIOD;
+  // metrics row
+  const avg=toDisp(p.avg_speed_kmh), byd=p.avg_by_direction||{};
+  const dirCards=Object.entries(byd).map(([d,o])=>
+    `<div class="m"><div class="k">Avg ${d}</div><div class="v">${o.avg_kmh!=null?Math.round(toDisp(o.avg_kmh)):'—'}</div><div class="s">${uLbl()} · ${o.count} veh</div></div>`).join('');
+  q('#an-metrics').innerHTML=
+    `<div class="m"><div class="k">Vehicles</div><div class="v">${p.count||0}</div><div class="s">${PERIOD==="all"?"all time":PERIOD}</div></div>`
+    +`<div class="m"><div class="k">Over limit</div><div class="v" style="color:var(--bad)">${p.over||0}</div><div class="s">${p.count?Math.round((p.over||0)/p.count*100):0}% of traffic</div></div>`
+    +`<div class="m"><div class="k">Avg speed</div><div class="v">${avg!=null?Math.round(avg):'—'}</div><div class="s">${uLbl()}</div></div>`
+    +dirCards;
+  renderDonut(p.colors);
+  // avg speed by direction bars
+  renderHBars(q('#dir-bars'),Object.entries(byd).map(([d,o])=>({
+    label:d,value:o.avg_kmh,sub:Math.round(toDisp(o.avg_kmh))+" "+uLbl()})));
 }
 
-async function saveSkap(){
-  const v = parseFloat(q('#skap-val').value);
-  if(isNaN(v)||v<0) return;
-  const r = await fetch('/api/speedkapture',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({threshold:v})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){
-    SKAP = r.speedkapture_threshold;
-    const sv=q('#skap-saved'); sv.classList.add('show');
-    setTimeout(()=>sv.classList.remove('show'),1500);
-    refreshAll();
-  }
+async function refreshAnalytics(){
+  const a=await fetch('/api/analytics'+qs()).then(r=>r.json()).catch(()=>null);
+  if(!a)return;
+  const dowNames=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  renderHBars(q('#dow-bars'),a.dow.map((d,i)=>({
+    label:dowNames[i],value:d.count,
+    sub:d.count+" · "+(d.avg_kmh!=null?Math.round(toDisp(d.avg_kmh))+uLbl():'—')})));
+  renderVBars('hour-hist','hour-axis',a.hourly.map(h=>({
+    count:h.count,avg:toDisp(h.avg_kmh),axis:(h.hour%6===0)?h.hour:'' })),i=>i.axis!==''?i.axis+":00":'hour');
+  // speed hist
+  const hist=a.speed_hist.map(b=>({count:b.count,avg:null,
+    axis:(b.hi>=999)?b.lo+"+":b.lo, lo:b.lo,hi:b.hi}));
+  renderVBars('speed-hist','speed-axis',hist.map(b=>({count:b.count,avg:null,axis:''})),b=>b.lo+"–"+(b.hi>=999?'+':b.hi)+" "+uLbl());
+  q('#speed-axis').innerHTML=hist.map(b=>`<span>${(b.lo%10===0||b.hi>=999)?(b.hi>=999?b.lo+"+":b.lo):''}</span>`).join('');
+  // populate report dropdowns from all-time colours/dirs (once we have data)
+  populateReportOptions(a.colors);
 }
 
-async function saveLimit(){
-  const v = parseFloat(q('#limit-val').value);
-  if(isNaN(v)||v<=0) return;
-  const r = await fetch('/api/speedlimit',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({limit:v, units:UNITS})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){
-    LIMIT_KMH = r.speed_limit_kmh;
-    const sv=q('#limit-saved'); sv.classList.add('show');
-    setTimeout(()=>sv.classList.remove('show'),1500);
-    refreshAll();
-  }
+function populateReportOptions(colors){
+  const sel=q('#rb-color');
+  if(sel.dataset.filled)return;
+  const names=Object.keys(colors||{}).sort();
+  if(!names.length)return;
+  sel.dataset.filled="1";
+  names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
 }
 
-async function saveOrient(value){
-  if(value === ORIENT) return;
-  const r = await fetch('/api/orientation',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({orientation:value})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){
-    ORIENT = r.orientation;
-    const sv=q('#orient-saved'); sv.classList.add('show');
-    setTimeout(()=>sv.classList.remove('show'),1500);
-    refreshAll();
-  }
+// ---- report builder ----
+let DOW_SEL=new Set();
+q('#rb-dow').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-d]');if(!b)return;
+  const d=b.dataset.d;if(DOW_SEL.has(d)){DOW_SEL.delete(d);b.classList.remove('on');}
+  else{DOW_SEL.add(d);b.classList.add('on');}
+});
+function reportFilters(){
+  const f={from:q('#rb-from').value||null,to:q('#rb-to').value||null,
+    color:q('#rb-color').value||null,direction:q('#rb-dir').value||null,
+    min_mph:q('#rb-min').value||null,max_mph:q('#rb-max').value||null,
+    hour_from:q('#rb-hf').value||null,hour_to:q('#rb-ht').value||null,
+    dows:DOW_SEL.size?[...DOW_SEL].map(Number):null};
+  return f;
+}
+function humanQuery(f){
+  const dn=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  let bits=["How many"];
+  bits.push(f.color?f.color:"");
+  bits.push("vehicles");
+  if(f.direction)bits.push("going "+f.direction);
+  if(f.min_mph||f.max_mph)bits.push("at "+(f.min_mph||"0")+"–"+(f.max_mph||"∞")+" "+uLbl());
+  if(f.dows)bits.push("on "+f.dows.map(d=>dn[d]).join("/"));
+  if(f.hour_from||f.hour_to)bits.push("between "+(f.hour_from||0)+":00–"+(f.hour_to||23)+":00");
+  if(f.from||f.to)bits.push("("+(f.from||"start")+" → "+(f.to||"now")+")");
+  return bits.filter(Boolean).join(" ")+"?";
+}
+async function runReport(){
+  const f=reportFilters();
+  q('#rb-q').textContent=humanQuery(f);
+  q('#rb-export').href='/api/export.csv'+(f.from||f.to?('?'+(f.from?'from='+f.from:'')+(f.to?'&to='+f.to:'')):'');
+  const r=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(f)}).then(x=>x.json()).catch(()=>null);
+  const box=q('#rb-res');if(!r){box.innerHTML='';return;}
+  const a=r.aggregate;
+  const colorChips=Object.entries(a.colors||{}).sort((x,y)=>y[1]-x[1]).slice(0,8)
+    .map(([n,v])=>`<span class="chip"><span class="sw" style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${swatch(n)};margin-right:4px"></span>${n} ${v}</span>`).join('');
+  let html=`<div class="rb-head">
+    <div class="m"><div class="k">Matches</div><div class="v">${a.count}</div></div>
+    <div class="m"><div class="k">Avg speed</div><div class="v">${a.avg_speed_mph!=null?Math.round(UNITS==="mph"?a.avg_speed_mph:a.avg_speed_kmh):'—'}</div></div>
+    <div class="m"><div class="k">Fastest</div><div class="v">${a.max_speed_mph!=null?Math.round(UNITS==="mph"?a.max_speed_mph:a.max_speed_kmh):'—'}</div></div>
+    <div class="m"><div class="k">Over limit</div><div class="v" style="color:var(--bad)">${a.over}</div></div>
+  </div>`;
+  if(colorChips)html+=`<div style="padding:10px 15px"><div class="chipset">${colorChips}</div></div>`;
+  if(r.rows.length){
+    html+=`<div class="repwrap"><table class="rep"><thead><tr><th>Time</th><th>Speed</th><th>Dir</th><th>Colour</th><th>Vehicle</th><th></th></tr></thead><tbody>`;
+    for(const ev of r.rows){
+      const veh=[ev.vehicle_type,ev.make,ev.model,ev.year].filter(Boolean).join(" ")||"—";
+      html+=`<tr><td class="num">${dayShort(ev.time)}</td>
+        <td class="num" style="${isOver(ev)?'color:var(--bad);font-weight:700':''}">${fmtSpeed(ev)}</td>
+        <td>${ev.direction||''}</td>
+        <td><span class="chip"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${swatch(ev.color)};margin-right:4px"></span>${ev.color||'—'}</span></td>
+        <td>${veh}</td>
+        <td>${ev.clip?'<a href="#" onclick="openModal(\'/captures/'+ev.clip+'\');return false" style="color:var(--accent)">video</a>':''}</td></tr>`;
+    }
+    html+=`</tbody></table></div>`;
+    if(r.truncated)html+=`<div class="empty">Showing first ${r.rows.length} of ${r.total}. Narrow the filters or export CSV for all.</div>`;
+  }else html+=`<div class="empty">No matching passes.</div>`;
+  box.innerHTML=html;
+}
+function resetReport(){
+  ['rb-from','rb-to','rb-min','rb-max','rb-hf','rb-ht'].forEach(id=>q('#'+id).value='');
+  q('#rb-color').value='';q('#rb-dir').value='';
+  DOW_SEL.clear();qa('#rb-dow button').forEach(b=>b.classList.remove('on'));
+  q('#rb-res').innerHTML='';q('#rb-q').textContent='e.g. red · outbound · Thursdays → your query in plain English shows here';
 }
 
+function setPeriod(p){PERIOD=p;qa('#an-seg button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));renderPeriod();}
+
+// ---- clips / top / rejects ----
 async function refreshClips(){
-  const box = q('#clips');
-  const filtered = (FROM||TO);
-  const limit = filtered? 200 : 60;  // over-fetch, then keep clips only
-  let evs = await fetch('/api/events'+qs({limit})).then(r=>r.json()).catch(()=>[]);
-  evs = evs.filter(ev => ev.clip);   // only rows with an actual saved clip
-  if(!filtered) evs = evs.slice(0, 10);
-  q('#exp-events').href = '/api/export.csv'+qs();
-  if(!evs.length){ box.innerHTML='<div class="empty">No captures in range.</div>'; return; }
+  const box=q('#clips');const filtered=(FROM||TO);const limit=filtered?200:60;
+  let evs=await fetch('/api/events'+qs({limit})).then(r=>r.json()).catch(()=>[]);
+  evs=evs.filter(ev=>ev.clip);
+  if(!filtered)evs=evs.slice(0,10);
+  q('#exp-events').href='/api/export.csv'+qs();
+  if(!evs.length){box.innerHTML='<div class="empty">No captures in range.</div>';return;}
   box.innerHTML='';
   for(const ev of evs){
-    const div=document.createElement('div'); div.className='clip';
-    const thumb = ev.snapshot? '/captures/'+ev.snapshot : '';
-    div.innerHTML =
-      (thumb? '<img class="thumb" src="'+thumb+'" loading="lazy">':'<div class="thumb"></div>')+
-      '<div class="meta"><span class="sp">'+fmtSpeed(ev)+'</span>'+
-      '<span class="t">'+timeShort(ev.time)+'</span></div>'+
-      attrsHtml(ev);
-    div.querySelector('.sp').classList.toggle('over', isOver(ev));
-    if(ev.clip) div.onclick=()=>openModal('/captures/'+ev.clip);
+    const div=document.createElement('div');div.className='clip';
+    const thumb=ev.snapshot?'/captures/'+ev.snapshot:'';
+    div.innerHTML=(thumb?'<img class="thumb" src="'+thumb+'" loading="lazy">':'<div class="thumb"></div>')+
+      '<button class="reject-x" title="Not a real vehicle — reject">✕</button>'+
+      '<div class="meta"><span class="sp">'+fmtSpeed(ev)+'</span><span class="t">'+timeShort(ev.time)+'</span></div>'+attrsHtml(ev);
+    div.querySelector('.sp').classList.toggle('over',isOver(ev));
+    if(ev.clip)div.querySelector('.thumb').onclick=()=>openModal('/captures/'+ev.clip);
+    div.querySelector('.reject-x').onclick=(e)=>{e.stopPropagation();rejectReading(ev.key,fmtSpeed(ev));};
     box.appendChild(div);
   }
 }
-
 async function refreshTop(){
-  const box = q('#toplist');
-  const evs = await fetch('/api/top'+qs({limit:10})).then(r=>r.json()).catch(()=>[]);
-  q('#exp-top').href = '/api/top.csv'+qs({limit:10});
-  if(!evs.length){ box.innerHTML='<li class="empty">No records yet.</li>'; return; }
+  const box=q('#toplist');
+  const evs=await fetch('/api/top'+qs({limit:10})).then(r=>r.json()).catch(()=>[]);
+  q('#exp-top').href='/api/top.csv'+qs({limit:10});
+  if(!evs.length){box.innerHTML='<li class="empty">No records yet.</li>';return;}
   box.innerHTML='';
   evs.forEach((ev,i)=>{
     const li=document.createElement('li');
-    li.innerHTML = '<span class="rank">'+(i+1)+'</span>'+
-      '<span class="sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
-      '<span class="dir">'+(ev.direction||'')+'</span>'+
-      '<span class="dt">'+dayShort(ev.time)+'</span>';
-    if(ev.clip) li.onclick=()=>openModal('/captures/'+ev.clip);
+    li.innerHTML='<span class="rank">'+(i+1)+'</span><span class="sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
+      '<span class="dir">'+(ev.direction||'')+'</span><span class="dt">'+dayShort(ev.time)+'</span>';
+    if(ev.clip)li.onclick=()=>openModal('/captures/'+ev.clip);
     box.appendChild(li);
   });
 }
-
-function openModal(src){ const m=q('#modal'),p=q('#player'); p.src=src; m.classList.add('show'); }
-function closeModal(){ const m=q('#modal'),p=q('#player'); p.pause(); p.src=''; m.classList.remove('show'); }
-q('#modal').addEventListener('click', e=>{ if(e.target.id==='modal') closeModal(); });
-
-// --- power controls (Restart / Shutdown the Pi) ---------------------------
-let PWACTION = null;
-function powerConfirm(action){
-  PWACTION = action;
-  const reboot = action==='reboot';
-  q('#pw-title').textContent = reboot ? 'Restart the Pi?' : 'Shut down the Pi?';
-  q('#pw-msg').innerHTML = reboot
-    ? 'The node will reboot. The dashboard disconnects for ~30–60s, then comes back on its own.'
-    : '<b>The node will power off completely.</b> It can’t be turned back on remotely — someone has to physically power-cycle it. Only do this if you can reach it in person.';
-  const go = q('#pw-go');
-  go.textContent = reboot ? 'Restart' : 'Shut down';
-  go.className = reboot ? 'btn' : 'btn warn';
-  go.style.display = '';
-  q('#pw-cancel').textContent = 'Cancel';
-  q('#pw-msg').classList.remove('err');
-  q('#power').classList.add('show');
-}
-function powerCancel(){ q('#power').classList.remove('show'); PWACTION = null; }
-async function powerGo(){
-  const action = PWACTION; if(!action) return;
-  const reboot = action==='reboot';
-  // Optimistic: the box goes down as soon as the command is accepted, so the
-  // POST response may never arrive. Say what's happening before we fire it.
-  q('#pw-title').textContent = reboot ? 'Restarting…' : 'Shutting down…';
-  q('#pw-msg').innerHTML = reboot
-    ? 'The dashboard will disconnect now and should return in about a minute.'
-    : 'The node is powering off. This page will stop responding.';
-  q('#pw-go').style.display = 'none';
-  q('#pw-cancel').textContent = 'Close';
-  let r = null;
-  try {
-    r = await fetch('/api/power', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action})}).then(x=>x.json());
-  } catch(e){ return; }   // connection dropped == it's going down; leave message
-  if(r && !r.ok){          // refused before doing anything (e.g. no sudo rule)
-    q('#pw-title').textContent = 'Couldn’t ' + (reboot?'restart':'shut down');
-    q('#pw-msg').textContent = r.error || 'The node refused the command.';
-    q('#pw-msg').classList.add('err');
-    q('#pw-go').style.display = ''; q('#pw-go').textContent = 'Retry';
-    q('#pw-cancel').textContent = 'Cancel';
+async function refreshRejects(){
+  const rej=await fetch('/api/rejects?limit=60').then(r=>r.json()).catch(()=>[]);
+  const box=q('#rejlist');q('#rej-cnt').textContent=rej.length;
+  if(!rej.length){box.innerHTML='<div class="empty">Nothing rejected.</div>';return;}
+  box.innerHTML='';
+  for(const ev of rej){
+    const div=document.createElement('div');div.className='rej';
+    const thumb=ev.snapshot?'/captures/'+ev.snapshot:'';
+    div.innerHTML=(thumb?'<img src="'+thumb+'" loading="lazy" onclick="openImg(\''+thumb+'\')">':'')+
+      '<div class="b"><span class="sp">'+fmtSpeed(ev)+' · '+(ev.direction||'')+'</span>'+
+      '<span class="rsn">'+(ev.review_reason||'auto-rejected')+'</span>'+
+      '<span class="t">'+dayShort(ev.time)+'</span>'+
+      '<button class="btn ghost sm" onclick="restoreReading(\''+ev.key+'\')">Restore as vehicle</button></div>';
+    box.appendChild(div);
   }
 }
-q('#power').addEventListener('click', e=>{ if(e.target.id==='power') powerCancel(); });
+async function rejectReading(key,label){
+  const r=await fetch('/api/reject',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key,reason:"manually marked not a vehicle"})}).then(x=>x.json()).catch(()=>null);
+  if(r&&r.ok){toast('Rejected '+label+' — excluded from stats.',()=>restoreReading(key,true));refreshAll();}
+}
+async function restoreReading(key,silent){
+  const r=await fetch('/api/restore',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key})}).then(x=>x.json()).catch(()=>null);
+  if(r&&r.ok){if(!silent)toast('Restored — counts again.');refreshAll();}
+}
+
+function openModal(src){const m=q('#modal'),p=q('#player');p.src=src;m.classList.add('show');}
+function openImg(src){window.open(src,'_blank');}
+function closeModal(){const m=q('#modal'),p=q('#player');p.pause();p.src='';m.classList.remove('show');}
+q('#modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal();});
+
+async function saveSkap(){const v=parseFloat(q('#skap-val').value);if(isNaN(v)||v<0)return;
+  const r=await fetch('/api/speedkapture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threshold:v})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){flash('skap-saved');refreshAll();}}
+async function saveLimit(){const v=parseFloat(q('#limit-val').value);if(isNaN(v)||v<=0)return;
+  const r=await fetch('/api/speedlimit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({limit:v,units:UNITS})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){LIMIT_KMH=r.speed_limit_kmh;flash('limit-saved');refreshAll();}}
+async function saveOrient(v){if(v===ORIENT)return;
+  const r=await fetch('/api/orientation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({orientation:v})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){ORIENT=r.orientation;flash('orient-saved');refreshAll();}}
+async function saveReject(){
+  const d=parseFloat(q('#rej-dist').value),s=parseFloat(q('#rej-span').value);
+  const r=await fetch('/api/rejectconfig',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({max_track_distance_m:isNaN(d)?null:d,min_vehicle_span_m:isNaN(s)?null:s})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){flash('rej-saved');refreshAll();}}
+function flash(id){const sv=q('#'+id);sv.classList.add('show');setTimeout(()=>sv.classList.remove('show'),1500);}
+
+// power
+let PWACTION=null;
+function powerConfirm(action){PWACTION=action;const reboot=action==='reboot';
+  q('#pw-title').textContent=reboot?'Restart the Pi?':'Shut down the Pi?';
+  q('#pw-msg').innerHTML=reboot?'The node will reboot. The dashboard disconnects for ~30–60s, then returns.':
+    '<b>The node will power off completely.</b> It can’t be turned back on remotely.';
+  const go=q('#pw-go');go.textContent=reboot?'Restart':'Shut down';go.className=reboot?'btn':'btn warn';go.style.display='';
+  q('#pw-cancel').textContent='Cancel';q('#pw-msg').classList.remove('err');q('#power').classList.add('show');}
+function powerCancel(){q('#power').classList.remove('show');PWACTION=null;}
+async function powerGo(){const action=PWACTION;if(!action)return;const reboot=action==='reboot';
+  q('#pw-title').textContent=reboot?'Restarting…':'Shutting down…';
+  q('#pw-msg').innerHTML=reboot?'The dashboard will disconnect now and should return in about a minute.':'The node is powering off.';
+  q('#pw-go').style.display='none';q('#pw-cancel').textContent='Close';
+  let r=null;try{r=await fetch('/api/power',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}).then(x=>x.json());}catch(e){return;}
+  if(r&&!r.ok){q('#pw-title').textContent='Couldn’t '+(reboot?'restart':'shut down');q('#pw-msg').textContent=r.error||'The node refused the command.';q('#pw-msg').classList.add('err');q('#pw-go').style.display='';q('#pw-go').textContent='Retry';q('#pw-cancel').textContent='Cancel';}}
+q('#power').addEventListener('click',e=>{if(e.target.id==='power')powerCancel();});
 
 async function refreshAll(){
-  const s = await fetch('/api/status').then(r=>r.json()).catch(()=>({}));
+  const s=await fetch('/api/status').then(r=>r.json()).catch(()=>({}));
   refreshStatus(s);
-  await Promise.all([refreshClips(), refreshTop(), refreshSummary()]);
+  await Promise.all([refreshClips(),refreshTop(),refreshSummary(),refreshAnalytics(),refreshRejects()]);
 }
 refreshAll();
-setInterval(refreshAll, 3000);
+setInterval(refreshAll,4000);
 </script>
 </body>
 </html>

@@ -314,37 +314,83 @@ foreach (['snapshot', 'clip'] as $field) {
     $saved[$field] = "media/$day/$name";
 }
 
-// --- append to CSV (write header once) ---
+// --- append to CSV (self-migrating header) ---
+// The schema grew over time (duration_s/n_samples/status/review_reason). Newer
+// cameras post those fields; an events.csv written by an older receiver has a
+// shorter header. append_event() upgrades the file in place the first time a new
+// column appears -- rewriting the header and re-mapping existing rows by name --
+// so old and new rows stay column-aligned and the dashboard reads them all.
 $csv = "$DATA_DIR/events.csv";
-$cols = ['wall_time','track_id','speed_kmh','speed_mph','direction',
-         'confidence','distance_m','vehicle_type','make','model','year',
-         'color','captured','clip','snapshot','received_at'];
-$fh = fopen($csv, 'a');
-if ($fh === false) { fail(500, 'cannot open events.csv'); }
-if (flock($fh, LOCK_EX)) {
-    if (ftell($fh) === 0) { fputcsv($fh, $cols); }
-    fputcsv($fh, [
-        $meta['time'] ?? '',
-        $meta['track_id'] ?? '',
-        $meta['speed_kmh'] ?? '',
-        $meta['speed_mph'] ?? '',
-        $meta['direction'] ?? '',
-        $meta['confidence'] ?? '',
-        $meta['distance_m'] ?? '',
-        $meta['vehicle_type'] ?? '',
-        $meta['make'] ?? '',
-        $meta['model'] ?? '',
-        $meta['year'] ?? '',
-        $meta['color'] ?? '',
-        isset($meta['captured']) ? ($meta['captured'] ? 1 : 0) : '',
-        $meta['clip'] ?? '',
-        $meta['snapshot'] ?? '',
-        gmdate('c'),
-    ]);
-    fflush($fh);
-    flock($fh, LOCK_UN);
+$COLS = ['wall_time','track_id','speed_kmh','speed_mph','direction',
+         'confidence','distance_m','duration_s','n_samples',
+         'vehicle_type','make','model','year','color',
+         'status','review_reason','captured','clip','snapshot','received_at'];
+$assoc = [
+    'wall_time'     => $meta['time'] ?? '',
+    'track_id'      => $meta['track_id'] ?? '',
+    'speed_kmh'     => $meta['speed_kmh'] ?? '',
+    'speed_mph'     => $meta['speed_mph'] ?? '',
+    'direction'     => $meta['direction'] ?? '',
+    'confidence'    => $meta['confidence'] ?? '',
+    'distance_m'    => $meta['distance_m'] ?? '',
+    'duration_s'    => $meta['duration_s'] ?? '',
+    'n_samples'     => $meta['n_samples'] ?? '',
+    'vehicle_type'  => $meta['vehicle_type'] ?? '',
+    'make'          => $meta['make'] ?? '',
+    'model'         => $meta['model'] ?? '',
+    'year'          => $meta['year'] ?? '',
+    'color'         => $meta['color'] ?? '',
+    'status'        => $meta['status'] ?? 'ok',
+    'review_reason' => $meta['review_reason'] ?? '',
+    'captured'      => isset($meta['captured']) ? ($meta['captured'] ? 1 : 0) : '',
+    'clip'          => $meta['clip'] ?? '',
+    'snapshot'      => $meta['snapshot'] ?? '',
+    'received_at'   => gmdate('c'),
+];
+if (!append_event($csv, $COLS, $assoc)) { fail(500, 'cannot write events.csv'); }
+
+/**
+ * Append one event to the CSV, keyed by column name, migrating the header if the
+ * file predates any of $cols. Returns true on success.
+ */
+function append_event($csv, $cols, $assoc) {
+    $fh = @fopen($csv, 'c+');
+    if ($fh === false) { return false; }
+    $ok = false;
+    if (flock($fh, LOCK_EX)) {
+        $header = fgetcsv($fh);
+        if ($header === false || $header === null) {
+            // Fresh (or empty) file: write header + row in the canonical order.
+            rewind($fh); ftruncate($fh, 0);
+            fputcsv($fh, $cols);
+            fputcsv($fh, array_map(fn($c) => $assoc[$c] ?? '', $cols));
+        } elseif ($header === $cols) {
+            // Current schema: fast path, just append.
+            fseek($fh, 0, SEEK_END);
+            fputcsv($fh, array_map(fn($c) => $assoc[$c] ?? '', $cols));
+        } else {
+            // Older/other schema: read all rows keyed by the OLD header, then
+            // rewrite the whole file under the new $cols (one-time upgrade).
+            $rows = [];
+            while (($r = fgetcsv($fh)) !== false) {
+                if ($r === [null]) continue;
+                $rows[] = array_combine(
+                    $header, array_slice(array_pad($r, count($header), ''), 0, count($header)));
+            }
+            $rows[] = $assoc;
+            rewind($fh); ftruncate($fh, 0);
+            fputcsv($fh, $cols);
+            foreach ($rows as $row) {
+                fputcsv($fh, array_map(fn($c) => $row[$c] ?? '', $cols));
+            }
+        }
+        fflush($fh);
+        flock($fh, LOCK_UN);
+        $ok = true;
+    }
+    fclose($fh);
+    return $ok;
 }
-fclose($fh);
 
 // mark processed
 @file_put_contents($marker, gmdate('c'));

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import cv2
-from datetime import date, timedelta
+from datetime import date, datetime as _dt, timedelta
 
 from flask import (Flask, Response, jsonify, request, send_file,
                    send_from_directory)
@@ -27,7 +27,7 @@ from flask import (Flask, Response, jsonify, request, send_file,
 from .calibration import Calibration
 from . import driveby
 from .pipeline import SpeedCamera
-from .recorder import CSV_COLUMNS
+from .recorder import CSV_COLUMNS, row_key as recorder_row_key
 
 KMH_PER_MS = 3.6
 MPH_PER_MS = 2.2369362920544
@@ -214,7 +214,14 @@ class Runner:
             "speedkapture_threshold": sc.speedkapture_threshold,
             "orientation": sc.orientation,
             "measure_band": sc._active_band(),
+            "max_track_distance_m": sc.max_track_distance_m,
+            "min_vehicle_span_m": sc.min_vehicle_span_m,
+            "rejected_count": sum(1 for r in self._all_rows()
+                                  if self._is_rejected(r)),
         }
+
+    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None):
+        return self.speedcam.set_reject_thresholds(max_distance_m, min_span_m)
 
     def set_speedkapture(self, value):
         return self.speedcam.set_speedkapture_threshold(value)
@@ -245,6 +252,16 @@ class Runner:
             return list(csv.DictReader(f))
 
     @staticmethod
+    def _is_rejected(r):
+        """A row is a false positive only when explicitly marked 'rejected'.
+        Legacy rows (blank status) predate the gate and count as real."""
+        return (r.get("status") or "ok").strip().lower() == "rejected"
+
+    def _visible_rows(self):
+        """Every real (non-rejected) pass -- what all stats are computed over."""
+        return [r for r in self._all_rows() if not self._is_rejected(r)]
+
+    @staticmethod
     def _in_range(row, date_from, date_to):
         day = (row.get("wall_time") or "")[:10]  # YYYY-MM-DD
         if date_from and day < date_from:
@@ -262,26 +279,35 @@ class Runner:
             "direction": r.get("direction"),
             "confidence": r.get("confidence"),
             "distance_m": _f(r.get("distance_m")),
+            "duration_s": _f(r.get("duration_s")),
+            "n_samples": _f(r.get("n_samples")),
             "vehicle_type": r.get("vehicle_type") or None,
             "make": r.get("make") or None,
             "model": r.get("model") or None,
             "year": r.get("year") or None,
             "color": r.get("color") or None,
+            "status": (r.get("status") or "ok").strip().lower() or "ok",
+            "review_reason": r.get("review_reason") or None,
             "captured": r.get("captured") in ("1", 1, True, "True"),
             "clip": r.get("clip") or None,
             "snapshot": r.get("snapshot") or None,
+            "key": recorder_row_key(r),
         }
 
     # ------------------------------------------------------------- summaries
     def summary(self):
-        """Vehicle counts for today / this week / this month, with a direction
-        and colour/type breakdown. Counts every logged pass (captured or not)."""
-        rows = self._all_rows()
+        """Rich per-period stats for today / this week / this month / all time.
+
+        Each period carries the vehicle count, over-limit count, average speed
+        (overall and per travel direction), and colour/type/direction tallies.
+        Rejected false positives are excluded. Counts every real logged pass
+        (captured or not)."""
+        rows = self._visible_rows()
         today = date.today()
         week_start = today - timedelta(days=today.weekday())  # Monday
         month_prefix = today.strftime("%Y-%m")
 
-        periods = {"today": [], "week": [], "month": []}
+        periods = {"today": [], "week": [], "month": [], "all": rows}
         for r in rows:
             day = (r.get("wall_time") or "")[:10]
             if not day:
@@ -298,25 +324,201 @@ class Runner:
                 periods["month"].append(r)
         return {k: self._describe(v) for k, v in periods.items()}
 
-    @staticmethod
-    def _describe(rows):
+    def _describe(self, rows):
         directions, colors, types = {}, {}, {}
+        speeds, over = [], 0
+        dir_speeds = {}
+        limit = self.speedcam.limit_kmh
         for r in rows:
             _tally(directions, r.get("direction"))
             _tally(colors, r.get("color"))
             _tally(types, r.get("vehicle_type"))
-        return {"count": len(rows), "directions": directions,
-                "colors": colors, "types": types}
+            v = _f(r.get("speed_kmh"))
+            if v is not None:
+                speeds.append(v)
+                if limit and v > limit:
+                    over += 1
+                d = (r.get("direction") or "").strip()
+                if d:
+                    dir_speeds.setdefault(d, []).append(v)
+        avg = (sum(speeds) / len(speeds)) if speeds else None
+        by_dir = {k: {"avg_kmh": sum(vs) / len(vs),
+                      "avg_mph": (sum(vs) / len(vs)) / KMH_PER_MPH,
+                      "count": len(vs)}
+                  for k, vs in dir_speeds.items()}
+        return {"count": len(rows), "over": over,
+                "directions": directions, "colors": colors, "types": types,
+                "avg_speed_kmh": avg,
+                "avg_speed_mph": (avg / KMH_PER_MPH) if avg is not None else None,
+                "avg_by_direction": by_dir}
+
+    # ------------------------------------------------------------- analytics
+    def analytics(self, date_from=None, date_to=None):
+        """Histogram-style breakdowns for the visual dashboard, over real passes
+        in an optional date range: hour-of-day, day-of-week, speed distribution,
+        colour and vehicle-type shares. Speeds are returned in both units so the
+        client renders in whichever the node uses."""
+        rows = [r for r in self._visible_rows()
+                if self._in_range(r, date_from, date_to)]
+        hourly = [{"hour": h, "count": 0, "sum_kmh": 0.0} for h in range(24)]
+        dow = [{"dow": i, "count": 0, "sum_kmh": 0.0} for i in range(7)]
+        colors, types = {}, {}
+        # Speed buckets in mph (5-mph bins up to 60+), the operator's usual unit.
+        edges = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 999]
+        hist = [{"lo": edges[i], "hi": edges[i + 1], "count": 0}
+                for i in range(len(edges) - 1)]
+        n = 0
+        speeds_kmh = []
+        for r in rows:
+            _tally(colors, r.get("color"))
+            _tally(types, r.get("vehicle_type"))
+            ts = r.get("wall_time") or ""
+            v = _f(r.get("speed_kmh"))
+            try:
+                dt = _dt.fromisoformat(ts)
+            except (ValueError, TypeError):
+                dt = None
+            if v is not None:
+                speeds_kmh.append(v)
+            if dt is not None:
+                if v is not None:
+                    hourly[dt.hour]["count"] += 1
+                    hourly[dt.hour]["sum_kmh"] += v
+                    dow[dt.weekday()]["count"] += 1
+                    dow[dt.weekday()]["sum_kmh"] += v
+                    n += 1
+            if v is not None:
+                mph = v / KMH_PER_MPH
+                for b in hist:
+                    if b["lo"] <= mph < b["hi"]:
+                        b["count"] += 1
+                        break
+
+        def _avg(bucket):
+            return (bucket["sum_kmh"] / bucket["count"]) if bucket["count"] else None
+        for b in hourly + dow:
+            a = _avg(b)
+            b["avg_kmh"] = a
+            b["avg_mph"] = (a / KMH_PER_MPH) if a is not None else None
+            del b["sum_kmh"]
+        avg_all = (sum(speeds_kmh) / len(speeds_kmh)) if speeds_kmh else None
+        return {
+            "units": self.speedcam.units,
+            "count": len(rows),
+            "with_speed": len(speeds_kmh),
+            "avg_speed_kmh": avg_all,
+            "avg_speed_mph": (avg_all / KMH_PER_MPH) if avg_all is not None else None,
+            "hourly": hourly, "dow": dow, "speed_hist": hist,
+            "colors": colors, "types": types,
+        }
+
+    # --------------------------------------------------------- report builder
+    def report(self, filters):
+        """Ad-hoc filtered query for the report builder. `filters` may set:
+        from/to (YYYY-MM-DD), color, direction, vehicle_type, min_mph, max_mph,
+        dows (list of 0=Mon..6=Sun), hour_from/hour_to (0-23), captured (bool),
+        status ('ok'|'rejected'|'all'). Returns matching rows (shaped, newest
+        first) plus an aggregate the UI can headline."""
+        f = filters or {}
+        want_status = (f.get("status") or "ok").lower()
+        color = (f.get("color") or "").strip().lower() or None
+        direction = (f.get("direction") or "").strip().lower() or None
+        vtype = (f.get("vehicle_type") or "").strip().lower() or None
+        min_mph = _f(f.get("min_mph"))
+        max_mph = _f(f.get("max_mph"))
+        dows = f.get("dows")
+        dows = set(int(d) for d in dows) if dows else None
+        hour_from = f.get("hour_from")
+        hour_to = f.get("hour_to")
+        hour_from = int(hour_from) if hour_from not in (None, "") else None
+        hour_to = int(hour_to) if hour_to not in (None, "") else None
+        cap = f.get("captured")
+
+        out = []
+        for r in self._all_rows():
+            if want_status != "all":
+                if want_status == "rejected" and not self._is_rejected(r):
+                    continue
+                if want_status == "ok" and self._is_rejected(r):
+                    continue
+            if not self._in_range(r, f.get("from"), f.get("to")):
+                continue
+            if color and (r.get("color") or "").strip().lower() != color:
+                continue
+            if direction and (r.get("direction") or "").strip().lower() != direction:
+                continue
+            if vtype and (r.get("vehicle_type") or "").strip().lower() != vtype:
+                continue
+            v = _f(r.get("speed_mph"))
+            if min_mph is not None and (v is None or v < min_mph):
+                continue
+            if max_mph is not None and (v is None or v > max_mph):
+                continue
+            if cap is not None:
+                is_cap = r.get("captured") in ("1", 1, True, "True")
+                if bool(cap) != is_cap:
+                    continue
+            if dows is not None or hour_from is not None or hour_to is not None:
+                try:
+                    dt = _dt.fromisoformat(r.get("wall_time") or "")
+                except (ValueError, TypeError):
+                    continue
+                if dows is not None and dt.weekday() not in dows:
+                    continue
+                if hour_from is not None and dt.hour < hour_from:
+                    continue
+                if hour_to is not None and dt.hour > hour_to:
+                    continue
+            out.append(r)
+
+        speeds = [_f(r.get("speed_kmh")) for r in out]
+        speeds = [s for s in speeds if s is not None]
+        limit = self.speedcam.limit_kmh
+        colors, dirs = {}, {}
+        for r in out:
+            _tally(colors, r.get("color"))
+            _tally(dirs, r.get("direction"))
+        agg = {
+            "count": len(out),
+            "avg_speed_kmh": (sum(speeds) / len(speeds)) if speeds else None,
+            "avg_speed_mph": ((sum(speeds) / len(speeds)) / KMH_PER_MPH)
+                             if speeds else None,
+            "max_speed_kmh": max(speeds) if speeds else None,
+            "max_speed_mph": (max(speeds) / KMH_PER_MPH) if speeds else None,
+            "over": sum(1 for s in speeds if limit and s > limit),
+            "colors": colors, "directions": dirs,
+        }
+        shaped = [self._shape(r) for r in out[::-1]]
+        limit_rows = int(f.get("limit") or 500)
+        return {"aggregate": agg, "rows": shaped[:limit_rows],
+                "truncated": len(shaped) > limit_rows, "total": len(shaped)}
+
+    # ------------------------------------------------------------- rejects
+    def rejects(self, limit=100):
+        """The auto-rejected (false-positive) readings, newest first, for the
+        dashboard's review bin."""
+        rows = [r for r in self._all_rows() if self._is_rejected(r)][::-1]
+        return [self._shape(r) for r in rows[:limit]]
+
+    def set_row_status(self, key, status, reason=""):
+        """Manually reject ('not a real car') or restore a logged reading."""
+        status = "rejected" if str(status).lower() == "rejected" else "ok"
+        n = self.speedcam.recorder.set_status(key, status, reason) \
+            if getattr(self.speedcam, "recorder", None) else 0
+        return {"updated": n, "status": status}
 
     def events(self, limit=10, date_from=None, date_to=None):
-        rows = [r for r in self._all_rows() if self._in_range(r, date_from, date_to)]
+        # Real passes only; rejected false positives never show in the clip feed.
+        rows = [r for r in self._visible_rows()
+                if self._in_range(r, date_from, date_to)]
         rows = rows[::-1]  # most recent first
         if limit:
             rows = rows[:limit]
         return [self._shape(r) for r in rows]
 
     def _top_raw(self, limit=10, date_from=None, date_to=None):
-        rows = [r for r in self._all_rows() if self._in_range(r, date_from, date_to)]
+        rows = [r for r in self._visible_rows()
+                if self._in_range(r, date_from, date_to)]
         rows.sort(key=lambda r: _f(r.get("speed_kmh")) or -1, reverse=True)
         return rows[:limit]
 
@@ -527,6 +729,66 @@ def create_app(runner: Runner) -> Flask:
     @app.route("/api/summary")
     def summary():
         return jsonify(runner.summary())
+
+    @app.route("/api/analytics")
+    def analytics():
+        df = request.args.get("from") or None
+        dt = request.args.get("to") or None
+        return jsonify(runner.analytics(date_from=df, date_to=dt))
+
+    @app.route("/api/report", methods=["GET", "POST"])
+    def report():
+        if request.method == "POST":
+            filters = request.get_json(force=True, silent=True) or {}
+        else:
+            a = request.args
+            dows = a.get("dows")
+            filters = {
+                "from": a.get("from"), "to": a.get("to"),
+                "color": a.get("color"), "direction": a.get("direction"),
+                "vehicle_type": a.get("vehicle_type"),
+                "min_mph": a.get("min_mph"), "max_mph": a.get("max_mph"),
+                "hour_from": a.get("hour_from"), "hour_to": a.get("hour_to"),
+                "status": a.get("status"), "limit": a.get("limit"),
+                "dows": [int(x) for x in dows.split(",") if x != ""]
+                        if dows else None,
+            }
+        return jsonify(runner.report(filters))
+
+    @app.route("/api/rejects")
+    def rejects():
+        limit = request.args.get("limit", default=100, type=int)
+        return jsonify(runner.rejects(limit=limit))
+
+    @app.route("/api/reject", methods=["POST"])
+    def reject():
+        data = request.get_json(force=True, silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify({"ok": False, "error": "missing key"}), 400
+        res = runner.set_row_status(key, "rejected",
+                                    data.get("reason") or "marked not a vehicle")
+        return jsonify({"ok": res["updated"] > 0, **res})
+
+    @app.route("/api/restore", methods=["POST"])
+    def restore():
+        data = request.get_json(force=True, silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify({"ok": False, "error": "missing key"}), 400
+        res = runner.set_row_status(key, "ok", "")
+        return jsonify({"ok": res["updated"] > 0, **res})
+
+    @app.route("/api/rejectconfig", methods=["POST"])
+    def rejectconfig():
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            applied = runner.set_reject_thresholds(
+                max_distance_m=data.get("max_track_distance_m"),
+                min_span_m=data.get("min_vehicle_span_m"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "values must be numbers"}), 400
+        return jsonify({"ok": True, **applied})
 
     @app.route("/api/speedkapture", methods=["POST"])
     def speedkapture():
