@@ -358,8 +358,16 @@ function append_event($csv, $cols, $assoc) {
     if ($fh === false) { return false; }
     $ok = false;
     if (flock($fh, LOCK_EX)) {
+        rewind($fh);
         $header = fgetcsv($fh);
-        if ($header === false || $header === null) {
+        // Normalise: a file written with CRLF endings leaves a stray "\r" on the
+        // last field, which would fail a strict === against $cols and force the
+        // (heavier) migration path on every append. Trim so the fast path can
+        // engage regardless of how the file was written.
+        if (is_array($header)) {
+            $header = array_map(fn($x) => trim((string)$x), $header);
+        }
+        if ($header === false || $header === null || $header === [null]) {
             // Fresh (or empty) file: write header + row in the canonical order.
             rewind($fh); ftruncate($fh, 0);
             fputcsv($fh, $cols);
@@ -369,11 +377,16 @@ function append_event($csv, $cols, $assoc) {
             fseek($fh, 0, SEEK_END);
             fputcsv($fh, array_map(fn($c) => $assoc[$c] ?? '', $cols));
         } else {
-            // Older/other schema: read all rows keyed by the OLD header, then
-            // rewrite the whole file under the new $cols (one-time upgrade).
+            // Older/other schema: read all DATA rows keyed by the OLD header,
+            // then rewrite the whole file under the new $cols (one-time upgrade).
+            // Skip any stray header line that a prior bug wrote into the body, so
+            // the migration also SELF-HEALS a corrupted file instead of carrying
+            // the junk forward.
             $rows = [];
             while (($r = fgetcsv($fh)) !== false) {
                 if ($r === [null]) continue;
+                $r = array_map(fn($x) => (string)$x, $r);
+                if (($r[0] ?? '') === 'wall_time') continue;  // embedded header
                 $rows[] = array_combine(
                     $header, array_slice(array_pad($r, count($header), ''), 0, count($header)));
             }
