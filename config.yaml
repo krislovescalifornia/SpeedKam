@@ -186,12 +186,16 @@ recording:
   max_buffer_mb: 256
   # Frames/sec actually STORED for clips, independent of the detection rate. This
   # is a RAM-vs-smoothness knob, NOT an fps knob -- the detection loop runs at the
-  # sensor cap regardless. Once the node was cooled and hit the 30fps sensor cap,
-  # storing at the full 30fps (paired with max_buffer_mb 256 to keep the pre-roll
-  # ~3.1s) gives clips twice the motion smoothness of the old 15fps at the same
-  # length, for +128MB RAM. Lower it (with a smaller buffer) to trade smoothness
-  # for a longer pre-roll on a RAM-starved node; 0 = store every frame.
-  record_fps: 30
+  # sensor cap regardless. 0 = store EVERY captured frame (full sensor rate) -- the
+  # right setting for smoothest clips on a cooled node; paired with max_buffer_mb
+  # 256 it holds ~3.1s of pre-roll at the 30fps sensor rate (measured: 30.0fps,
+  # 92 frames, 3.06s). GOTCHA: do NOT set this equal to the sensor rate (e.g. 30
+  # on a 30fps camera) -- the throttle drops any frame arriving < 1/record_fps
+  # after the last kept one, and at the sensor rate real inter-frame jitter trips
+  # that on ~1 in 4 frames, yielding ~22fps clips. Use 0 for full rate, or a value
+  # WELL below the sensor rate (e.g. 15, ~3.1s pre-roll in only 128MB) to trade
+  # smoothness for a longer pre-roll / less RAM on a starved node.
+  record_fps: 0
   # Only save a clip when a valid speed was measured. If false, saves for every
   # tracked vehicle (useful while still calibrating).
   save_only_with_speed: true
