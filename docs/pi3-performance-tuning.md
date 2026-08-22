@@ -129,12 +129,15 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
   0.5–1.0 on a Pi 4/5.
 - **`web.stream_fps`** (10) / **`web.stream_max_width`** (640) — preview refresh cap and
   preview downscale width. Preview only; never limits detection.
-- **`recording.record_fps`** (30) — frames/sec actually stored for clips, independent of
-  detection. A RAM-vs-smoothness knob, **not an fps knob** — the detection loop runs at the
-  sensor cap regardless of this value. It was **15** through the cooling work (to fit the
-  pre-roll into a 1 GB Pi's RAM), then raised to the full 30 fps sensor rate once the node was
-  cooled and had the headroom — see [Reclaiming clip quality](#reclaiming-clip-quality-2026-08-21-post-cooling).
-  `0` = store every frame.
+- **`recording.record_fps`** (0 = every frame) — frames/sec actually stored for clips,
+  independent of detection. A RAM-vs-smoothness knob, **not an fps knob** — the detection loop
+  runs at the sensor cap regardless. It was **15** through the cooling work (to fit the pre-roll
+  into a 1 GB Pi's RAM), then set to **0** (full sensor rate) once cooled — see
+  [Reclaiming clip quality](#reclaiming-clip-quality-2026-08-21-post-cooling). **Do not set it
+  equal to the sensor rate** (e.g. `30` on a 30 fps camera): the throttle drops any frame
+  arriving `< 1/record_fps` after the last kept one, and at the sensor rate real inter-frame
+  jitter trips that on ~1 in 4 frames, giving only ~22 fps clips. `0` for full rate; a value
+  *well below* the sensor rate to deliberately trade smoothness for a longer pre-roll.
 - **`recording.max_buffer_mb`** (256) — hard RAM ceiling for the clip buffer. 256 MB (~92
   720p frames) holds ~3.1 s of pre-roll at 30 fps and fits a cooled 1 GB Pi (~350 MB headroom
   measured). Was 128 during the cooling work; drop back to 128 if RAM gets tight, raise further
@@ -144,13 +147,15 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
 
 ### Clip length vs record_fps and buffer (720p, ~2.76 MB/frame)
 
-Pre-roll seconds ≈ (`max_buffer_mb` ÷ 2.76) ÷ `record_fps`. The buffer default moved from
-128 MB to 256 MB alongside `record_fps` 15 → 30, so the pre-roll length held at ~3.1 s while
-the motion doubled in smoothness:
+Pre-roll seconds ≈ (`max_buffer_mb` ÷ 2.76) ÷ effective-stored-fps. The buffer default moved
+from 128 MB to 256 MB alongside `record_fps` 15 → 0 (full rate), so the pre-roll length held at
+~3.1 s while the motion doubled in smoothness. "Effective stored fps" is the *delivered* rate
+when `record_fps` is 0 or set above it — the throttle only reduces it when set below delivery
+(and, per the gotcha above, mangles it when set right at the sensor rate):
 
 | `record_fps` | @128 MB | @256 MB (default) | Look |
 |---|---|---|---|
-| **30 (default)** | ~1.5 s | **~3.1 s** | smoothest |
+| **0 = full 30 (default)** | ~1.5 s | **~3.1 s (measured 30.04 fps)** | smoothest |
 | 15 (old default) | ~3.1 s | ~6.1 s | smooth |
 | ~8 | ~5.7 s | ~11 s | slightly steppy |
 | ~4 | ~11 s (full window) | full window | choppy but complete |
@@ -197,27 +202,52 @@ clip **resolution** (stored frames are full 1280×720; `detect_scale` only shrin
 *detection* copy, never the saved frame) and the **snapshot/thumbnail** (already a full-res,
 quality-95 JPEG).
 
-**The change (`a0bb4db`):** `record_fps` 15 → 30 and `max_buffer_mb` 128 → 256 — store clips
-at the full sensor rate, and raise the buffer so the pre-roll stays ~3.1 s at the doubled rate.
+**The change:** `record_fps` 15 → 0 (store every frame, full sensor rate) and `max_buffer_mb`
+128 → 256 — so the pre-roll stays ~3.1 s at the doubled rate. This took **two commits**, and
+the correction is the interesting part:
 
-**Measured before/after on the node** (edit → commit → push → `speedkam-update.service` →
-re-measure):
+- **`a0bb4db` (first try) — `record_fps: 30`.** The obvious reading of "store at 30 fps." It
+  deployed cleanly and detection stayed at 29–30 fps, so at a glance it looked done.
+- **`c0ae380` (the fix) — `record_fps: 0`.** Verifying by writing an *actual clip through the
+  deployed `Recorder`* (below) exposed that `record_fps: 30` produced only **~22.6 fps** clips,
+  not 30. `Recorder.push` drops any frame arriving `< 1/record_fps` after the last kept one;
+  with the camera at a clean 30.0 fps, real inter-frame jitter puts ~1 in 4 gaps just under
+  33.3 ms, so a quarter of frames were dropped. **Setting the throttle equal to the sensor rate
+  fights the sensor.** `record_fps: 0` (no throttle, every frame) gives true full rate.
 
-| Metric | Before (15 fps / 128 MB) | After (30 fps / 256 MB) |
+**Verification method (uncalibrated node, no traffic).** The node is uncalibrated and
+`save_only_with_speed` is on, so it saves no clips on its own — nothing to "grab." Instead a
+probe drove the **real deployed `Recorder` against the live picamera2 camera** (service stopped
+for exclusive camera access, ~5 s per run, restarted after), then read the written MP4's fps
+back with OpenCV. This exercises the exact saved-clip code path with the on-disk config.
+
+| `record_fps` | Camera delivery | Written clip fps | Frames / pre-roll |
+|---|---|---|---|
+| `30` (first try) | 30.01 fps | **22.6 fps** ✗ | 92 / 4.08 s |
+| `0` (fix, deployed) | 30.03 fps | **30.04 fps** ✓ | 92 / 3.06 s |
+
+**Before/after on the node** (detection loop + resources, `record_fps: 0` deployed):
+
+| Metric | Before (15 fps / 128 MB) | After (0 = 30 fps / 256 MB) |
 |---|---|---|
-| Stored clip rate | 15 fps | **30 fps** (2× smoother motion) |
-| Pre-roll length | ~3.1 s | ~3.1 s (held, by design) |
-| Detection loop fps | 29.6–29.9 (one 25.4 dip) | **28.8–30.2, steady — no loss** |
-| Temp / throttle | 66 °C, `0x20000` (historical) | 64–66 °C, `0x20000` — no active throttle |
+| Stored clip rate | 15 fps | **30.04 fps** (measured, 2× smoother) |
+| Pre-roll length | ~3.1 s | ~3.06 s (held, by design) |
+| Detection loop fps | 29.6–29.9 (one 25.4 dip) | **29.7–30.5, steady — no loss** |
+| Temp / throttle | 66 °C, `0x20000` (historical) | 58–66 °C, `0x20000` — no active throttle |
 | RAM used / available | 425 / 480 MB | 531 / 374 MB |
-| Swap | 0 MB | 11 MB (stable, not climbing) |
+| Swap | 0 MB | ~11–18 MB (stable, not climbing) |
 
-The predicted trade held exactly: **clips doubled in smoothness, detection fps didn't move**,
-and the extra ~100 MB of resident RAM sat comfortably within the cooled node's headroom. The
-11 MB of swap that appeared is Linux evicting cold pages to fund the larger buffer + file
-cache — it settled and stopped, which is eviction, not thrash (thrash climbs tens of MB while
-`available` collapses; `available` held at ~374 MB). If a future feature needs the headroom
-back, `max_buffer_mb 192` reclaims 64 MB while keeping `record_fps 30` (pre-roll ~2.3 s).
+The predicted trade held: **clips took the full sensor rate, detection fps didn't move**, and
+the extra ~100 MB of resident RAM sat within the cooled node's headroom. The swap that appeared
+is Linux evicting cold pages to fund the larger buffer + file cache — it settled, which is
+eviction, not thrash (thrash climbs tens of MB while `available` collapses; `available` held at
+~374 MB). If a future feature needs the headroom back, `max_buffer_mb 192` reclaims 64 MB while
+keeping `record_fps 0` (pre-roll ~2.3 s).
+
+**Lesson within the lesson:** "store at 30 fps" and "don't throttle" are *not* the same setting
+when the throttle threshold lands on the sensor rate — and the only way that surfaced was
+writing a real clip and measuring it, not trusting that the config *looked* right. Detection fps
+staying green said nothing about the clip rate, because they're independent by design.
 
 **Lesson:** keep the RAM-vs-media knobs mentally separate from the fps knobs. It's easy, after
 a hard-won frame-rate fight, to assume every constraint you added was protecting the frame
