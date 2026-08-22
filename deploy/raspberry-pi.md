@@ -199,7 +199,7 @@ Only a few `config.yaml` keys change from a Windows test rig:
 |---|---|---|
 | `camera.backend` | `auto` | Picks CSI camera if present, else USB. Leave as-is. |
 | `camera.source` | `0` | Only used for USB/OpenCV fallback (webcam index). |
-| `camera.width` / `height` / `fps` | see requirements table | Lower = less CPU. Start `1280×720 @ 30` on a Pi 5/4-4GB; drop to `640×480 @ 15` on smaller boards. |
+| `camera.width` / `height` / `fps` | see requirements table | Lower = less CPU. Start `1280×720 @ 30` on a Pi 5/4-4GB; drop to `640×480 @ 15` on smaller boards. For max plate detail, the IMX296 global-shutter cam's native mode is `1456×1088` — on a Pi 3 that's ~23 fps with `detect_scale 0.3` (see [Pi 3 tuning](../docs/pi3-performance-tuning.md#native-resolution-capture-2026-08-22)). |
 | `display.show_window` | `false` | **Required** for headless. No monitor attached. |
 | `recognition.enabled` | `false` **at first** | YOLO is the heavy part. Get speed working first (see [recognition](#optional-turn-on-vehicle-recognition)). |
 | `speed.speed_limit_kmh` | your limit | Used only to flag/annotate speeders. |

@@ -25,6 +25,11 @@ Then a follow-on chapter — [Reclaiming clip quality](#reclaiming-clip-quality-
 took the *saved clips* from 15 fps back to the full 30 fps once the node was cooled, with **no
 change to the detection frame rate** (the clip-rate/buffer knobs were RAM limits, not fps limits).
 
+A later chapter — [Native-resolution capture](#native-resolution-capture-2026-08-22) — then
+deliberately traded some of that frame rate back for **detail**, moving capture to the IMX296's
+native **1456×1088** (720p had been a downscale of it) and dropping `detect_scale` to 0.3 to hold
+**~23 fps** on the Pi 3 while clips gain the full 1.58 MP.
+
 ## The board question that started it
 
 The original question was whether to buy a **Pi 4 (2 GB)** or a **Pi 5 (1 GB)**, later
@@ -124,9 +129,12 @@ The **desktop window path** (`run.py` with a preview window) stays single-thread
 
 All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, deep-merged):
 
-- **`detection.detect_scale`** (0.4) — detection runs on a frame scaled by this factor. Lower
-  = less CPU/heat, at the cost of small/distant vehicles. 0.4 suited the Pi 3; raise toward
-  0.5–1.0 on a Pi 4/5.
+- **`detection.detect_scale`** (0.3) — detection runs on a frame scaled by this factor. Lower
+  = less CPU/heat, at the cost of small/distant vehicles and speed precision (centroids scale
+  back up by 1/scale). Was **0.4** at 720p; dropped to **0.3** when capture went native
+  1456×1088 to recover the frame rate (see
+  [Native-resolution capture](#native-resolution-capture-2026-08-22)). Raise toward 0.35–0.4 if
+  distant cars get missed, or 0.5–1.0 on a Pi 4/5.
 - **`web.stream_fps`** (10) / **`web.stream_max_width`** (640) — preview refresh cap and
   preview downscale width. Preview only; never limits detection.
 - **`recording.record_fps`** (0 = every frame) — frames/sec actually stored for clips,
@@ -142,8 +150,14 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
   720p frames) holds ~3.1 s of pre-roll at 30 fps and fits a cooled 1 GB Pi (~350 MB headroom
   measured). Was 128 during the cooling work; drop back to 128 if RAM gets tight, raise further
   on a Pi 4/5.
+- **`camera.width` / `camera.height`** (1456×1088) — capture resolution, set to the IMX296's
+  native 1.58 MP for maximum plate detail. The sensor's only libcamera mode *is* 1456×1088, so
+  720p was a downscale of it. Native costs frame rate on a Pi 3 (compute-limited *below* the
+  sensor cap) — see [Native-resolution capture](#native-resolution-capture-2026-08-22). Drop to
+  1280×720 to trade detail for ~29 fps.
 - **`camera.fps`** (30) — the sensor frame-duration cap. The detection loop can't exceed this;
-  raising it past 30 buys little for a speed camera and adds heat.
+  raising it past 30 buys little for a speed camera and adds heat. At native resolution the loop
+  is compute-limited well under this cap anyway (~23 fps).
 
 ### Clip length vs record_fps and buffer (720p, ~2.76 MB/frame)
 
@@ -159,6 +173,10 @@ when `record_fps` is 0 or set above it — the throttle only reduces it when set
 | 15 (old default) | ~3.1 s | ~6.1 s | smooth |
 | ~8 | ~5.7 s | ~11 s | slightly steppy |
 | ~4 | ~11 s (full window) | full window | choppy but complete |
+
+> This table is for 720p (~2.76 MB/frame). At native 1456×1088 a frame is ~4.75 MB (1.72×),
+> so the same 256 MB buffer holds ~54 frames ≈ ~2.3 s at the ~23 fps native loop rate — see
+> [Native-resolution capture](#native-resolution-capture-2026-08-22).
 
 **Is 3 s enough?** Yes for the intended use (fast cars only). Time on screen = meters of road
 in frame ÷ speed. A typical side-on view shows ~15–25 m, so a 30 mph car crosses in
@@ -253,6 +271,54 @@ staying green said nothing about the clip rate, because they're independent by d
 a hard-won frame-rate fight, to assume every constraint you added was protecting the frame
 rate — but `record_fps` and `max_buffer_mb` were only ever protecting *memory*, and cost
 nothing to relax once the memory was there.
+
+## Native-resolution capture (2026-08-22)
+
+The journey above ended at the **30 fps sensor cap at 1280×720** — but capture was *downscaling*
+the IMX296's native 1456×1088 readout to 720p, throwing away ~40% of the sensor's pixels before
+the pipeline ever saw them. On a speed camera those pixels are plate legibility. So the next
+question was the detail/rate trade: **run native resolution and still keep a usable frame rate?**
+
+Native resolution moves the node **back off** the sensor cap — at 1456×1088 the Pi 3 is
+compute-limited again, not sensor-limited, so this is a deliberate detail-for-fps trade, not a
+free win.
+
+**Measured on `speedkam-47790c` (live `/api/status`):**
+
+| Capture | `detect_scale` | Detection frame | Loop fps | Limited by |
+|---|---|---|---|---|
+| 1280×720 | 0.4 | 512×288 | ~29 | sensor cap (30) |
+| 1456×1088 (native) | 0.4 | 582×435 | ~16 | compute |
+| **1456×1088 (native)** | **0.3** | **437×326** | **~23** | compute |
+
+Going native at the old `detect_scale 0.4` dropped the loop to ~16 fps — the 1.72× pixel jump
+(0.92 → 1.58 MP) hits both capture *and* the detection frame. Dropping `detect_scale` to **0.3**
+recovered most of it: detection cost scales with the **square** of the factor, so 0.4 → 0.3 is
+~44% less detection pixel work (582×435 → 437×326), buying **~16 → ~23 fps** while capture and
+saved clips stay full native resolution.
+
+**Why 0.3 is the floor, not lower.** The detector centroid is measured in detection space and
+scaled back up by 1/scale — ×3.33 at 0.3 (vs ×2.5 at 0.4). A 1-px jitter in the coarse frame
+becomes a ~3.3-px wobble in full-res coordinates, feeding the pixels→metres speed calc — so
+speed on fast cars gets slightly noisier and small/distant vehicles (fewer detection pixels)
+lose some reach. 0.3 is about as low as a car-blob detector should go; **raise toward 0.35–0.4
+if distant cars start getting missed** (costs a few fps).
+
+**Stability (4-minute watch, 20 s samples).** `active` every sample, **0 restarts**, loop
+**18.6–22.1 fps (avg ~21)**, temp **flat at ~70.9 °C** (equilibrium, not climbing — below the
+80 °C soft-throttle point), `get_throttled 0x20000` (historical bit only, no active throttle),
+free RAM 334–359 MB steady, no log errors. The heavier native-res load runs a few degrees
+warmer than the 66 °C of the 720p era but is thermally stable with headroom.
+
+**Clip-buffer consequence (computed — verify on a calibrated node).** Saved clips store at full
+capture resolution, so a native frame is **~4.75 MB** vs ~2.76 MB at 720p (1.72×). With
+`max_buffer_mb 256` and `record_fps 0` (full rate), the buffer now holds ~54 native frames; at
+~23 fps stored that's **~2.3 s of pre-roll** (down from ~3.1 s at 720p/30). Still covers a
+fast-car pass (see the clip-length reasoning above), but if it reads short once calibrated,
+raise `max_buffer_mb` toward 320–384.
+
+**Committed:** `cf47f3b` (`camera.width`/`height` → 1456×1088, `detect_scale` → 0.3). The
+`config.py` defaults were separately synced to the live `config.yaml` in `5a10e89`.
 
 ## Lessons
 
