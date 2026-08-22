@@ -31,6 +31,7 @@ from .recorder import CSV_COLUMNS
 
 KMH_PER_MS = 3.6
 MPH_PER_MS = 2.2369362920544
+KMH_PER_MPH = 1.609344
 
 WEBUI_DIR = Path(__file__).parent / "webui"
 
@@ -220,6 +221,20 @@ class Runner:
 
     def set_orientation(self, value):
         return self.speedcam.set_orientation(value)
+
+    def set_speed_limit(self, value, units=None):
+        """Set 'My Road Speed Limit' from a value typed in display units.
+
+        The UI edits in the node's display units (mph or km/h); we convert to
+        km/h -- the internal unit the pipeline compares speeds against -- before
+        storing. A non-positive value is rejected so the limit stays meaningful.
+        """
+        units = (units or self.speedcam.units)
+        v = float(value)
+        if v <= 0:
+            raise ValueError("speed limit must be positive")
+        kmh = v * KMH_PER_MPH if units == "mph" else v
+        return self.speedcam.set_speed_limit_kmh(kmh)
 
     # -------------------------------------------------------------- event data
     def _all_rows(self):
@@ -523,6 +538,22 @@ def create_app(runner: Runner) -> Flask:
             return jsonify({"ok": False,
                             "error": "threshold must be a number"}), 400
         return jsonify({"ok": True, "speedkapture_threshold": applied,
+                        "units": runner.speedcam.units})
+
+    @app.route("/api/speedlimit", methods=["POST"])
+    def speedlimit():
+        # "My Road Speed Limit": the value is in the node's display units unless
+        # the caller says otherwise. Returns the stored km/h so both dashboards
+        # can re-render the limit consistently.
+        data = request.get_json(force=True, silent=True) or {}
+        val = data.get("limit", request.form.get("limit"))
+        units = data.get("units") or request.form.get("units")
+        try:
+            applied = runner.set_speed_limit(val, units)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": "limit must be a positive number"}), 400
+        return jsonify({"ok": True, "speed_limit_kmh": applied,
                         "units": runner.speedcam.units})
 
     @app.route("/api/orientation", methods=["POST"])

@@ -125,4 +125,12 @@ class RemoteControl:
         if orient is not None:
             new = self.camera.set_orientation(orient)
             print(f"[SpeedKam] Remote set orientation -> {new} (rev {rev}).")
+        limit = settings.get("speed_limit_kmh")
+        if limit is not None:
+            try:
+                new = self.camera.set_speed_limit_kmh(float(limit))
+                print(f"[SpeedKam] Remote set speed limit -> {new} km/h "
+                      f"(rev {rev}).")
+            except (TypeError, ValueError):
+                pass
         self.camera.state.set("remote_rev", rev)

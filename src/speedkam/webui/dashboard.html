@@ -157,6 +157,22 @@
       </div>
     </div>
     <div class="card">
+      <h2>My Road Speed Limit</h2>
+      <div class="skap">
+        <div class="row">
+          <span>Limit on this road</span>
+          <input type="number" id="limit-val" min="1" step="1">
+          <span class="u" id="limit-unit">mph</span>
+          <button class="btn sm" onclick="saveLimit()">Save</button>
+          <span class="saved" id="limit-saved">saved ✓</span>
+        </div>
+        <div class="hint"><b>Tip:</b> set this to the posted speed limit for your
+          street. Vehicles above it are flagged as <b>SPEEDING</b> (and counted in
+          "Over limit"); everything else is still logged. This is stored on the
+          node and survives restarts.</div>
+      </div>
+    </div>
+    <div class="card">
       <h2>SpeedKapture</h2>
       <div class="skap">
         <div class="row">
@@ -322,8 +338,12 @@ function refreshStatus(s){
 
   q('#s-total').textContent = s.total_count;
   q('#s-speeders').textContent = s.speeder_count;
-  q('#s-limit').textContent = UNITS==="mph"? Math.round(s.speed_limit_kmh/1.609)+" mph"
-                                           : s.speed_limit_kmh+" km/h";
+  const limitDisp = UNITS==="mph"? Math.round(s.speed_limit_kmh/1.609344)
+                                 : Math.round(s.speed_limit_kmh);
+  q('#s-limit').textContent = limitDisp + (UNITS==="mph"?" mph":" km/h");
+  q('#limit-unit').textContent = unitLbl;
+  const limInput = q('#limit-val');
+  if(document.activeElement !== limInput) limInput.value = limitDisp;
   const ev = s.last_event;
   if(ev){
     q('#l-num').textContent = Math.round(speedVal(ev));
@@ -360,6 +380,20 @@ async function saveSkap(){
   if(r&&r.ok){
     SKAP = r.speedkapture_threshold;
     const sv=q('#skap-saved'); sv.classList.add('show');
+    setTimeout(()=>sv.classList.remove('show'),1500);
+    refreshAll();
+  }
+}
+
+async function saveLimit(){
+  const v = parseFloat(q('#limit-val').value);
+  if(isNaN(v)||v<=0) return;
+  const r = await fetch('/api/speedlimit',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({limit:v, units:UNITS})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){
+    LIMIT_KMH = r.speed_limit_kmh;
+    const sv=q('#limit-saved'); sv.classList.add('show');
     setTimeout(()=>sv.classList.remove('show'),1500);
     refreshAll();
   }

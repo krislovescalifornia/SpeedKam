@@ -187,19 +187,36 @@ if ($sel_node === '' && is_dir($nodes_root)) {
     if ($nodes) { render_node_list($nodes_root, $nodes); exit; }
 }
 
-// --- remote control write (authed): queue a desired SpeedKapture threshold ---
+// --- remote control write (authed): queue desired settings for the node ------
+// Each write MERGES into desired.json (preserving other queued settings) and
+// bumps `rev`; the node adopts the whole set on its next check-in (RemoteControl).
+function queue_desired($DATA_DIR, array $changes) {
+    $dfile = "$DATA_DIR/desired.json";
+    $cur = is_file($dfile) ? json_decode(@file_get_contents($dfile), true) : [];
+    if (!is_array($cur)) { $cur = []; }
+    $cur = array_merge($cur, $changes);
+    $cur['rev']        = (int)($cur['rev'] ?? 0) + 1;
+    $cur['updated_at'] = gmdate('c');
+    @file_put_contents($dfile, json_encode($cur));
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_threshold'])) {
     $val = $_POST['threshold'] ?? '';
     if (is_numeric($val) && (float)$val >= 0) {
-        $dfile = "$DATA_DIR/desired.json";
-        $cur = is_file($dfile) ? json_decode(@file_get_contents($dfile), true) : [];
-        if (!is_array($cur)) { $cur = []; }
-        $desired = [
-            'speedkapture_threshold' => (float)$val,
-            'rev'        => (int)($cur['rev'] ?? 0) + 1,
-            'updated_at' => gmdate('c'),
-        ];
-        @file_put_contents($dfile, json_encode($desired));
+        queue_desired($DATA_DIR, ['speedkapture_threshold' => (float)$val]);
+    }
+    header('Location: ' . self_path()
+        . ($sel_node !== '' ? '?node=' . rawurlencode($sel_node) : ''));
+    exit;
+}
+
+// --- My Road Speed Limit: entered in display units, queued to the node in km/h
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_limit'])) {
+    $val = $_POST['limit'] ?? '';
+    $lu  = ($_POST['limit_units'] ?? 'mph') === 'kmh' ? 'kmh' : 'mph';
+    if (is_numeric($val) && (float)$val > 0) {
+        $kmh = ($lu === 'mph') ? (float)$val * 1.609344 : (float)$val;
+        queue_desired($DATA_DIR, ['speed_limit_kmh' => round($kmh, 3)]);
     }
     header('Location: ' . self_path()
         . ($sel_node !== '' ? '?node=' . rawurlencode($sel_node) : ''));
@@ -269,10 +286,12 @@ $view = array_slice($view, 0, 100);
 
 $desired_thr = $desired['speedkapture_threshold'] ?? null;
 $camera_thr  = $status['speedkapture_threshold'] ?? null;
+$desired_limit_kmh = $desired['speed_limit_kmh'] ?? null;  // queued, not yet applied
 
 render_dashboard(compact(
     'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp',
-    'view', 'filter', 'desired', 'desired_thr', 'camera_thr', 'sel_node'
+    'view', 'filter', 'desired', 'desired_thr', 'camera_thr',
+    'desired_limit_kmh', 'sel_node'
 ));
 
 // ============================ rendering =====================================
@@ -402,6 +421,31 @@ function render_dashboard($d) {
     } else {
         echo 'Camera capturing everything above ' . h($camera_thr ?? '?') . ' '
            . h($units) . '. Below it, passes are still counted &amp; logged.';
+    }
+    echo '</div></form>';
+
+    // My Road Speed Limit -- entered in the node's display units, pushed as km/h.
+    $to_disp = fn($kmh) => ($kmh === null) ? null
+        : (($units === 'mph') ? round((float)$kmh / 1.609344) : round((float)$kmh));
+    $cam_limit_disp = $to_disp($limit_kmh);
+    $des_limit_disp = $to_disp($desired_limit_kmh);
+    $limit_pending = ($desired_limit_kmh !== null) && ($limit_kmh !== null)
+        && (round((float)$desired_limit_kmh, 1) != round((float)$limit_kmh, 1));
+    echo '<form method="post" class="ctl">'
+       . '<input type="hidden" name="limit_units" value="'
+       . ($units === 'mph' ? 'mph' : 'kmh') . '">'
+       . '<div><label for="lim">My Road Speed Limit (' . h($units) . ')</label>'
+       . '<input id="lim" type="number" step="1" min="1" name="limit" '
+       . 'value="' . h($des_limit_disp ?? $cam_limit_disp ?? '') . '"></div>'
+       . '<button type="submit" name="set_limit" value="1">Set on camera</button>'
+       . '<div class="muted" style="font-size:.85rem">';
+    if ($limit_pending) {
+        echo 'Queued ' . h($des_limit_disp) . ' ' . h($units)
+           . ' &middot; camera still at ' . h($cam_limit_disp) . ' ' . h($units)
+           . ' &middot; applies on next check-in.';
+    } else {
+        echo 'Vehicles above ' . h($cam_limit_disp ?? '?') . ' ' . h($units)
+           . ' are flagged as speeding. Slower passes are still counted.';
     }
     echo '</div></form>';
 

@@ -99,16 +99,20 @@ class SpeedCamera:
         )
 
         self.units = cfg["speed"]["display_units"]
-        self.limit_kmh = cfg["speed"]["speed_limit_kmh"]
         self._last_result_text = "Ready"
         self._last_over = False
 
-        # SpeedKapture threshold (display units). Seeded from config, then
-        # overridable live from the dashboard and persisted across restarts.
+        # SpeedKapture threshold (display units) + the road's speed limit (km/h).
+        # Seeded from config, then overridable live from the dashboard (and the
+        # off-site fleet dashboard) and persisted per-node across restarts.
         self.state = RuntimeState(
             cfg["recording"].get("state_file", "captures/runtime.json"),
             {"speedkapture_threshold":
                 float(cfg["recording"].get("speedkapture_threshold", 0) or 0),
+             # "My Road Speed Limit": what counts as over-limit / SPEEDING.
+             # Stored in km/h (the internal unit); the UI edits it in whatever
+             # display_units the node uses and converts on the way in/out.
+             "speed_limit_kmh": float(cfg["speed"]["speed_limit_kmh"]),
              # Camera mounting: selects which measure_band preset is active.
              # Dashboard-toggleable (parallel = side-on, head_on = receding).
              "orientation": speed_mod.normalize_orientation(
@@ -166,6 +170,19 @@ class SpeedCamera:
     def _should_capture(self, display_speed) -> bool:
         thr = self.speedkapture_threshold
         return thr <= 0 or display_speed > thr
+
+    # --------------------------------------------------------- My Road Speed Limit
+    @property
+    def limit_kmh(self) -> float:
+        """The road's speed limit in km/h -- the line for 'over limit'/SPEEDING.
+        Seeded from config, live-editable from either dashboard, and persisted."""
+        return float(self.state.get("speed_limit_kmh") or 0)
+
+    def set_speed_limit_kmh(self, value) -> float:
+        """Update the live speed limit (km/h); persists across restarts."""
+        v = max(0.0, float(value))
+        self.state.set("speed_limit_kmh", v)
+        return v
 
     # --------------------------------------------------------------- orientation
     @property
