@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Not found</title>
+<!--
+  Static 404 page for a pure-infrastructure SpeedKam domain.
+
+  Place this in the docroot (apex) alongside index.html and point
+  `ErrorDocument 404 /404.html` at it (see htaccess-for-apex). It exists so a
+  missing path returns a clean 404 instead of the shared host's default
+  ErrorDocument, which on some cPanel/Bluehost setups is itself misconfigured
+  and answers 500. Plain static HTML, no PHP, so it can never fail that way.
+  Reveals nothing about what the domain hosts.
+-->
+<p style="font:16px system-ui,sans-serif;color:#888;margin:3rem">Not found.</p>

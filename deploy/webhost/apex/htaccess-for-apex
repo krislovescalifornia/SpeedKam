@@ -16,6 +16,22 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 # --- Never list directory contents -------------------------------------------
 Options -Indexes
 
+# --- Clean 404 for missing paths ---------------------------------------------
+# Some shared hosts (seen on Bluehost/cPanel) mishandle non-existent paths:
+# missing .php / directories / extensionless URLs get routed to a handler that
+# answers 500, and the default ErrorDocument is itself misconfigured (500s too).
+# Fix in two parts:
+#   1. Short-circuit any request that isn't an existing file or dir to a 404
+#      BEFORE the PHP handler runs. Existing paths (receiver, dashboard, media
+#      proxy) match -f/-d and are untouched.
+#   2. Serve a static page (404.html, shipped next to index.html) for 404/403 --
+#      plain HTML, no PHP, so it can't fail the way the host's default does.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ - [R=404,L]
+ErrorDocument 404 /404.html
+ErrorDocument 403 /404.html
+
 <IfModule mod_headers.c>
     # Keep every response out of search-engine indexes (belt to robots.txt).
     Header set X-Robots-Tag "noindex, nofollow, noarchive"

@@ -146,16 +146,18 @@ in [`apex/`](apex/) are drop-in templates for the docroot:
 | Template | Rename to | Where |
 |---|---|---|
 | `apex/index.html` | `index.html` | docroot — a dead end that reveals nothing |
+| `apex/404.html` | `404.html` | docroot — static page served for missing paths (see below) |
 | `apex/robots.txt` | `robots.txt` | docroot — keeps the whole domain out of search |
-| `apex/htaccess-for-apex` | `.htaccess` | docroot — forces HTTPS, no listings, noindex + security headers |
+| `apex/htaccess-for-apex` | `.htaccess` | docroot — forces HTTPS, no listings, clean 404s, noindex + security headers |
 
 Resulting layout for a dedicated domain:
 
 ```
 yourdomain/                       docroot (apex)
   index.html                      dead-end page (from apex/index.html)
+  404.html                        static not-found page (from apex/404.html)
   robots.txt                      Disallow: /   (from apex/robots.txt)
-  .htaccess                       HTTPS + noindex + headers (from apex/htaccess-for-apex)
+  .htaccess                       HTTPS + clean 404s + noindex + headers (from apex/htaccess-for-apex)
   <bundle>/                       pick your own folder name (e.g. ingest/)
     speedkam_config.php           secret + dashboard password (gitignored)
     speedkam_receiver.php         camera endpoint
