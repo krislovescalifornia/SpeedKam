@@ -21,6 +21,10 @@ landed — so we don't re-litigate any of it.
 
 **From a perceived 3 fps to the hardware maximum, $0 of new compute.**
 
+Then a follow-on chapter — [Reclaiming clip quality](#reclaiming-clip-quality-2026-08-21-post-cooling) —
+took the *saved clips* from 15 fps back to the full 30 fps once the node was cooled, with **no
+change to the detection frame rate** (the clip-rate/buffer knobs were RAM limits, not fps limits).
+
 ## The board question that started it
 
 The original question was whether to buy a **Pi 4 (2 GB)** or a **Pi 5 (1 GB)**, later
@@ -125,21 +129,31 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
   0.5–1.0 on a Pi 4/5.
 - **`web.stream_fps`** (10) / **`web.stream_max_width`** (640) — preview refresh cap and
   preview downscale width. Preview only; never limits detection.
-- **`recording.record_fps`** (15) — frames/sec actually stored for clips, independent of
-  detection. Trades clip smoothness vs pre-roll length within the RAM cap. `0` = every frame.
-- **`recording.max_buffer_mb`** (128) — hard RAM ceiling for the clip buffer. Raise on a
-  Pi 4/5; keep small on a 1 GB Pi to avoid swap-thrash.
+- **`recording.record_fps`** (30) — frames/sec actually stored for clips, independent of
+  detection. A RAM-vs-smoothness knob, **not an fps knob** — the detection loop runs at the
+  sensor cap regardless of this value. It was **15** through the cooling work (to fit the
+  pre-roll into a 1 GB Pi's RAM), then raised to the full 30 fps sensor rate once the node was
+  cooled and had the headroom — see [Reclaiming clip quality](#reclaiming-clip-quality-2026-08-21-post-cooling).
+  `0` = store every frame.
+- **`recording.max_buffer_mb`** (256) — hard RAM ceiling for the clip buffer. 256 MB (~92
+  720p frames) holds ~3.1 s of pre-roll at 30 fps and fits a cooled 1 GB Pi (~350 MB headroom
+  measured). Was 128 during the cooling work; drop back to 128 if RAM gets tight, raise further
+  on a Pi 4/5.
 - **`camera.fps`** (30) — the sensor frame-duration cap. The detection loop can't exceed this;
   raising it past 30 buys little for a speed camera and adds heat.
 
-### Clip length vs record_fps (1 GB Pi, 128 MB buffer, 720p)
+### Clip length vs record_fps and buffer (720p, ~2.76 MB/frame)
 
-| `record_fps` | Pre-roll held | Look |
-|---|---|---|
-| 30 | ~1.5 s | smoothest, shortest |
-| **15 (default)** | **~3.1 s** | smooth |
-| ~8 | ~5.7 s | slightly steppy |
-| ~4 | ~11 s (full window) | choppy but complete |
+Pre-roll seconds ≈ (`max_buffer_mb` ÷ 2.76) ÷ `record_fps`. The buffer default moved from
+128 MB to 256 MB alongside `record_fps` 15 → 30, so the pre-roll length held at ~3.1 s while
+the motion doubled in smoothness:
+
+| `record_fps` | @128 MB | @256 MB (default) | Look |
+|---|---|---|---|
+| **30 (default)** | ~1.5 s | **~3.1 s** | smoothest |
+| 15 (old default) | ~3.1 s | ~6.1 s | smooth |
+| ~8 | ~5.7 s | ~11 s | slightly steppy |
+| ~4 | ~11 s (full window) | full window | choppy but complete |
 
 **Is 3 s enough?** Yes for the intended use (fast cars only). Time on screen = meters of road
 in frame ÷ speed. A typical side-on view shows ~15–25 m, so a 30 mph car crosses in
@@ -158,6 +172,57 @@ footage of cars you don't care about, at real RAM cost.
   needs to change — the node is already at the sensor cap with thermal headroom.
 - **Headroom remains** (~2.4/4 cores at 66 °C). Going past 30 fps would require raising
   `camera.fps` and revisiting `record_fps`/`max_buffer_mb`; not needed for a speed camera.
+
+## Reclaiming clip quality (2026-08-21, post-cooling)
+
+Once the node was sitting comfortably at the 30 fps sensor cap with thermal headroom, the
+question became the *inverse* of the whole journey: **now that we're fast, what did we give up
+to get here that we can take back?** Specifically — could the saved clips and thumbnails be
+made better without spending the frame rate again?
+
+The audit split every change we'd made into two classes, and the distinction is the whole
+lesson:
+
+- **Detection-path changes** (`detect_scale 0.4`, off-thread encode, parallel capture‖process,
+  preview-render offload) — these *are* the fps. Reversing any of them costs frame rate and
+  reclaims quality nowhere useful. Left alone.
+- **RAM-vs-media changes** (`record_fps 15`, `max_buffer_mb 128`) — these were **never fps
+  optimizations.** They existed only because a 1 GB Pi couldn't hold a usable pre-roll of
+  720p frames once capture started delivering the full 30 fps. The detection loop runs at the
+  sensor cap no matter what they're set to.
+
+So the one thing degrading the clips — 15 fps stored motion — was reversible for the price of
+**RAM, not frame rate.** Two things were checked and found already-optimal and left as-is:
+clip **resolution** (stored frames are full 1280×720; `detect_scale` only shrinks the
+*detection* copy, never the saved frame) and the **snapshot/thumbnail** (already a full-res,
+quality-95 JPEG).
+
+**The change (`a0bb4db`):** `record_fps` 15 → 30 and `max_buffer_mb` 128 → 256 — store clips
+at the full sensor rate, and raise the buffer so the pre-roll stays ~3.1 s at the doubled rate.
+
+**Measured before/after on the node** (edit → commit → push → `speedkam-update.service` →
+re-measure):
+
+| Metric | Before (15 fps / 128 MB) | After (30 fps / 256 MB) |
+|---|---|---|
+| Stored clip rate | 15 fps | **30 fps** (2× smoother motion) |
+| Pre-roll length | ~3.1 s | ~3.1 s (held, by design) |
+| Detection loop fps | 29.6–29.9 (one 25.4 dip) | **28.8–30.2, steady — no loss** |
+| Temp / throttle | 66 °C, `0x20000` (historical) | 64–66 °C, `0x20000` — no active throttle |
+| RAM used / available | 425 / 480 MB | 531 / 374 MB |
+| Swap | 0 MB | 11 MB (stable, not climbing) |
+
+The predicted trade held exactly: **clips doubled in smoothness, detection fps didn't move**,
+and the extra ~100 MB of resident RAM sat comfortably within the cooled node's headroom. The
+11 MB of swap that appeared is Linux evicting cold pages to fund the larger buffer + file
+cache — it settled and stopped, which is eviction, not thrash (thrash climbs tens of MB while
+`available` collapses; `available` held at ~374 MB). If a future feature needs the headroom
+back, `max_buffer_mb 192` reclaims 64 MB while keeping `record_fps 30` (pre-roll ~2.3 s).
+
+**Lesson:** keep the RAM-vs-media knobs mentally separate from the fps knobs. It's easy, after
+a hard-won frame-rate fight, to assume every constraint you added was protecting the frame
+rate — but `record_fps` and `max_buffer_mb` were only ever protecting *memory*, and cost
+nothing to relax once the memory was there.
 
 ## Lessons
 
