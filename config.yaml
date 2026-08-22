@@ -119,8 +119,10 @@ speed:
   # Reject implausible readings (km/h).
   min_speed_kmh: 3
   max_speed_kmh: 200
-  # Speed limit for the road (used only to flag/annotate speeders).
-  speed_limit_kmh: 30
+  # "My Road Speed Limit": flags/annotates speeders (over-limit line). This is
+  # only the shipped default that seeds a newly imaged node; each node's live
+  # value is editable from the dashboard and persists in its runtime state.
+  speed_limit_kmh: 40.2336   # 25 mph
   # Report units shown in overlays/logs: "kmh" or "mph".
   display_units: mph
   # Human labels for the two travel directions (sign of motion along the road).

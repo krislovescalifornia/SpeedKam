@@ -58,7 +58,7 @@ DEFAULTS = {
         "min_samples": 6,
         "min_speed_kmh": 3,
         "max_speed_kmh": 200,
-        "speed_limit_kmh": 30,
+        "speed_limit_kmh": 40.2336,   # 25 mph
         "display_units": "mph",
         "direction_positive": "outbound",
         "direction_negative": "inbound",
