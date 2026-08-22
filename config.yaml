@@ -136,6 +136,18 @@ speed:
   # Both are live-tunable from either dashboard and persist per node. 0 disables.
   max_track_distance_m: 45.0
   min_vehicle_span_m: 1.0
+  #   min_vehicle_aspect: the single most reliable "is it a car?" check on a
+  #     side-on camera -- a car's bounding box is WIDE (width/height ~2-3), a
+  #     walking person's is TALL (~0.3-0.5), a side-on cyclist ~square (~0.9). So
+  #     rejecting boxes narrower than ~1.1 throws out pedestrians, dog-walkers and
+  #     cyclists while keeping cars. Pixel-only (no homography), so it also catches
+  #     a person walking right in front of the lens (which fools the size gate).
+  #     Lower it if you mount HEAD-ON (cars look squarer then). 0 disables.
+  #   dedupe_seconds: count each drive-by ONCE -- a second confirmed pass going
+  #     the same direction within this window is a fragmented re-detection of the
+  #     same vehicle and is rejected. 0 disables.
+  min_vehicle_aspect: 1.1
+  dedupe_seconds: 3.0
   # "My Road Speed Limit": flags/annotates speeders (over-limit line). This is
   # only the shipped default that seeds a newly imaged node; each node's live
   # value is editable from the dashboard and persists in its runtime state.

@@ -216,12 +216,16 @@ class Runner:
             "measure_band": sc._active_band(),
             "max_track_distance_m": sc.max_track_distance_m,
             "min_vehicle_span_m": sc.min_vehicle_span_m,
+            "min_vehicle_aspect": sc.min_vehicle_aspect,
+            "dedupe_seconds": sc.dedupe_seconds,
             "rejected_count": sum(1 for r in self._all_rows()
                                   if self._is_rejected(r)),
         }
 
-    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None):
-        return self.speedcam.set_reject_thresholds(max_distance_m, min_span_m)
+    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
+                              min_aspect=None, dedupe_seconds=None):
+        return self.speedcam.set_reject_thresholds(
+            max_distance_m, min_span_m, min_aspect, dedupe_seconds)
 
     def set_speedkapture(self, value):
         return self.speedcam.set_speedkapture_threshold(value)
@@ -785,7 +789,9 @@ def create_app(runner: Runner) -> Flask:
         try:
             applied = runner.set_reject_thresholds(
                 max_distance_m=data.get("max_track_distance_m"),
-                min_span_m=data.get("min_vehicle_span_m"))
+                min_span_m=data.get("min_vehicle_span_m"),
+                min_aspect=data.get("min_vehicle_aspect"),
+                dedupe_seconds=data.get("dedupe_seconds"))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "values must be numbers"}), 400
         return jsonify({"ok": True, **applied})

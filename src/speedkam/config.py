@@ -68,6 +68,16 @@ DEFAULTS = {
         #     is >~1.3 m; a bike+rider <~0.8 m. 0 disables either gate.
         "max_track_distance_m": 45.0,
         "min_vehicle_span_m": 1.0,
+        # Car-shape gate: minimum bbox aspect ratio (width/height). A side-on
+        # car's box is wide (~2-3); a walking person's is tall (~0.3-0.5), a
+        # side-on cyclist ~square (~0.9). 1.1 keeps cars, rejects people/bikes.
+        # Pixel-only (no homography), so a person close to the lens is caught.
+        # Lower it for a head-on camera (cars look squarer). 0 disables.
+        "min_vehicle_aspect": 1.1,
+        # Count each drive-by ONCE: a second confirmed pass in the same direction
+        # within this many seconds is treated as a fragmented re-detection of the
+        # same vehicle and rejected. 0 disables.
+        "dedupe_seconds": 3.0,
         "speed_limit_kmh": 40.2336,   # 25 mph
         "display_units": "mph",
         "direction_positive": "Westbound",

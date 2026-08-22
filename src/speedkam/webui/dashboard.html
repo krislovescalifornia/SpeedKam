@@ -287,20 +287,29 @@
         </div>
       </div>
       <div class="card">
-        <h2>False-positive filter</h2>
+        <h2>Only count cars</h2>
         <div class="skap">
+          <div class="row">
+            <span>Min car shape (w:h)</span>
+            <input type="number" id="rej-aspect" min="0" step="0.1" title="A car's box is wider than tall (~2-3); a person's is taller (~0.4). Below this = not a car.">
+            <span>Dedupe window</span>
+            <input type="number" id="rej-dedupe" min="0" step="0.5">
+            <span class="u">s</span>
+          </div>
           <div class="row">
             <span>Max travel</span>
             <input type="number" id="rej-dist" min="0" step="1">
             <span class="u">m</span>
-            <span>Min vehicle size</span>
+            <span>Min size</span>
             <input type="number" id="rej-span" min="0" step="0.1">
             <span class="u">m</span>
             <button class="btn sm" onclick="saveReject()">Save</button>
             <span class="saved" id="rej-saved">saved ✓</span>
           </div>
-          <div class="hint">Auto-rejects phantom tracks (traveled &gt; max) and cyclists/pedestrians
-            (footprint &lt; min size). <b id="rej-count">0</b> readings auto-rejected so far — see the bin below.</div>
+          <div class="hint"><b>Car shape</b> rejects pedestrians, dog-walkers &amp; cyclists (their box is
+            taller than a car's). <b>Dedupe</b> counts each drive-by once. <b>Max travel</b> kills phantom
+            tracks; <b>Min size</b> drops tiny objects. <b id="rej-count">0</b> readings auto-rejected so far
+            — see the bin below.</div>
         </div>
       </div>
     </div>
@@ -496,9 +505,11 @@ function refreshStatus(s){
   const limI=q('#limit-val');if(document.activeElement!==limI)limI.value=limitDisp;
 
   // reject config
-  const rd=q('#rej-dist'),rs=q('#rej-span');
+  const rd=q('#rej-dist'),rs=q('#rej-span'),ra=q('#rej-aspect'),rdd=q('#rej-dedupe');
   if(document.activeElement!==rd)rd.value=s.max_track_distance_m??"";
   if(document.activeElement!==rs)rs.value=s.min_vehicle_span_m??"";
+  if(document.activeElement!==ra)ra.value=s.min_vehicle_aspect??"";
+  if(document.activeElement!==rdd)rdd.value=s.dedupe_seconds??"";
   q('#rej-count').textContent=s.rejected_count||0;
   q('#rej-cnt').textContent=s.rejected_count||0;
 
@@ -760,9 +771,11 @@ async function saveOrient(v){if(v===ORIENT)return;
   const r=await fetch('/api/orientation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({orientation:v})}).then(r=>r.json()).catch(()=>null);
   if(r&&r.ok){ORIENT=r.orientation;flash('orient-saved');refreshAll();}}
 async function saveReject(){
-  const d=parseFloat(q('#rej-dist').value),s=parseFloat(q('#rej-span').value);
+  const d=parseFloat(q('#rej-dist').value),s=parseFloat(q('#rej-span').value),
+        a=parseFloat(q('#rej-aspect').value),dd=parseFloat(q('#rej-dedupe').value);
   const r=await fetch('/api/rejectconfig',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({max_track_distance_m:isNaN(d)?null:d,min_vehicle_span_m:isNaN(s)?null:s})}).then(r=>r.json()).catch(()=>null);
+    body:JSON.stringify({max_track_distance_m:isNaN(d)?null:d,min_vehicle_span_m:isNaN(s)?null:s,
+      min_vehicle_aspect:isNaN(a)?null:a,dedupe_seconds:isNaN(dd)?null:dd})}).then(r=>r.json()).catch(()=>null);
   if(r&&r.ok){flash('rej-saved');refreshAll();}}
 function flash(id){const sv=q('#'+id);sv.classList.add('show');setTimeout(()=>sv.classList.remove('show'),1500);}
 

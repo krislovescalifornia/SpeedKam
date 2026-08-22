@@ -129,6 +129,12 @@ class SpeedCamera:
                  float(cfg["speed"].get("max_track_distance_m", 0) or 0),
              "min_vehicle_span_m":
                  float(cfg["speed"].get("min_vehicle_span_m", 0) or 0),
+             # Car-shape gate: min bbox width/height (side-on cars are wide,
+             # pedestrians/cyclists are not). And the count-once dedupe window.
+             "min_vehicle_aspect":
+                 float(cfg["speed"].get("min_vehicle_aspect", 0) or 0),
+             "dedupe_seconds":
+                 float(cfg["speed"].get("dedupe_seconds", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
              "remote_rev": None},
         )
@@ -150,6 +156,9 @@ class SpeedCamera:
 
         # --- live stats, read by the web dashboard -------------------------
         self.last_event = None        # dict describing the most recent reading
+        # Last COUNTED (real) pass, for the count-once-per-drive-by dedupe:
+        # {"t": monotonic, "direction": str, "speed_kmh": float}.
+        self._last_count = None
         self.total_count = 0
         self.speeder_count = 0
         self.current_fps = 0.0
@@ -209,14 +218,64 @@ class SpeedCamera:
         object is a cyclist/pedestrian and auto-rejected. 0 disables the gate."""
         return float(self.state.get("min_vehicle_span_m") or 0)
 
-    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None) -> dict:
+    @property
+    def min_vehicle_aspect(self) -> float:
+        """Min bbox aspect ratio (width/height) for a real vehicle. On a side-on
+        camera a car's box is WIDE (w/h ~2-3) while a walking person's is TALL
+        (~0.3-0.5) and a side-on cyclist ~square (~0.9) -- so this is the single
+        most reliable 'is it car-shaped?' check, and (unlike the world-size gate)
+        it needs no homography, so a person close to the lens can't fool it.
+        0 disables the gate."""
+        return float(self.state.get("min_vehicle_aspect") or 0)
+
+    @property
+    def dedupe_seconds(self) -> float:
+        """Count a drive-by ONCE: a second confirmed pass in the SAME direction
+        finishing within this many seconds of the last counted one is treated as
+        the same vehicle (a fragmented track) and rejected. 0 disables it."""
+        return float(self.state.get("dedupe_seconds") or 0)
+
+    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
+                              min_aspect=None, dedupe_seconds=None) -> dict:
         """Live-tune the auto-reject envelope; persists across restarts."""
         if max_distance_m is not None:
             self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
         if min_span_m is not None:
             self.state.set("min_vehicle_span_m", max(0.0, float(min_span_m)))
+        if min_aspect is not None:
+            self.state.set("min_vehicle_aspect", max(0.0, float(min_aspect)))
+        if dedupe_seconds is not None:
+            self.state.set("dedupe_seconds", max(0.0, float(dedupe_seconds)))
         return {"max_track_distance_m": self.max_track_distance_m,
-                "min_vehicle_span_m": self.min_vehicle_span_m}
+                "min_vehicle_span_m": self.min_vehicle_span_m,
+                "min_vehicle_aspect": self.min_vehicle_aspect,
+                "dedupe_seconds": self.dedupe_seconds}
+
+    @staticmethod
+    def _aspect_ratio(track):
+        """Median bbox aspect ratio (width/height) across the track's samples,
+        or None. The median shrugs off the odd bad frame."""
+        ratios = [s.bbox[2] / s.bbox[3]
+                  for s in track.samples
+                  if len(s.bbox) == 4 and s.bbox[2] > 0 and s.bbox[3] > 0]
+        if not ratios:
+            return None
+        return float(np.median(ratios))
+
+    def _is_duplicate(self, result):
+        """Is this pass a fragmented re-detection of the vehicle we just counted?
+        Returns a reason string if so (same direction, within dedupe_seconds),
+        else None. Keeps one drive-by from being counted twice when a track
+        breaks and re-acquires."""
+        window = self.dedupe_seconds
+        last = self._last_count
+        if window <= 0 or last is None:
+            return None
+        gap = time.monotonic() - last["t"]
+        if 0 <= gap <= window and result.direction == last["direction"]:
+            return (f"duplicate — same {result.direction} vehicle counted "
+                    f"{gap:.1f}s ago (one drive-by)")
+        return None
 
     def _vehicle_span_m(self, track):
         """Approx real-world ground footprint of the tracked object (meters).
@@ -252,10 +311,19 @@ class SpeedCamera:
             return None
         return float(np.percentile(spans, 75))
 
-    def _classify_reading(self, result, span_m):
-        """Auto-reject physically-implausible readings so junk never pollutes the
-        stats. Returns (status, reason): "ok" for a real pass, else "rejected"
-        with a human explanation (shown in the dashboards' auto-reject bin)."""
+    def _classify_reading(self, result, span_m, aspect):
+        """Auto-reject anything that isn't a car so junk never pollutes the stats.
+        Returns (status, reason): "ok" for a real vehicle, else "rejected" with a
+        human explanation (shown in the dashboards' auto-reject bin)."""
+        # Shape first: a car is wider than it is tall on a side-on camera; a
+        # pedestrian/dog-walker/cyclist is not. Pixel-only, so a person close to
+        # the lens (which fools the world-size gate) is still caught.
+        min_aspect = self.min_vehicle_aspect
+        if min_aspect > 0 and aspect is not None and aspect < min_aspect:
+            kind = ("a person/pedestrian" if aspect < 0.8
+                    else "a cyclist or pedestrian")
+            return ("rejected",
+                    f"shape {aspect:.1f}w:1h — taller than a car, likely {kind}")
         max_dist = self.max_track_distance_m
         if max_dist > 0 and result.distance_m > max_dist:
             return ("rejected",
@@ -639,11 +707,19 @@ class SpeedCamera:
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
 
-        # False-positive gate: is this a real vehicle, or a phantom/cyclist/
-        # pedestrian? A rejected reading is logged (for the review bin) but never
-        # counted, never flagged as a speeder, and never films a clip.
+        # False-positive gate: is this a real CAR, or a phantom/cyclist/
+        # pedestrian/dog? A rejected reading is logged (for the review bin) but
+        # never counted, never flagged as a speeder, and never films a clip.
         span_m = self._vehicle_span_m(track)
-        status, reason = self._classify_reading(result, span_m)
+        aspect = self._aspect_ratio(track)
+        status, reason = self._classify_reading(result, span_m, aspect)
+        # Count-once-per-drive-by: a real pass that repeats the last counted one
+        # (same direction, within dedupe_seconds) is a fragmented re-detection of
+        # the same vehicle -> drop it as a duplicate.
+        if status == "ok":
+            dup = self._is_duplicate(result)
+            if dup:
+                status, reason = "rejected", dup
         rejected = status == "rejected"
         # A rejected reading can never be a "captured speeder"; keep a snapshot
         # only when we'd have kept one anyway, so the bin has something to show.
@@ -663,9 +739,10 @@ class SpeedCamera:
         tag = "XX" if rejected else ("!!" if over else "  ")
         extra = self._attr_label(attrs)
         span_txt = f", span={span_m:.1f}m" if span_m is not None else ""
+        aspect_txt = f", aspect={aspect:.2f}" if aspect is not None else ""
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
-              f"({result.direction}, {result.distance_m:.1f} m{span_txt}, "
-              f"conf={result.confidence}){extra}"
+              f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
+              f"{aspect_txt}, conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))
 
@@ -698,6 +775,11 @@ class SpeedCamera:
             self.total_count += 1
             if over:
                 self.speeder_count += 1
+            # Remember this counted pass so the next fragmented re-detection of
+            # the same vehicle can be deduped (count-once-per-drive-by).
+            self._last_count = {"t": time.monotonic(),
+                                "direction": result.direction,
+                                "speed_kmh": result.speed_kmh}
 
         event = {
             "track_id": track.id,
