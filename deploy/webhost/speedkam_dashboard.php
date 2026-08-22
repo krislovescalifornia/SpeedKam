@@ -213,6 +213,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_limit'])) {
     redirect_self($sel_node);
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_orientation'])) {
+    $o = (($_POST['orientation'] ?? '') === 'head_on') ? 'head_on' : 'parallel';
+    queue_desired($DATA_DIR, ['orientation' => $o]);
+    redirect_self($sel_node);
+}
+
+// --- "only count cars" car-filter thresholds (applied by the node on sync) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_reject'])) {
+    $changes = [];
+    foreach (['max_track_distance_m', 'min_vehicle_span_m',
+              'min_vehicle_aspect', 'dedupe_seconds'] as $k) {
+        $v = $_POST[$k] ?? '';
+        if (is_numeric($v) && (float)$v >= 0) { $changes[$k] = (float)$v; }
+    }
+    if ($changes) { queue_desired($DATA_DIR, $changes); }
+    redirect_self($sel_node);
+}
+
 // --- manual reject / restore (rewrites the mirrored events.csv status) -------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_status'])) {
     $key    = (string)($_POST['event_key'] ?? '');
@@ -462,6 +480,20 @@ $desired_thr = $desired['speedkapture_threshold'] ?? null;
 $camera_thr  = $status['speedkapture_threshold'] ?? null;
 $desired_limit_kmh = $desired['speed_limit_kmh'] ?? null;
 
+// recent clips (most-recent first, real passes that recorded a clip) for the grid
+$recent_clips = array_slice(array_values(array_filter(
+    array_reverse($rows), fn($r) => trim($r['clip'] ?? '') !== '')), 0, 12);
+// newest snapshot for the "latest snapshot" tile: the camera's last_event wins
+// (freshest, even sub-threshold), else the newest mirrored row with a snapshot.
+$latest_snap = trim($status['last_event']['snapshot'] ?? '');
+$latest_snap_time = $status['last_event']['time'] ?? '';
+if ($latest_snap === '') {
+    foreach (array_reverse($rows) as $r) {
+        $s = trim($r['snapshot'] ?? '');
+        if ($s !== '') { $latest_snap = $s; $latest_snap_time = $r['wall_time'] ?? ''; break; }
+    }
+}
+
 // list of colours seen (for the report dropdown)
 $all_colors = [];
 foreach ($rows as $r) { $co = trim($r['color'] ?? ''); if ($co !== '') $all_colors[$co] = true; }
@@ -472,7 +504,8 @@ render_dashboard(compact(
     'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp', 'dir',
     'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges', 'top', 'view',
     'filter', 'desired', 'desired_thr', 'camera_thr', 'desired_limit_kmh',
-    'sel_node', 'rejected', 'rep', 'all_colors', 'all_dirs'
+    'sel_node', 'rejected', 'rep', 'all_colors', 'all_dirs',
+    'recent_clips', 'latest_snap', 'latest_snap_time'
 ));
 
 // ============================ rendering =====================================
@@ -596,6 +629,21 @@ function page_head($title) {
        . '.rej .rsn{color:var(--warn);font-size:.72rem;line-height:1.35}'
        . 'details>summary{cursor:pointer;color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;list-style:none}'
        . 'details>summary::-webkit-details-marker{display:none}'
+       // latest-snapshot "live" tile
+       . '.snap{margin:1rem 0;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.35)}'
+       . '.snap img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover;background:#000;cursor:pointer}'
+       . '.snap .cap{padding:.5rem .8rem;font-size:.78rem;color:var(--muted);display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}'
+       // recent-clips grid + inline player
+       . '.clipgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}'
+       . '.clip{background:var(--card2);border:1px solid var(--line);border-radius:10px;overflow:hidden}'
+       . '.clip .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;display:block;cursor:pointer}'
+       . '.clip .meta{padding:.5rem .6rem;display:flex;align-items:center;gap:.5rem;font-size:.85rem}'
+       . '.clip .meta .sp{font-weight:700}.clip .meta .sp.over{color:var(--bad)}'
+       . '.clip .meta .t{margin-left:auto;font-size:.72rem;color:var(--muted)}'
+       . '#vidModal{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;padding:1rem;z-index:50}'
+       . '#vidModal.show{display:flex}'
+       . '#vidModal video{max-width:100%;max-height:85vh;border-radius:10px;background:#000}'
+       . '#vidModal .x{position:absolute;top:1rem;right:1.2rem;font-size:2rem;line-height:1;color:#fff;cursor:pointer;background:none;border:0}'
        . '</style></head><body><div class="wrap">';
 }
 function page_foot() { echo '</div></body></html>'; }
@@ -696,6 +744,19 @@ function render_dashboard($d) {
        . ' &middot; capturing above ' . h($camera_thr ?? '?') . ' ' . h($units)
        . ' &middot; mount ' . h($orient) . ' &middot; ' . $calib_txt . '</div>';
 
+    $mnq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
+
+    // latest snapshot -- the off-site stand-in for the on-Pi live MJPEG view,
+    // which can't cross home NAT. Shows the newest capture; refreshes on reload.
+    if (!empty($latest_snap)) {
+        $ssrc = '?media=' . rawurlencode($latest_snap) . $mnq;
+        echo '<div class="snap"><a href="' . h($ssrc) . '" target="_blank">'
+           . '<img src="' . h($ssrc) . '" alt="latest snapshot" loading="lazy"></a>'
+           . '<div class="cap">Latest snapshot'
+           . ($latest_snap_time ? ' &middot; ' . h(str_replace('T', ' ', substr($latest_snap_time, 0, 16))) : '')
+           . ' &middot; <span>live video isn\'t available off-site &mdash; newest capture shown</span></div></div>';
+    }
+
     // latest reading
     $ev = $status['last_event'] ?? null;
     if (is_array($ev)) {
@@ -732,6 +793,27 @@ function render_dashboard($d) {
     // control panels
     render_controls($d);
 
+    // recent clips grid (inline player)
+    if (!empty($recent_clips)) {
+        echo '<h2 class="sec">Recent clips</h2><div class="clipgrid">';
+        foreach ($recent_clips as $r) {
+            $over  = is_over($r, $limit_kmh);
+            $snap  = trim($r['snapshot'] ?? '');
+            $clip  = trim($r['clip'] ?? '');
+            $thumb = $snap ? '?media=' . rawurlencode($snap) . $nq : '';
+            $vsrc  = '?media=' . rawurlencode($clip) . $nq;
+            echo '<div class="clip">'
+               . ($thumb
+                    ? '<img class="thumb" src="' . h($thumb) . '" loading="lazy" onclick="skPlay(\'' . h($vsrc) . '\')">'
+                    : '<div class="thumb" onclick="skPlay(\'' . h($vsrc) . '\')"></div>')
+               . '<div class="meta"><span class="sp' . ($over ? ' over' : '') . '">'
+               . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+               . '<span class="t">' . h(substr(str_replace('T', ' ', $r['wall_time'] ?? ''), 11, 5)) . '</span>'
+               . '</div></div>';
+        }
+        echo '</div>';
+    }
+
     // top 10
     if ($top) {
         echo '<h2 class="sec">Top 10 speeders</h2><ol class="toplist">';
@@ -755,7 +837,38 @@ function render_dashboard($d) {
     // -------- REJECTED BIN --------
     render_reject_bin($rejected, $units, $nq);
 
+    // inline video player (clips grid) + close handlers
+    echo '<div id="vidModal"><button class="x" onclick="skClose()">&times;</button>'
+       . '<video id="vidPlayer" controls playsinline></video></div>';
+    echo '<script>'
+       . 'function skPlay(s){var m=document.getElementById("vidModal"),v=document.getElementById("vidPlayer");'
+       . 'v.src=s;m.classList.add("show");var p=v.play();if(p&&p.catch)p.catch(function(){});}'
+       . 'function skClose(){var m=document.getElementById("vidModal"),v=document.getElementById("vidPlayer");'
+       . 'v.pause();v.removeAttribute("src");v.load();m.classList.remove("show");}'
+       . 'document.getElementById("vidModal").addEventListener("click",function(e){if(e.target.id==="vidModal")skClose();});'
+       . 'document.addEventListener("keydown",function(e){if(e.key==="Escape")skClose();});'
+       . '</script>';
+
+    echo auto_refresh_js();
     page_foot();
+}
+
+// Gentle self-refresh: reload every 30s so the page stays current (like the
+// on-Pi live dashboard), but never while the operator is typing in a control,
+// watching a clip, or has the tab in the background. Scroll position is
+// restored only across an auto-reload, so it feels seamless.
+function auto_refresh_js() {
+    return '<script>(function(){'
+      . 'try{if(sessionStorage.getItem("skAR")==="1"){var y=sessionStorage.getItem("skY");'
+      . 'if(y!==null)window.scrollTo(0,parseInt(y));sessionStorage.removeItem("skAR");}}catch(e){}'
+      . 'function busy(){var a=document.activeElement;'
+      . 'if(a&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))return true;'
+      . 'if(document.hidden)return true;'
+      . 'var m=document.getElementById("vidModal");if(m&&m.classList.contains("show"))return true;'
+      . 'return false;}'
+      . 'setInterval(function(){if(busy())return;'
+      . 'try{sessionStorage.setItem("skY",String(window.scrollY));sessionStorage.setItem("skAR","1");}catch(e){}'
+      . 'location.reload();},30000);})();</script>';
 }
 
 function render_analytics($d) {
@@ -920,6 +1033,57 @@ function render_controls($d) {
     if ($limit_pending) echo 'Queued ' . h($des_limit_disp) . ' ' . h($units) . ' &middot; camera still at ' . h($cam_limit_disp) . ' ' . h($units) . '.';
     else echo 'Vehicles above ' . h($cam_limit_disp ?? '?') . ' ' . h($units) . ' are flagged as speeding.';
     echo '</div></form>';
+
+    // --- camera orientation -------------------------------------------------
+    $cam_orient = (($status['orientation'] ?? '') === 'head_on') ? 'head_on' : 'parallel';
+    $des_orient = $desired['orientation'] ?? null;
+    $eff_orient = $des_orient ?? $cam_orient;
+    $orient_pending = ($des_orient !== null) && ($des_orient !== $cam_orient);
+    $oname = fn($o) => ($o === 'head_on') ? 'head-on' : 'parallel';
+    echo '<form method="post" class="ctl">'
+       . (!empty($sel_node) ? '<input type="hidden" name="node" value="' . h($sel_node) . '">' : '')
+       . '<div><label for="ori">Camera orientation</label>'
+       . '<select id="ori" name="orientation">'
+       . '<option value="parallel"' . ($eff_orient === 'parallel' ? ' selected' : '') . '>Parallel (beside road)</option>'
+       . '<option value="head_on"' . ($eff_orient === 'head_on' ? ' selected' : '') . '>Head-on (facing traffic)</option>'
+       . '</select></div>'
+       . '<button type="submit" name="set_orientation" value="1">Set on camera</button>'
+       . '<div class="muted" style="font-size:.85rem">';
+    if ($orient_pending) echo 'Queued ' . h($oname($des_orient)) . ' &middot; camera still ' . h($oname($cam_orient)) . ' &middot; applies on next check-in.';
+    else echo 'Mounted ' . h($oname($cam_orient)) . '. Parallel: beside the road. Head-on: facing traffic.';
+    echo '</div></form>';
+
+    // --- "only count cars" car-filter thresholds ----------------------------
+    $rk = [
+        'min_vehicle_aspect'   => ['Min car shape (w:h)', '0.1'],
+        'dedupe_seconds'       => ['Dedupe window (s)', '0.5'],
+        'max_track_distance_m' => ['Max travel (m)', '1'],
+        'min_vehicle_span_m'   => ['Min size (m)', '0.1'],
+    ];
+    $rej_pending = false;
+    foreach (array_keys($rk) as $k) {
+        if (isset($desired[$k]) && (!isset($status[$k])
+            || round((float)$desired[$k], 3) != round((float)$status[$k], 3))) {
+            $rej_pending = true;
+        }
+    }
+    echo '<form method="post" class="ctl" style="flex-direction:column;align-items:stretch">'
+       . (!empty($sel_node) ? '<input type="hidden" name="node" value="' . h($sel_node) . '">' : '')
+       . '<label style="margin-bottom:.3rem">Only count cars &mdash; reject cyclists, pedestrians &amp; phantom tracks</label>'
+       . '<div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:end">';
+    foreach ($rk as $k => [$lbl, $step]) {
+        $val = $desired[$k] ?? ($status[$k] ?? null);
+        echo '<div><label style="font-size:.7rem">' . h($lbl) . '</label>'
+           . '<input type="number" step="' . $step . '" min="0" name="' . $k . '" value="'
+           . h($val !== null ? rtrim(rtrim(number_format((float)$val, 2, '.', ''), '0'), '.') : '')
+           . '" style="width:8rem"></div>';
+    }
+    echo '<button type="submit" name="set_reject" value="1">Set on camera</button></div>'
+       . '<div class="muted" style="font-size:.8rem;margin-top:.4rem">'
+       . ($rej_pending
+            ? 'Changes queued &middot; the camera applies them on its next check-in.'
+            : 'Car shape rejects taller-than-wide boxes (people &amp; bikes); dedupe counts each drive-by once; max travel kills phantom tracks; min size drops tiny objects. Auto-rejected readings land in the bin below.')
+       . '</div></form>';
 }
 
 // Shared event table. $with_reject adds a "reject" action column.
@@ -1088,5 +1252,6 @@ function render_fleet($nodes_root, $nodes) {
            . '<td><a href="' . h($href) . '">open &rsaquo;</a></td></tr>';
     }
     echo '</tbody></table>';
+    echo auto_refresh_js();
     page_foot();
 }
