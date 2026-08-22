@@ -107,6 +107,11 @@ class Recorder:
         # for cheap deque ops -- never during the slow video encode, which works
         # off a snapshot taken under the lock.
         self._lock = threading.Lock()
+        # Separate lock for the event CSV: the pipeline thread appends rows
+        # (log_row) while the Flask thread may rewrite the file to flip a row's
+        # status (set_status). Without this, a reject landing mid-append could
+        # drop a just-logged pass. Held only for the quick file ops.
+        self._csv_lock = threading.Lock()
         self._migrate_or_init_csv()
 
     # ------------------------------------------------------------------- CSV
@@ -171,8 +176,9 @@ class Recorder:
             "clip": clip_name or "",
             "snapshot": snapshot_name or "",
         }
-        with self.csv_path.open("a", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=CSV_COLUMNS).writerow(row)
+        with self._csv_lock:
+            with self.csv_path.open("a", newline="", encoding="utf-8") as f:
+                csv.DictWriter(f, fieldnames=CSV_COLUMNS).writerow(row)
 
     def set_status(self, key, status, review_reason=""):
         """Rewrite the ``status``/``review_reason`` of a logged row in place.
@@ -185,23 +191,24 @@ class Recorder:
         """
         if not self.csv_path.exists():
             return 0
-        with self.csv_path.open(newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-        updated = 0
-        for r in rows:
-            if _row_key_matches(r, key):
-                r["status"] = status
-                r["review_reason"] = review_reason or ""
-                updated += 1
-        if updated:
-            tmp = self.csv_path.with_suffix(".csv.tmp")
-            with tmp.open("w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=CSV_COLUMNS,
-                                   extrasaction="ignore")
-                w.writeheader()
-                for r in rows:
-                    w.writerow({c: r.get(c, "") for c in CSV_COLUMNS})
-            tmp.replace(self.csv_path)
+        with self._csv_lock:
+            with self.csv_path.open(newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            updated = 0
+            for r in rows:
+                if _row_key_matches(r, key):
+                    r["status"] = status
+                    r["review_reason"] = review_reason or ""
+                    updated += 1
+            if updated:
+                tmp = self.csv_path.with_suffix(".csv.tmp")
+                with tmp.open("w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=CSV_COLUMNS,
+                                       extrasaction="ignore")
+                    w.writeheader()
+                    for r in rows:
+                        w.writerow({c: r.get(c, "") for c in CSV_COLUMNS})
+                tmp.replace(self.csv_path)
         return updated
 
     # ---------------------------------------------------------------- buffer
