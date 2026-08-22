@@ -559,7 +559,14 @@ function renderVBars(elId,axisId,items,labelFn){
 let SUMMARY=null;
 async function refreshSummary(){
   SUMMARY=await fetch('/api/summary').then(r=>r.json()).catch(()=>null);
+  if(SUMMARY&&SUMMARY.all)populateDirOptions(SUMMARY.all.directions);
   renderPeriod();
+}
+function populateDirOptions(dirs){
+  const sel=q('#rb-dir');if(sel.dataset.filled)return;
+  const names=Object.keys(dirs||{}).sort();if(!names.length)return;
+  sel.dataset.filled="1";
+  names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
 }
 function renderPeriod(){
   if(!SUMMARY)return;
