@@ -48,3 +48,29 @@ Commit only the intended file(s), not the whole dirty working tree.
 The node serves settings APIs on port 8080, e.g.
 `curl -X POST http://speedkam-47790c.local:8080/api/speedlimit -d '{"limit":25}'`
 (also `/api/speedkapture`, `/api/orientation`). Handy for quick setting changes/verification.
+
+## The off-site webhost (speedkam.com) — you CAN deploy to it now
+
+The PHP receiver + dashboard live on Bluehost (cPanel), separate from the Pi.
+Deploy over SFTP with the `speedkam-web` SSH alias (key auth; **SFTP only — the
+account has no interactive shell**, so `ssh speedkam-web '<cmd>'` fails; use
+`sftp -b - speedkam-web` with put/get/ls):
+
+- Host: `50.6.155.107` (Bluehost shared IP), user `qfrwnvmy`, port 22, key `~/.ssh/id_ed25519`.
+- **Live bundle is `/fleet/`**, NOT `/node-7fq2k9/` — the node posts to
+  `https://speedkam.com/fleet/speedkam_receiver.php` and its backups land in
+  `.../fleet/speedkam_data/nodes/<cpu-serial>/`. `node-7fq2k9/` is a dormant
+  legacy bundle (no data). Don't be misled by an old `node-7fq2k9` URL.
+- Docroot on the server: `public_html/website_489e3d33/` (a Bluehost "website
+  container"). So the dashboard is
+  `public_html/website_489e3d33/fleet/speedkam_dashboard.php`.
+
+Deploy the dashboard (back up first, then verify byte-identical + HTTP 200):
+```bash
+printf 'put deploy/webhost/speedkam_dashboard.php public_html/website_489e3d33/fleet/speedkam_dashboard.php\n' | sftp -b - speedkam-web
+```
+No local PHP; lint with `php -l` by installing `php-cli` on the node briefly
+(`ssh speedkam 'sudo apt-get install -y php-cli && php -l /tmp/x.php'`) then purge it.
+`speedkam_config.php` (secret + dashboard password) already lives on the server —
+never overwrite it. Data flows off-site already, so dashboard-only changes need
+no node change.
