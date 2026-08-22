@@ -9,8 +9,13 @@
 # Apache 2.4+ on typical shared/cPanel hosting.
 
 # --- Force HTTPS (so the secret, password, and footage are always encrypted) --
+# Two conditions, not one: on hosts where TLS is terminated by a front proxy,
+# %{HTTPS} can read "off" even for an HTTPS request -- redirecting on that alone
+# would loop forever. Also honour X-Forwarded-Proto so a proxied HTTPS request
+# is recognised as already-secure and left alone.
 RewriteEngine On
-RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTPS} off
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
 # --- Never list directory contents -------------------------------------------
