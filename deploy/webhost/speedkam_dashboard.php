@@ -175,7 +175,7 @@ if ($sel_node === '' && is_dir($nodes_root)) {
         if ($e === '.' || $e === '..' || !is_dir("$nodes_root/$e")) continue;
         $nodes[] = $e;
     }
-    if ($nodes) { render_node_list($nodes_root, $nodes); exit; }
+    if ($nodes) { render_fleet($nodes_root, $nodes); exit; }
 }
 
 // --- remote control write (authed) ------------------------------------------
@@ -297,8 +297,12 @@ function set_event_status($csv, $key, $status, $reason) {
 }
 
 function is_over($r, $limit_kmh) {
-    return $limit_kmh !== null && is_numeric($r['speed_kmh'] ?? '')
-        && (float)$r['speed_kmh'] > $limit_kmh;
+    // Fleet rows carry their own node's limit in _limit_kmh (each street can
+    // have a different limit); single-node rows fall back to the passed limit.
+    $lim = (isset($r['_limit_kmh']) && is_numeric($r['_limit_kmh']))
+        ? (float)$r['_limit_kmh'] : $limit_kmh;
+    return $lim !== null && is_numeric($r['speed_kmh'] ?? '')
+        && (float)$r['speed_kmh'] > $lim;
 }
 function disp_speed_val($r, $units) {
     $v = ($units === 'mph') ? ($r['speed_mph'] ?? '') : ($r['speed_kmh'] ?? '');
@@ -314,58 +318,72 @@ $rows     = array_values(array_filter($all_rows, fn($r) => !is_rejected($r)));
 $rejected = array_values(array_filter($all_rows, fn($r) => is_rejected($r)));
 
 // --- aggregate counts + direction breakdown + averages ----------------------
-$today        = date('Y-m-d');
-$week_start   = date('Y-m-d', strtotime('monday this week'));
-$month_prefix = date('Y-m');
-$c   = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => count($rows)];
-$sp  = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => 0];
-$dir = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
-$col = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
-$spd = ['today' => [], 'week' => [], 'month' => [], 'all' => []];  // km/h lists
-$spd_dir = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
-foreach ($rows as $r) {
-    $d    = substr($r['wall_time'] ?? '', 0, 10);
-    $over = is_over($r, $limit_kmh);
-    $kmh  = is_numeric($r['speed_kmh'] ?? '') ? (float)$r['speed_kmh'] : null;
-    $dr   = trim($r['direction'] ?? '');
-    $co   = trim($r['color'] ?? '');
-    if ($over) $sp['total']++;
-    $tally_periods = ['all'];
-    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
-        if ($d === $today) $tally_periods[] = 'today';
-        if ($d >= $week_start) $tally_periods[] = 'week';
-        if (substr($d, 0, 7) === $month_prefix) $tally_periods[] = 'month';
-    }
-    foreach ($tally_periods as $p) {
-        if ($p !== 'all') { $c[$p]++; if ($over) $sp[$p]++; }
-        if ($dr !== '') $dir[$p][$dr] = ($dir[$p][$dr] ?? 0) + 1;
-        if ($co !== '') $col[$p][$co] = ($col[$p][$co] ?? 0) + 1;
-        if ($kmh !== null) {
-            $spd[$p][] = $kmh;
-            if ($dr !== '') $spd_dir[$p][$dr][] = $kmh;
-        }
-    }
-}
+// Shared by the single-node view and the fleet overview (which merges every
+// node's rows). Returns period counts/over-limit, direction + colour tallies,
+// per-period speed lists, and the day-of-week / hour / speed-distribution
+// histograms -- everything the analytics panel needs.
+$agg     = compute_stats($rows, $limit_kmh);
+$c       = $agg['c'];       $sp      = $agg['sp'];
+$dir     = $agg['dir'];     $col     = $agg['col'];
+$spd     = $agg['spd'];     $spd_dir = $agg['spd_dir'];
+$dow     = $agg['dow'];     $hod     = $agg['hod'];
+$hist    = $agg['hist'];    $edges   = $agg['edges'];
+
 function avg_of($a) { return $a ? array_sum($a) / count($a) : null; }
 
-// day-of-week + hour histograms + speed distribution (over ALL real passes)
-$dow = array_fill(0, 7, ['count' => 0, 'sum' => 0.0]);
-$hod = array_fill(0, 24, ['count' => 0, 'sum' => 0.0]);
-$edges = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 999];
-$hist = array_fill(0, count($edges) - 1, 0);
-foreach ($rows as $r) {
-    $kmh = is_numeric($r['speed_kmh'] ?? '') ? (float)$r['speed_kmh'] : null;
-    $ts  = strtotime($r['wall_time'] ?? '');
-    if ($kmh !== null && $ts !== false) {
-        $w = (int)date('N', $ts) - 1;         // 0=Mon..6=Sun
-        $h = (int)date('G', $ts);
-        $dow[$w]['count']++; $dow[$w]['sum'] += $kmh;
-        $hod[$h]['count']++; $hod[$h]['sum'] += $kmh;
-        $mph = $kmh / 1.609344;
-        for ($i = 0; $i < count($edges) - 1; $i++) {
-            if ($mph >= $edges[$i] && $mph < $edges[$i + 1]) { $hist[$i]++; break; }
+function compute_stats($rows, $limit_kmh) {
+    $today        = date('Y-m-d');
+    $week_start   = date('Y-m-d', strtotime('monday this week'));
+    $month_prefix = date('Y-m');
+    $c   = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => count($rows)];
+    $sp  = ['today' => 0, 'week' => 0, 'month' => 0, 'total' => 0];
+    $dir = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
+    $col = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
+    $spd = ['today' => [], 'week' => [], 'month' => [], 'all' => []];  // km/h lists
+    $spd_dir = ['today' => [], 'week' => [], 'month' => [], 'all' => []];
+    foreach ($rows as $r) {
+        $d    = substr($r['wall_time'] ?? '', 0, 10);
+        $over = is_over($r, $limit_kmh);
+        $kmh  = is_numeric($r['speed_kmh'] ?? '') ? (float)$r['speed_kmh'] : null;
+        $dr   = trim($r['direction'] ?? '');
+        $co   = trim($r['color'] ?? '');
+        if ($over) $sp['total']++;
+        $tally_periods = ['all'];
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+            if ($d === $today) $tally_periods[] = 'today';
+            if ($d >= $week_start) $tally_periods[] = 'week';
+            if (substr($d, 0, 7) === $month_prefix) $tally_periods[] = 'month';
+        }
+        foreach ($tally_periods as $p) {
+            if ($p !== 'all') { $c[$p]++; if ($over) $sp[$p]++; }
+            if ($dr !== '') $dir[$p][$dr] = ($dir[$p][$dr] ?? 0) + 1;
+            if ($co !== '') $col[$p][$co] = ($col[$p][$co] ?? 0) + 1;
+            if ($kmh !== null) {
+                $spd[$p][] = $kmh;
+                if ($dr !== '') $spd_dir[$p][$dr][] = $kmh;
+            }
         }
     }
+    // day-of-week + hour histograms + speed distribution (over ALL real passes)
+    $dow = array_fill(0, 7, ['count' => 0, 'sum' => 0.0]);
+    $hod = array_fill(0, 24, ['count' => 0, 'sum' => 0.0]);
+    $edges = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 999];
+    $hist = array_fill(0, count($edges) - 1, 0);
+    foreach ($rows as $r) {
+        $kmh = is_numeric($r['speed_kmh'] ?? '') ? (float)$r['speed_kmh'] : null;
+        $ts  = strtotime($r['wall_time'] ?? '');
+        if ($kmh !== null && $ts !== false) {
+            $w = (int)date('N', $ts) - 1;         // 0=Mon..6=Sun
+            $h = (int)date('G', $ts);
+            $dow[$w]['count']++; $dow[$w]['sum'] += $kmh;
+            $hod[$h]['count']++; $hod[$h]['sum'] += $kmh;
+            $mph = $kmh / 1.609344;
+            for ($i = 0; $i < count($edges) - 1; $i++) {
+                if ($mph >= $edges[$i] && $mph < $edges[$i + 1]) { $hist[$i]++; break; }
+            }
+        }
+    }
+    return compact('c', 'sp', 'dir', 'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges');
 }
 
 // --- report builder (GET filters) -------------------------------------------
@@ -966,44 +984,107 @@ function dir_chips($dir) {
     return $out . '</div>';
 }
 
-function render_node_list($nodes_root, $nodes) {
-    page_head('SpeedKam fleet');
+// Fleet overview: every node's data merged into one broad picture, plus a
+// per-node comparison. Shown at the bare dashboard URL (no ?node=). Drilling
+// into a camera (?node=<id>) gives its full single-node dashboard.
+function render_fleet($nodes_root, $nodes) {
+    // Merge every node's real (non-rejected) passes into one dataset, tagging
+    // each row with its node's speed limit so fleet-wide "over limit" respects
+    // each street's own limit. Collect a per-node summary alongside.
+    $fleet_rows = [];
     $summ = [];
+    $unit_votes = [];
+    $today = date('Y-m-d');
     foreach ($nodes as $n) {
-        $dir  = "$nodes_root/$n";
-        $st   = json_decode(@file_get_contents("$dir/status.json"), true) ?: [];
-        $seen = isset($st['received_at']) ? strtotime($st['received_at']) : null;
+        $ndir   = "$nodes_root/$n";
+        $st     = json_decode(@file_get_contents("$ndir/status.json"), true) ?: [];
+        $seen   = isset($st['received_at']) ? strtotime($st['received_at']) : null;
         $online = ($seen !== null) && (time() - $seen < 120);
-        $total = 0;
-        $csv = "$dir/events.csv";
-        if (is_file($csv)) {
-            $lines = @file($csv, FILE_SKIP_EMPTY_LINES | FILE_IGNORE_NEW_LINES);
-            if (is_array($lines)) { $total = max(0, count($lines) - 1); }
+        $nlimit = isset($st['speed_limit_kmh']) ? (float)$st['speed_limit_kmh'] : null;
+        $nunits = (($st['units'] ?? 'mph') === 'kmh') ? 'kmh' : 'mph';
+        $unit_votes[$nunits] = ($unit_votes[$nunits] ?? 0) + 1;
+
+        [$hdr, $all] = load_events("$ndir/events.csv");
+        $real = array_filter($all, fn($r) => !is_rejected($r));
+        $n_today = 0; $n_over = 0; $speeds = []; $maxk = null;
+        foreach ($real as $r) {
+            $r['_limit_kmh'] = $nlimit;      // so fleet-wide is_over uses this street's limit
+            $fleet_rows[] = $r;
+            if (substr($r['wall_time'] ?? '', 0, 10) === $today) $n_today++;
+            if (is_over($r, $nlimit)) $n_over++;
+            if (is_numeric($r['speed_kmh'] ?? '')) {
+                $k = (float)$r['speed_kmh']; $speeds[] = $k;
+                if ($maxk === null || $k > $maxk) $maxk = $k;
+            }
         }
-        $summ[] = ['id' => $n, 'online' => $online, 'seen' => $seen, 'total' => $total];
+        $summ[] = [
+            'id' => $n, 'online' => $online, 'seen' => $seen,
+            'total' => count($real), 'today' => $n_today, 'over' => $n_over,
+            'avg_kmh' => avg_of($speeds), 'max_kmh' => $maxk,
+            'limit_kmh' => $nlimit, 'units' => $nunits,
+        ];
     }
+    arsort($unit_votes);
+    $units = array_key_first($unit_votes) ?: 'mph';
+
+    // per-row _limit_kmh drives over-limit, so pass null as the fallback limit
+    $agg = compute_stats($fleet_rows, null);
+
     usort($summ, function ($a, $b) {
         if ($a['online'] !== $b['online']) return $a['online'] ? -1 : 1;
+        if ($a['today'] !== $b['today'])   return $b['today'] <=> $a['today'];
         return ($b['seen'] ?? 0) <=> ($a['seen'] ?? 0);
     });
-    $online_n = count(array_filter($summ, fn($s) => $s['online']));
+    $online_n    = count(array_filter($summ, fn($s) => $s['online']));
     $fleet_total = array_sum(array_map(fn($s) => $s['total'], $summ));
 
-    echo '<h1>SpeedKam fleet<span class="grow"></span><a href="?logout" class="muted" style="font-size:.85rem">sign out</a></h1>';
+    page_head('SpeedKam fleet');
+    echo '<h1><span class="dot ' . ($online_n ? 'ok' : 'bad') . '"></span>SpeedKam fleet'
+       . '<span class="grow"></span>'
+       . '<span class="muted" style="font-size:.85rem">' . count($summ) . ' camera'
+       . (count($summ) === 1 ? '' : 's') . ' &middot; ' . $online_n . ' online</span> '
+       . '<a href="?logout" class="muted" style="font-size:.85rem">sign out</a></h1>';
+
+    // fleet health
     echo '<div class="cards">';
     stat_card('Cameras', count($summ), $online_n . ' online');
     stat_card('Offline', count($summ) - $online_n, 'no check-in >2m');
-    stat_card('Events (all)', $fleet_total, 'across the fleet');
+    stat_card('Vehicles (all)', $fleet_total, 'across the fleet');
+    stat_card('Over limit (all)', $agg['sp']['total'], 'across the fleet');
     echo '</div>';
-    echo '<table><thead><tr><th></th><th>Camera</th><th>Last check-in</th><th class="num">Events</th><th></th></tr></thead><tbody>';
+
+    // combined traffic (all cameras summed)
+    echo '<h2 class="sec">Combined traffic &mdash; all cameras</h2><div class="cards">';
+    stat_card('Today', $agg['c']['today'], $agg['sp']['today'] . ' over limit', dir_chips($agg['dir']['today']));
+    stat_card('This week', $agg['c']['week'], $agg['sp']['week'] . ' over limit', dir_chips($agg['dir']['week']));
+    stat_card('This month', $agg['c']['month'], $agg['sp']['month'] . ' over limit', dir_chips($agg['dir']['month']));
+    stat_card('All time', $agg['c']['total'], $agg['sp']['total'] . ' over limit');
+    echo '</div>';
+
+    // combined analytics panel (reuses the single-node renderer)
+    render_analytics($agg + ['units' => $units, 'sel_node' => '']);
+
+    // per-node comparison -- spot your worst streets at a glance
+    echo '<h2 class="sec">Cameras</h2>';
+    echo '<table><thead><tr><th></th><th>Camera</th><th>Last check-in</th>'
+       . '<th class="num">Today</th><th class="num">All time</th>'
+       . '<th class="num">Avg</th><th class="num">% over</th><th class="num">Fastest</th>'
+       . '<th></th></tr></thead><tbody>';
     foreach ($summ as $s) {
-        $sw  = $s['online'] ? 'ok' : 'bad';
+        $sw   = $s['online'] ? 'ok' : 'bad';
         $href = '?node=' . rawurlencode($s['id']);
+        $avg  = $s['avg_kmh'] !== null ? round(to_disp($s['avg_kmh'], $units)) . ' ' . ulbl($units) : '—';
+        $mx   = $s['max_kmh'] !== null ? round(to_disp($s['max_kmh'], $units)) . ' ' . ulbl($units) : '—';
+        $pct  = $s['total'] ? round($s['over'] / $s['total'] * 100) . '%' : '—';
         echo '<tr><td><span class="dot ' . $sw . '"></span></td>'
            . '<td><a href="' . h($href) . '"><code>' . h($s['id']) . '</code></a> '
            . '<span class="muted">' . ($s['online'] ? 'online' : 'offline') . '</span></td>'
            . '<td class="muted">' . h(ago($s['seen'])) . '</td>'
+           . '<td class="num">' . h($s['today']) . '</td>'
            . '<td class="num">' . h($s['total']) . '</td>'
+           . '<td class="num">' . h($avg) . '</td>'
+           . '<td class="num">' . h($pct) . '</td>'
+           . '<td class="num">' . h($mx) . '</td>'
            . '<td><a href="' . h($href) . '">open &rsaquo;</a></td></tr>';
     }
     echo '</tbody></table>';
