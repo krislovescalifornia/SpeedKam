@@ -30,7 +30,8 @@ class FakeState:
 
 def _cam(**thresholds):
     base = {"max_track_distance_m": 45.0, "min_vehicle_span_m": 1.0,
-            "min_vehicle_aspect": 1.1, "dedupe_seconds": 3.0}
+            "min_vehicle_aspect": 1.1, "dedupe_seconds": 3.0,
+            "min_on_road_frac": 0.6}
     base.update(thresholds)
     cam = SpeedCamera.__new__(SpeedCamera)
     cam.state = FakeState(base)
@@ -75,6 +76,48 @@ def test_aspect_gate_disabled_when_zero():
     t = _track([(0, 0, 60, 170)])
     status, _ = cam._classify_reading(R(distance_m=6.0), span_m=2.0,
                                       aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "ok"
+
+
+# ------------------------------------------------------- road-region gate
+def test_off_road_foreground_rejected():
+    cam = _cam()
+    # Car-shaped, real footprint, plausible distance -- but the track was mostly
+    # in the foreground (the two-kids-on-the-lawn failure). Rejected on location
+    # alone, regardless of shape.
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, reason = cam._classify_reading(
+        R(distance_m=6.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t), on_road_frac=0.15)
+    assert status == "rejected"
+    assert "off the calibrated road" in reason
+
+
+def test_on_road_car_passes():
+    cam = _cam()
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t), on_road_frac=0.95)
+    assert status == "ok"
+
+
+def test_road_gate_skipped_when_uncalibrated():
+    cam = _cam()
+    # on_road_frac None (no calibration -> no road plane) must not reject.
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t), on_road_frac=None)
+    assert status == "ok"
+
+
+def test_road_gate_disabled_when_zero():
+    cam = _cam(min_on_road_frac=0)
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t), on_road_frac=0.0)
     assert status == "ok"
 
 

@@ -90,6 +90,18 @@ DEFAULTS = {
         # Pixel-only (no homography), so a person close to the lens is caught.
         # Lower it for a head-on camera (cars look squarer). 0 disables.
         "min_vehicle_aspect": 1.1,
+        # Road-region gate: the fraction of a track's ground points that must lie
+        # ON the calibrated road surface (vs the camera-side foreground -- kerb,
+        # grass, sidewalk -- or well off to the side) for it to count as a road
+        # vehicle. A foreground pedestrian's ground point maps through the road
+        # homography to garbage and invents phantom speeds (this is what once
+        # logged two kids on the lawn as a 69 mph car). Below this fraction the
+        # pass happened mostly off the road and is rejected. Only the NEAR and
+        # LATERAL road edges are bounded; the far edge is left open so distant
+        # cars still count. Needs a calibration to apply; 0 disables. road_margin_
+        # frac widens the road box by this fraction of the frame on those edges.
+        "min_on_road_frac": 0.6,
+        "road_margin_frac": 0.03,
         # Count each drive-by ONCE: a second confirmed pass in the same direction
         # within this many seconds is treated as a fragmented re-detection of the
         # same vehicle and rejected. 0 disables.

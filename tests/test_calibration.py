@@ -48,3 +48,49 @@ def test_save_load_preserves_transform(tmp_path):
 
 def test_load_missing_file_returns_none(tmp_path):
     assert Calibration.load(tmp_path / "does_not_exist.json") is None
+
+
+# --------------------------------------------------------- road-region gate
+# A road strip like the real reference node: a thin horizontal band of clicked
+# points near the middle of a 1456x1088 frame (x 518..1411, y 758..825).
+ROAD_IMG = [[518, 758], [1411, 758], [1411, 825], [518, 825], [900, 790]]
+ROAD_WORLD = [[0, 0], [10, 0], [10, 3], [0, 3], [5, 1.5]]
+FRAME = (1456, 1088)
+
+
+def _road_calib():
+    return Calibration(ROAD_IMG, ROAD_WORLD)
+
+
+def test_on_road_side_car_on_road():
+    c = _road_calib()
+    # A car's ground point squarely on the road band.
+    assert c.on_road_side([[900, 790]], FRAME)[0]
+
+
+def test_on_road_side_distant_car_above_strip_kept():
+    c = _road_calib()
+    # A receding car rides "above" the clicked strip (smaller y). The far edge is
+    # intentionally open, so it must still count as on-road.
+    assert c.on_road_side([[900, 690]], FRAME)[0]
+
+
+def test_on_road_side_foreground_pedestrian_rejected():
+    c = _road_calib()
+    # Feet in the near foreground (larger y than the road's near edge) -- the
+    # two-kids-on-the-lawn failure. Must read off-road.
+    assert not c.on_road_side([[900, 900]], FRAME)[0]
+
+
+def test_on_road_side_foreground_kids_real_coords_rejected():
+    c = _road_calib()
+    # The actual failing track sat at ground ~(205..570, 843..863): left of the
+    # road and below its near edge. Every one of those must be off-road.
+    pts = [[548, 863], [480, 860], [382, 860], [283, 863], [228, 863]]
+    assert not c.on_road_side(pts, FRAME).any()
+
+
+def test_on_road_side_beside_road_rejected():
+    c = _road_calib()
+    # Well off to the right of the road (e.g. far verge) -- off-road.
+    assert not c.on_road_side([[1480, 790]], FRAME)[0]

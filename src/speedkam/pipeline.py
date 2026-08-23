@@ -133,6 +133,11 @@ class SpeedCamera:
              # pedestrians/cyclists are not). And the count-once dedupe window.
              "min_vehicle_aspect":
                  float(cfg["speed"].get("min_vehicle_aspect", 0) or 0),
+             # Road-region gate: min fraction of a track's ground points that
+             # must fall on the calibrated road surface (else it's foreground /
+             # off-road junk). 0 disables. See _on_road_fraction / on_road_side.
+             "min_on_road_frac":
+                 float(cfg["speed"].get("min_on_road_frac", 0) or 0),
              "dedupe_seconds":
                  float(cfg["speed"].get("dedupe_seconds", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
@@ -241,6 +246,15 @@ class SpeedCamera:
         return float(self.state.get("min_vehicle_aspect") or 0)
 
     @property
+    def min_on_road_frac(self) -> float:
+        """Min fraction of a track's ground points that must sit on the
+        calibrated road surface for it to count as a road vehicle. Below it the
+        object spent most of the pass in the foreground / off to the side and is
+        auto-rejected. 0 disables the gate (also skipped when uncalibrated --
+        there's no road plane to test against)."""
+        return float(self.state.get("min_on_road_frac") or 0)
+
+    @property
     def dedupe_seconds(self) -> float:
         """Count a drive-by ONCE: a second confirmed pass in the SAME direction
         finishing within this many seconds of the last counted one is treated as
@@ -248,7 +262,8 @@ class SpeedCamera:
         return float(self.state.get("dedupe_seconds") or 0)
 
     def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
-                              min_aspect=None, dedupe_seconds=None) -> dict:
+                              min_aspect=None, dedupe_seconds=None,
+                              min_on_road_frac=None) -> dict:
         """Live-tune the auto-reject envelope; persists across restarts."""
         if max_distance_m is not None:
             self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
@@ -258,10 +273,15 @@ class SpeedCamera:
             self.state.set("min_vehicle_aspect", max(0.0, float(min_aspect)))
         if dedupe_seconds is not None:
             self.state.set("dedupe_seconds", max(0.0, float(dedupe_seconds)))
+        if min_on_road_frac is not None:
+            # A fraction, so clamp to [0, 1].
+            self.state.set("min_on_road_frac",
+                           min(1.0, max(0.0, float(min_on_road_frac))))
         return {"max_track_distance_m": self.max_track_distance_m,
                 "min_vehicle_span_m": self.min_vehicle_span_m,
                 "min_vehicle_aspect": self.min_vehicle_aspect,
-                "dedupe_seconds": self.dedupe_seconds}
+                "dedupe_seconds": self.dedupe_seconds,
+                "min_on_road_frac": self.min_on_road_frac}
 
     @staticmethod
     def _aspect_ratio(track):
@@ -323,11 +343,47 @@ class SpeedCamera:
             return None
         return float(np.percentile(spans, 75))
 
-    def _classify_reading(self, result, span_m, aspect):
-        """Auto-reject anything that isn't a car so junk never pollutes the stats.
-        Returns (status, reason): "ok" for a real vehicle, else "rejected" with a
-        human explanation (shown in the dashboards' auto-reject bin)."""
-        # Shape first: a car is wider than it is tall on a side-on camera; a
+    def _on_road_fraction(self, track):
+        """Fraction of the track's ground points that sit on the calibrated road
+        surface (see Calibration.on_road_side), or None when uncalibrated / the
+        track has no samples -- in which case the road gate is skipped.
+
+        This is the strongest 'is it a road vehicle?' signal we have without a
+        neural classifier: a real car crosses the road, so nearly all of its
+        ground points land on the road plane; a pedestrian standing in the
+        foreground (or on the far sidewalk) spends the whole pass off it."""
+        with self._calib_lock:
+            calib = self.calibration
+        if calib is None or not track.samples:
+            return None
+        pts = [s.ground_px for s in track.samples]
+        try:
+            margin = float(self.cfg["speed"].get("road_margin_frac", 0.03))
+            mask = calib.on_road_side(pts, self.frame_wh, margin_frac=margin)
+        except Exception:  # noqa: BLE001 - a bad calibration must not break the loop
+            return None
+        return float(np.mean(mask)) if len(mask) else None
+
+    def _classify_reading(self, result, span_m, aspect, on_road_frac=None):
+        """Auto-reject anything that isn't a car on the road so junk never
+        pollutes the stats. Returns (status, reason): "ok" for a real vehicle,
+        else "rejected" with a human explanation (shown in the dashboards' bin)."""
+        # Road-region FIRST -- the most reliable check and the one that catches
+        # what the shape/size proxies miss. Is the object actually ON the road,
+        # or in the camera-side foreground (kerb/grass/sidewalk) / off to the
+        # side? A foreground pedestrian's ground point maps through the road
+        # homography to garbage and invents phantom speeds -- the exact failure
+        # that logged two kids on the lawn as a 69 mph car. Majority vote over
+        # the whole track, so a transient off-road sample or blob merge can't
+        # flip it, and it doesn't care what shape the blob is.
+        min_on_road = self.min_on_road_frac
+        if (min_on_road > 0 and on_road_frac is not None
+                and on_road_frac < min_on_road):
+            return ("rejected",
+                    f"off the calibrated road — only {on_road_frac * 100:.0f}% "
+                    f"of the track was on the road surface (foreground/sidewalk, "
+                    f"not a road vehicle)")
+        # Shape next: a car is wider than it is tall on a side-on camera; a
         # pedestrian/dog-walker/cyclist is not. Pixel-only, so a person close to
         # the lens (which fools the world-size gate) is still caught.
         min_aspect = self.min_vehicle_aspect
@@ -792,7 +848,9 @@ class SpeedCamera:
         # never counted, never flagged as a speeder, and never films a clip.
         span_m = self._vehicle_span_m(track)
         aspect = self._aspect_ratio(track)
-        status, reason = self._classify_reading(result, span_m, aspect)
+        on_road_frac = self._on_road_fraction(track)
+        status, reason = self._classify_reading(result, span_m, aspect,
+                                                on_road_frac)
         # Count-once-per-drive-by: a real pass that repeats the last counted one
         # (same direction, within dedupe_seconds) is a fragmented re-detection of
         # the same vehicle -> drop it as a duplicate.
@@ -820,9 +878,11 @@ class SpeedCamera:
         extra = self._attr_label(attrs)
         span_txt = f", span={span_m:.1f}m" if span_m is not None else ""
         aspect_txt = f", aspect={aspect:.2f}" if aspect is not None else ""
+        road_txt = (f", on_road={on_road_frac * 100:.0f}%"
+                    if on_road_frac is not None else "")
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
               f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
-              f"{aspect_txt}, conf={result.confidence}){extra}"
+              f"{aspect_txt}{road_txt}, conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))
 

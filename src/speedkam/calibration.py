@@ -54,6 +54,42 @@ class Calibration:
         pred = self.image_to_world(self.image_points)
         return float(np.mean(np.linalg.norm(pred - self.world_points, axis=1)))
 
+    # --------------------------------------------------------- road region gate
+    def image_bounds(self):
+        """(x_min, x_max, y_min, y_max) in pixels of the road points clicked
+        during calibration -- the rectangle enclosing the measured road surface."""
+        ip = self.image_points
+        return (float(ip[:, 0].min()), float(ip[:, 0].max()),
+                float(ip[:, 1].min()), float(ip[:, 1].max()))
+
+    def on_road_side(self, pts, frame_wh=None, margin_frac=0.03):
+        """Boolean mask over image points: which plausibly sit ON the drivable
+        road, versus the camera-side FOREGROUND (kerb/grass/sidewalk in front of
+        the road) or well off to either side.
+
+        Only the NEAR edge (largest y, closest to the camera) and the two LATERAL
+        edges are bounded. The FAR edge is deliberately left OPEN: calibration
+        points are usually clicked across a narrow strip of road, yet a genuine
+        vehicle legitimately rides "above" that strip (smaller y) as it recedes
+        toward the vanishing point -- clamping the far side would reject real
+        distant cars.
+
+        This is the one check that separates a pedestrian in the foreground --
+        whose ground point, mapped through a homography fitted only on the road
+        plane, extrapolates to garbage and invents phantom speeds -- from a
+        vehicle actually on the measured road. It is invariant to the blob's
+        shape, so it catches what the aspect/size proxies miss (e.g. two people
+        merged into one wide blob). Margins scale with the frame, so the gate is
+        resolution-independent.
+        """
+        x0, x1, _, y1 = self.image_bounds()
+        w, h = (frame_wh if frame_wh else (x1, y1))
+        mx = margin_frac * float(w)
+        my = margin_frac * float(h)
+        pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+        return ((pts[:, 0] >= x0 - mx) & (pts[:, 0] <= x1 + mx)
+                & (pts[:, 1] <= y1 + my))
+
     # ------------------------------------------------------------------- io
     def to_dict(self):
         return {
