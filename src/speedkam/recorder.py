@@ -304,8 +304,17 @@ class Recorder:
 
         h, w = frames[0][1].shape[:2]
         clip_path = self.output_dir / f"{base}.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(clip_path), fourcc, fps, (w, h))
+        # H.264 (avc1), NOT mp4v: mp4v is MPEG-4 Part 2, which desktop players
+        # (VLC) handle but HTML5 <video> refuses ("No video with supported
+        # format and MIME type found"). avc1 is what the dashboard's inline
+        # player needs. OpenCV's FFmpeg backend on the node writes real avc1.
+        # Fall back to mp4v if this build can't open an avc1 writer, so a clip
+        # is still recorded (playable in VLC) rather than silently empty.
+        writer = cv2.VideoWriter(
+            str(clip_path), cv2.VideoWriter_fourcc(*"avc1"), fps, (w, h))
+        if not writer.isOpened():
+            writer = cv2.VideoWriter(
+                str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
         snapshot_path = None
         mid = len(frames) // 2
         for i, (_, fr) in enumerate(frames):
