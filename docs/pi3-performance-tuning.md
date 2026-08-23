@@ -35,11 +35,22 @@ fps/detail axis entirely: the clips were being written in a codec (`mp4v`) that 
 accept but **browsers refuse**, so the dashboard's inline player showed only an error. The fix
 switched the encoder to H.264 (`avc1`) and back-filled the existing clips.
 
-A last chapter — [The low-light gate](#the-low-light-gate-2026-08-23) — is about *when* the
+A further chapter — [The low-light gate](#the-low-light-gate-2026-08-23) — is about *when* the
 pipeline should run at all: after dark the motion detector locks onto headlight glare and sensor
 noise instead of cars, inventing phantom "90–170 mph" passes. Rather than a slower/faster or
 sharper trade, this one **pauses detection when the scene is too dark and auto-resumes at dawn** —
 which also happens to let the node idle cool all night instead of burning cores on noise.
+
+A last chapter — [The road-region gate](#the-road-region-gate-2026-08-23) — is the daylight
+counterpart to that: two children standing on the grass *in front of* the camera were logged as a
+**69 mph car**. The motion blob was real; it just wasn't on the road, so the road-only speed
+homography extrapolated their footsteps into a phantom speed. The fix stops trusting shape/size
+proxies and gates on the one invariant that actually separates a car from a bystander — **is the
+object's ground contact on the calibrated road at all?**
+
+A closing note points forward to the hardware step that finally makes *content* classification
+(car vs person, not just geometry) affordable on-node — see the separate
+[Pi 4 / Phase 14 plan](pi4-yolo-classifier-phase14.md).
 
 ## The board question that started it
 
@@ -176,6 +187,13 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
   before the gate flips (rejects a passing headlight or a momentary dark truck). Tune the two
   thresholds from the dashboard's live **brightness** readout at your site — the reference node
   read ~90–105 in daylight and <15 in full dark, so 40/60 sits safely in the gap.
+- **`speed.min_on_road_frac`** (0.6) / **`speed.road_margin_frac`** (0.03) — the road-region gate
+  (see [The road-region gate](#the-road-region-gate-2026-08-23)). A track is rejected as off-road
+  junk unless at least `min_on_road_frac` of its ground points fall on the calibrated road surface;
+  `road_margin_frac` widens the road box by that fraction of the frame on its near and lateral
+  edges (the far edge is intentionally open so distant cars still count). Needs a calibration to
+  apply; `min_on_road_frac 0` disables it. Lower `min_on_road_frac` if real cars ever get rejected;
+  raise it to be stricter about foreground/roadside motion.
 
 ### Clip length vs record_fps and buffer (720p, ~2.76 MB/frame)
 
@@ -488,6 +506,107 @@ camera), not a software one. No threshold tuning recovers a signal the sensor ne
 **Committed:** `d432df8` (`light_gate` in `pipeline.py` + `config.py`/`config.yaml`,
 `paused_low_light`/`scene_brightness` in `web.py` + `remotecontrol.py`, `tests/test_lightgate.py`).
 
+## The road-region gate (2026-08-23)
+
+The low-light gate above kills phantoms that appear when the scene is too dark to see a car. This
+chapter is the same failure in broad daylight — a motion blob that is **real, well-lit, and simply
+not a car** — and it's the one that mattered most to the operator, because it produced a headline
+lie.
+
+**The symptom.** A saved clip of **two children walking on the grass in front of the camera** was
+logged as a **69 mph westbound car** and flagged SPEEDING. Not a subtle few-mph error — a
+kids-on-the-lawn snapshot with "69 mph SPEEDING" burned across it. The operator's verdict was
+blunt and correct: *if it can do that, none of the numbers can be trusted.*
+
+**Root cause: the speed math was applied off the road plane.** SpeedKam's speed comes from a
+**homography** — a pixels→metres map fitted *only on the flat road surface* during calibration.
+It is valid **on that plane and nowhere else.** The two kids were in the **near foreground**, on
+the grass strip between the lens and the road — i.e. *below* the calibrated plane. Re-running the
+real detector+tracker over the clip on the node made it quantitative:
+
+| | Ground-Y in image | Calibrated road band | Verdict |
+|---|---|---|---|
+| The two kids (id90) | **843–863 px** | 758–825 px | **below the road — foreground** |
+| A genuine car (id243) | 720–790 px | 758–825 px | on the road |
+
+Their feet were 20–40 px *below* the road's near edge for the whole pass. Feed a point that far
+off-plane into the homography and it extrapolates nonsense: their slow walk mapped to **8.9 m
+traveled in 0.30 s → 111 km/h (69 mph)**, westbound because they happened to drift right-to-left.
+
+**Why every existing false-positive gate missed it.** All three prior gates are *proxies* for
+"is it a car," and two small children close to the lens defeat each one:
+
+| Gate | Why it passed the kids |
+|---|---|
+| `min_vehicle_aspect` ≥ 1.1 (car boxes are wide) | The two kids intermittently **merged into one wide blob** at the live frame rate — a merged frame reads wide even though a single child reads tall (~0.5). |
+| `min_vehicle_span_m` ≥ 1.0 (cars are >1 m wide) | Close to the lens they *look* big; the homography inflates their apparent ground footprint past a metre. |
+| `max_track_distance_m` ≤ 45 (phantoms wander far) | 8.9 m is nowhere near 45 m — that ceiling was tuned for the old 100 m+ vegetation ghosts, not an 8.9 m foreground teleport. |
+
+Shape and size are guessed stand-ins. The invariant they were standing in for is simpler and
+un-foolable: **is the object's ground contact on the road at all?**
+
+**The fix: gate on road location, not on blob shape.** New `Calibration.on_road_side(pts,
+frame_wh, margin_frac)` returns, per ground point, whether it sits on the calibrated road surface;
+`pipeline._on_road_fraction(track)` computes the fraction of a track's ground points that qualify,
+and `_classify_reading` rejects the reading — *before* the shape/size checks — when that fraction
+is below `min_on_road_frac` (0.6). It is a **majority vote over the whole track**, so a transient
+off-road sample or a one-frame blob merge can't flip it, and it is **completely indifferent to the
+blob's shape** — which is exactly why it catches what the aspect proxy couldn't.
+
+Two design choices carry the chapter:
+
+- **Only the near and lateral edges are bounded; the far edge is deliberately left open.**
+  Calibration points get clicked across a *narrow strip* of road, but a real car legitimately
+  rides "above" that strip (smaller Y) as it recedes toward the vanishing point. The failure is
+  always on the **near/foreground** side (feet *below* the strip) or off to the side — never the
+  far side. A symmetric margin can't express this: the distant car needs ~95 px of slack *above*
+  the strip while a foreground pedestrian sits only ~18 px *below* it, so any symmetric box that
+  keeps the car also admits the kids. Bounding only the near+lateral edges resolves the asymmetry.
+- **Self-configuring from the calibration.** The road box is derived from each node's own
+  `image_points`, so there is nothing to tune per site — a node that's calibrated already knows
+  where its road is. (Uncalibrated nodes have no plane and report no speed anyway, so the gate
+  simply no-ops there.)
+
+**Verification: run it on the exact failing clip, not a synthetic one.** Same discipline as the
+`record_fps` and codec chapters. The real detector+tracker were run over both clips on the node
+and scored through the actual gate:
+
+| Clip | On-road fraction | Gate verdict | Correct? |
+|---|---|---|---|
+| Two kids (id90) | **44 %** | reject | ✓ |
+| Real car (id243) | **70 %** | keep | ✓ |
+
+The 70 % for the car is a **pessimistic floor**: replayed offline it produced a messy 46-sample
+track that absorbed background noise, whereas the live tracker logs a car as a tight ~6-sample
+track that scores far higher. So 0.6 sits comfortably below real cars and well above the kids. Six
+new unit tests (`tests/test_calibration.py` road-region cases + `tests/test_carfilter.py` gate
+cases) plus the end-to-end clip check all pass. (As with the low-light chapter, the node has no
+pytest — on-box these run by importing the modules and calling `test_*` directly; `test_calibration`
+imports `pytest` at module top, so on the node a **minimal `pytest` shim** with `approx`/`raises`
+is injected into `sys.modules` before import.)
+
+**The data was also swept — carefully.** Scanning the log for counted rows above 45 mph on this
+25 mph road surfaced exactly two. One was id90 (the kids), rejected on the node via `/api/reject`
+and mirrored to the webhost by a single-line CSV edit. The other, id183 at 48.8 mph, turned out
+on inspection to be a **real blue Jeep, squarely on the road** — a genuine speeder, and *kept*.
+That is the discipline the low-light chapter also insisted on: **speed alone is never a junk
+signal — always look.** Rejecting a real speeder because it's fast would be the same failure in
+the opposite direction.
+
+**The honest limitation — and why the next chapter is hardware.** This gate rejects anything
+*off* the road. What it cannot do is tell a car from a **person or cyclist who is genuinely on the
+road** — both have their feet on the plane, so location can't separate them, and shape (aspect) is
+the fragile proxy that started this whole chapter. Truly answering "car vs person" needs
+*content* classification (a neural detector), which the Pi 3 cannot run (torch/YOLO would exhaust
+its ~900 MB RAM). That is the entire reason for the hardware step documented separately in the
+[Pi 4 / Phase 14 plan](pi4-yolo-classifier-phase14.md): with a Pi 4 (8 GB) a per-pass YOLO
+classifier becomes affordable, and it stacks *on top of* this gate — geometry says "on the road,"
+the model says "it's a car."
+
+**Committed:** `f024442` (`on_road_side`/`image_bounds` in `calibration.py`, `_on_road_fraction`
++ road-region check in `pipeline.py`, `min_on_road_frac`/`road_margin_frac` in `config.py`,
+`tests/test_calibration.py` + `tests/test_carfilter.py`).
+
 ## Lessons
 
 - **Measure the right number.** "3 fps" was the preview, not the detection loop. `/api/status`
@@ -505,3 +624,14 @@ camera), not a software one. No threshold tuning recovers a signal the sensor ne
   gate is correct at any latitude/season and needs no configuration per site. And don't spend
   compute on frames nobody can measure: pausing detection in the dark kills phantom readings
   *and* lets the node idle cool all night.
+- **Trust the invariant, not the stand-in.** The road-region gate fixed a class of false positive
+  that three shape/size proxies had each waved through, because "are the feet on the road?" is a
+  physical fact while "is the box wide / big / not-wandering?" is a guess about what a car looks
+  like. When a proxy keeps getting fooled, find the invariant it was approximating and gate on
+  that instead. And respect the asymmetry — a distant car and a foreground bystander are *not*
+  symmetric about the calibrated strip, so the gate isn't either.
+- **Know what the current hardware genuinely can't do.** Geometry gates (brightness, road region)
+  are free and took the false-positive rate a long way, but "car vs a person standing in the road"
+  needs *content* classification the Pi 3 can't host. Naming that ceiling honestly is what turned
+  the next step into a scoped hardware plan ([Phase 14](pi4-yolo-classifier-phase14.md)) instead
+  of another proxy that would eventually get fooled too.

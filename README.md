@@ -19,6 +19,10 @@ to a Raspberry Pi** later — you only edit `config.yaml`.
 - [Fleet imaging](deploy/image/README.md) — clone one SD card to many nodes.
 - [Deferred recognition](docs/deferred-recognition.md) — offload YOLO to another box.
 - [Privacy & legal](docs/PRIVACY.md) — what's stored and how to deploy responsibly.
+- [Pi tuning & accuracy journey](docs/pi3-performance-tuning.md) — fps/thermal tuning, the
+  low-light gate, and the road-region false-positive gate, with what was measured at each step.
+- [Pi 4 / Phase 14 plan](docs/pi4-yolo-classifier-phase14.md) — kickoff brief for on-node
+  car-vs-person classification (needs a 64-bit Pi 4).
 
 ---
 
