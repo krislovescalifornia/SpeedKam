@@ -194,6 +194,10 @@ class Camera:
             ) from exc
         self._picam = Picamera2()
         controls = self._picamera2_controls()
+        # "RGB888" here is picamera2's name for a 24-bit format that arrives in
+        # the numpy array as B,G,R (libcamera fourcc is little-endian) -- i.e.
+        # native OpenCV BGR. read() therefore uses the array with NO colour
+        # convert; adding an RGB2BGR would swap red<->blue everywhere.
         main = {"size": (self.cfg["width"], self.cfg["height"]), "format": "RGB888"}
         # A rejected lores config must NOT brick a remote node: fall back to
         # main-only (software detection) rather than leave the camera unopenable.
@@ -262,17 +266,24 @@ class Camera:
                     # downscale, no colour convert on the detection path.
                     req = self._picam.capture_request()
                     try:
-                        rgb = req.make_array("main")
+                        main = req.make_array("main")
                         yuv = req.make_array("lores")
                     finally:
                         req.release()
                     lw, lh = self._lores_size
                     self.detect_frame = np.ascontiguousarray(yuv[:lh, :lw])
-                    frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                    # picamera2's "RGB888" array is ALREADY in B,G,R byte order
+                    # (libcamera's fourcc naming is little-endian, so "RGB888"
+                    # lands as BGR in the numpy array) -- exactly what OpenCV
+                    # wants. Do NOT cvtColor here: an RGB2BGR swap would flip
+                    # red<->blue in every clip/snapshot (green sits in the
+                    # middle and survives, which is the tell).
+                    frame = np.ascontiguousarray(main)
                     return t, self.undistorter.apply(frame)
-                rgb = self._picam.capture_array()
+                main = self._picam.capture_array()
                 self.detect_frame = None
-                frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                # See note above: "RGB888" is already BGR; use it as-is.
+                frame = np.ascontiguousarray(main)
                 return t, self.undistorter.apply(frame)
 
             self.detect_frame = None
