@@ -30,10 +30,16 @@ deliberately traded some of that frame rate back for **detail**, moving capture 
 native **1456×1088** (720p had been a downscale of it) and dropping `detect_scale` to 0.3 to hold
 **~23 fps** on the Pi 3 while clips gain the full 1.58 MP.
 
-A final chapter — [Browser-playable clips](#browser-playable-clips-2026-08-22) — is off the
+A further chapter — [Browser-playable clips](#browser-playable-clips-2026-08-22) — is off the
 fps/detail axis entirely: the clips were being written in a codec (`mp4v`) that desktop players
 accept but **browsers refuse**, so the dashboard's inline player showed only an error. The fix
 switched the encoder to H.264 (`avc1`) and back-filled the existing clips.
+
+A last chapter — [The low-light gate](#the-low-light-gate-2026-08-23) — is about *when* the
+pipeline should run at all: after dark the motion detector locks onto headlight glare and sensor
+noise instead of cars, inventing phantom "90–170 mph" passes. Rather than a slower/faster or
+sharper trade, this one **pauses detection when the scene is too dark and auto-resumes at dawn** —
+which also happens to let the node idle cool all night instead of burning cores on noise.
 
 ## The board question that started it
 
@@ -163,6 +169,13 @@ All in `config.yaml` (fleet-wide) or `config.local.yaml` (per-node override, dee
 - **`camera.fps`** (30) — the sensor frame-duration cap. The detection loop can't exceed this;
   raising it past 30 buys little for a speed camera and adds heat. At native resolution the loop
   is compute-limited well under this cap anyway (~23 fps).
+- **`light_gate.*`** — pause detection when it's too dark to work and resume at dawn (see
+  [The low-light gate](#the-low-light-gate-2026-08-23)). `enabled` (true); `sleep_below` (40) /
+  `wake_above` (60) — mean-luma (0–255) thresholds with a deliberate dead-band so dusk/dawn cross
+  once instead of flapping; `dwell_seconds` (30) — how long brightness must hold past a threshold
+  before the gate flips (rejects a passing headlight or a momentary dark truck). Tune the two
+  thresholds from the dashboard's live **brightness** readout at your site — the reference node
+  read ~90–105 in daylight and <15 in full dark, so 40/60 sits safely in the gap.
 
 ### Clip length vs record_fps and buffer (720p, ~2.76 MB/frame)
 
@@ -385,6 +398,96 @@ inside it is a browser dead-end. And "it plays on my machine" meant VLC, not the
 (browsers), which is the whole point of a web dashboard. When the surface is a browser, the only
 honest test is a browser.
 
+## The low-light gate (2026-08-23)
+
+Every chapter above tuned *how well* the pipeline runs. This one is about *whether it should be
+running at all* — because after dark it was producing confident garbage.
+
+**The symptom.** As night fell on 2026-08-22 the node logged a wave of false positives at
+impossible speeds — **91 mph, 107 mph, 52 mph**, several with tiny sample counts (7–10 points,
+sub-second tracks). By day the same node reads clean.
+
+**Root cause: the detector has nothing to lock onto in the dark.** SpeedKam's motion detector
+(MOG2 background subtraction) finds *moving foreground*. In daylight that's a car. At night the
+scene is near-black, so the only things that move-and-contrast are **headlight glare sweeping the
+road and sensor noise** flickering frame to frame. The tracker stitches those into "objects," and
+because a glare blob can jump a long way between frames, the pixels→metres math reports a wild
+speed. The existing false-positive gates can't save it: `max_track_distance_m`, `min_vehicle_span_m`
+and `min_vehicle_aspect` all assume a *real* blob with plausible size/shape, and a headlight
+smear can satisfy all three. The problem isn't a bad reading of a car — it's that **there is no
+car**, and no per-track geometry check distinguishes "headlight" from "small fast vehicle."
+
+**The data drew the line for us.** Rather than guess a sunset time, we measured the mean luma
+(0–255) of every evening snapshot the node had saved:
+
+| Time | Mean frame luma | State |
+|---|---|---|
+| 19:00–20:17 | **90–105** | daylight — real cars, measured fine |
+| 20:35 → 20:42 | 73 → 50 → 30 | dusk collapse |
+| 20:46 onward | 25 → **2–13** | dark — every "pass" a glare/noise phantom |
+
+The transition is sharp and monotonic, and detection quality dies right as brightness crosses
+~40. That clean separation is what makes a brightness gate viable: there's a wide, unambiguous
+dead-band between "working" (>60) and "hopeless" (<40).
+
+**The fix: gate on brightness, not on a clock.** `pipeline.py` `_process_frame` now measures the
+frame's mean luma every frame (a cheap `cv2.mean` on the tiny detection frame — negligible next
+to detection) and, when it's too dark, **returns before `detector.detect` even runs**. No
+detection → no tracks → no phantom readings and no junk clips. The live preview still publishes,
+with a `PAUSED — low light` banner so the dashboard shows *why* it's idle.
+
+Three design choices matter:
+
+- **Purely brightness-driven — no clock, sunset table, or GPS.** A fleet node can be anywhere, at
+  any latitude, in any season; a hard-coded schedule would be wrong somewhere and drift
+  everywhere. The camera already sees the only signal that matters.
+- **The service stays up.** The gate pauses *detection*, not the process. Flask, the live view,
+  backup sync and the heartbeat keep running — which is essential, because a fully powered-off
+  node **can't detect that morning arrived.** By staying up and still measuring luma, the camera
+  wakes *itself* at dawn.
+- **Hysteresis + dwell so it can't flap.** It sleeps only when luma holds **below `sleep_below`
+  (40)** for **`dwell_seconds` (30 s)**, and wakes only when it holds **above `wake_above` (60)**
+  for the same. The 40↔60 dead-band means dusk and dawn each cross it exactly once; the dwell
+  means a single passing headlight (bright) or one dark truck (dim) can't toggle the gate.
+
+**A quiet performance side-effect.** Because detection and preview encode stop overnight, the
+node stops burning cores on noise for ~8 hours a night — it idles cool instead of running the
+full pipeline against a black frame. Not why the gate exists, but a real thermal/wear win that
+fits this doc's theme: *don't spend compute on frames nobody can measure.*
+
+**Observability + tuning.** Both status payloads (`/api/status` and the off-site heartbeat) now
+report `paused_low_light` and the live `scene_brightness`, so both dashboards show the state and
+expose the exact number to tune the thresholds against. The knobs live under `light_gate` in
+`config.yaml` / `config.py` defaults (see the config-knobs list above) and, being defaults, are
+active fleet-wide even on a node whose `config.yaml` predates them.
+
+**Verification: trip it in daylight, don't wait for night.** Same discipline as the `record_fps`
+and codec chapters — prove the real behavior, don't trust that the config looks right. Two levels:
+
+- **Unit** — `tests/test_lightgate.py` (9 tests) covers the luma measurement (grayscale, colour
+  channel-average, `None`) and the full state machine: sleeps only after the dwell, a brief dip
+  resets the timer, the dead-band keeps it asleep, wakes only after the dwell above `wake_above`,
+  disabled never pauses. (The node runs the service as `/usr/bin/python3` with no venv or pytest,
+  so on-box these are validated by importing the module and calling the `test_*` functions
+  directly with `PYTHONPATH=src` — cv2/numpy are system-wide.)
+- **Live, in daylight** — temporarily appended `light_gate.sleep_below: 130` to the node's
+  `config.local.yaml` and restarted. With the scene at luma **106**, the gate paused within the
+  dwell window (`paused_low_light: true`, zero events logged), proving the end-to-end pause path;
+  then reverted the overlay and restarted back to awake/running. Tonight it pauses on its own when
+  luma drops under 40 (~20:45 per the table) and resumes over 60 at dawn.
+
+**The night's junk was also swept.** The 23 dark-hours phantoms already in the log were rejected
+on the node and mirrored off-site (kept out of every stat, restorable in the reject bin) — the
+gate stops *new* ones; the sweep cleaned the ones already recorded before it shipped.
+
+**The honest limitation.** This pauses *counting* at night, so a genuine nighttime speeder is not
+captured at all. That's the right call — the data is unusable in the dark regardless — but if
+night coverage is ever wanted, it's a **hardware** fix (an IR illuminator or a low-light/starlight
+camera), not a software one. No threshold tuning recovers a signal the sensor never captured.
+
+**Committed:** `d432df8` (`light_gate` in `pipeline.py` + `config.py`/`config.yaml`,
+`paused_low_light`/`scene_brightness` in `web.py` + `remotecontrol.py`, `tests/test_lightgate.py`).
+
 ## Lessons
 
 - **Measure the right number.** "3 fps" was the preview, not the detection loop. `/api/status`
@@ -397,3 +500,8 @@ honest test is a browser.
   nobody was measuring on.
 - **A cheap board with a global-shutter camera + a $5 cooler beats an expensive board** for
   this workload. Spend on the camera and cooling, not the SoC.
+- **Gate on the signal you actually have, not a proxy.** The low-light cutoff is measured frame
+  brightness, not a sunset clock — the camera already sees the only thing that matters, so the
+  gate is correct at any latitude/season and needs no configuration per site. And don't spend
+  compute on frames nobody can measure: pausing detection in the dark kills phantom readings
+  *and* lets the node idle cool all night.
