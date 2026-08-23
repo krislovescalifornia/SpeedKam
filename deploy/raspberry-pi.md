@@ -277,6 +277,12 @@ part of the frame (the far field has poor metric resolution).
 
 ### Calibrate from your phone (headless — recommended)
 
+> **No tape measure? Use drive-by auto-calibration** instead of the manual
+> points below — drive past a few times at a known steady speed and SpeedKam
+> derives the homography itself. Full runbook:
+> [`docs/drive-by-calibration.md`](../docs/drive-by-calibration.md). The manual
+> 4-point method here stays the most metrically precise option.
+
 The desktop `tools/calibrate.py` opens an OpenCV window that needs a monitor, so
 on a headless Pi use the **dashboard's browser calibration** instead:
 
