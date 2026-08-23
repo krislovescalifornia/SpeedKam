@@ -171,6 +171,25 @@ speed:
   #     same vehicle and is rejected. 0 disables.
   min_vehicle_aspect: 1.1
   dedupe_seconds: 3.0
+  #   --- Trajectory-quality gates (deterministic motion physics) --------------
+  #   These are the gate of record for "is it a vehicle?": the phantoms that used
+  #   to poison the data (bugs on the lens, branches swaying in the wind, sensor
+  #   noise reading 90+ mph) are not misclassified cars, they are physically
+  #   impossible TRACKS -- and physics rejects them with certainty, no classifier.
+  #   min_straightness: the ratio of straight-line (net) displacement to the total
+  #     path the object traversed, in world metres. A real vehicle tracks straight
+  #     along the road, so this is ~1.0 (typ. >0.95); foliage swaying in the wind,
+  #     a bug crawling the lens, or a noise blob stitched into a "track" wanders
+  #     back and forth, so its net displacement is only a fraction of its path
+  #     length. 0.80 keeps real passes and kills the wind-in-the-trees phantom.
+  #     Invariant to blob shape, so it catches what the aspect gate cannot.
+  #   max_area_cv: the coefficient of variation (std/mean) of the bounding-box
+  #     area across the pass. A vehicle's silhouette grows and shrinks smoothly
+  #     with perspective (low CV); noise and wind-blown foliage flicker in size
+  #     (high CV). 0.90 fires only on egregious flicker, so it never rejects a
+  #     real car. Pixel-only (no homography). Both live-tunable; 0 disables.
+  min_straightness: 0.80
+  max_area_cv: 0.90
   # "My Road Speed Limit": flags/annotates speeders (over-limit line). This is
   # only the shipped default that seeds a newly imaged node; each node's live
   # value is editable from the dashboard and persists in its runtime state.

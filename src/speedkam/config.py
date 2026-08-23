@@ -102,6 +102,22 @@ DEFAULTS = {
         # frac widens the road box by this fraction of the frame on those edges.
         "min_on_road_frac": 0.6,
         "road_margin_frac": 0.03,
+        # Trajectory-quality gates -- deterministic motion physics, no classifier.
+        #   min_straightness -- minimum ratio of straight-line (net) displacement
+        #     to total traversed path length, in world meters. A real vehicle
+        #     tracks straight along the road (~1.0); foliage swaying in the wind,
+        #     a bug crawling the lens, or a noise blob stitched into a "track"
+        #     wanders back and forth, so its net displacement is a fraction of its
+        #     path length. 0.80 keeps real passes (typ. >0.95) and kills wander.
+        #     Invariant to blob shape, so it catches what the aspect gate can't.
+        #   max_area_cv -- maximum coefficient of variation (std/mean) of the
+        #     bounding-box area across the pass. A vehicle's silhouette grows and
+        #     shrinks smoothly with perspective (low CV); noise and wind-blown
+        #     foliage flicker in size (high CV). 0.90 only fires on egregious
+        #     flicker, so it never rejects a real car. Pixel-only (no homography).
+        # Either 0 disables that gate.
+        "min_straightness": 0.80,
+        "max_area_cv": 0.90,
         # Count each drive-by ONCE: a second confirmed pass in the same direction
         # within this many seconds is treated as a fragmented re-detection of the
         # same vehicle and rejected. 0 disables.

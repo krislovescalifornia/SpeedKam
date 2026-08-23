@@ -35,6 +35,15 @@ class SpeedResult:
     n_samples: int
     confidence: str          # "ok" | "low"
     peak_index: int          # sample index near mid-pass, for snapshot framing
+    # Trajectory-quality signal for the false-positive gate: the ratio of
+    # straight-line (net) displacement to the total traversed path length,
+    # measured in world meters. A real vehicle tracks in a near-straight line
+    # along the road, so this is ~1.0; a blob stitched out of noise, a bug
+    # crawling the lens, or foliage swaying in the wind wanders back and forth,
+    # so its net displacement is only a fraction of its path length (-> 0). It
+    # is invariant to blob shape and needs no classifier. 1.0 when undefined
+    # (degenerate/zero-length path), so it never rejects by default.
+    straightness: float = 1.0
 
     def display(self, units):
         val = self.speed_mph if units == "mph" else self.speed_kmh
@@ -135,6 +144,13 @@ def estimate(track, cfg, frame_wh=None, orientation=None) -> SpeedResult | None:
         cfg["direction_positive"] if dominant >= 0 else cfg["direction_negative"]
     )
 
+    # Straightness: net (straight-line) displacement over the traversed path
+    # length. ~1.0 for a real vehicle; low for wandering foliage/noise. total_dist
+    # is >= min_track_distance_m here (we returned above otherwise), so the ratio
+    # is well-conditioned.
+    net_disp = float(np.linalg.norm(net))
+    straightness = net_disp / total_dist if total_dist > 1e-6 else 1.0
+
     return SpeedResult(
         speed_kmh=kmh,
         speed_mph=v * MPH_PER_MS,
@@ -144,4 +160,5 @@ def estimate(track, cfg, frame_wh=None, orientation=None) -> SpeedResult | None:
         n_samples=len(samples),
         confidence=confidence,
         peak_index=len(samples) // 2,
+        straightness=straightness,
     )

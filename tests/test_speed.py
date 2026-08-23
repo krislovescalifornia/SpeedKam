@@ -54,6 +54,24 @@ def test_constant_velocity_reads_back_exact_speed():
     assert r.distance_m == pytest.approx(10.0 * 1.1, abs=1e-6)  # v * duration
 
 
+def test_straight_track_has_unit_straightness():
+    # A constant-velocity straight-line pass: net displacement == path length.
+    r = estimate(make_track(10.0), BASE_CFG)
+    assert r.straightness == pytest.approx(1.0, abs=1e-6)
+
+
+def test_wandering_track_has_low_straightness():
+    # World x oscillates back and forth (foliage / noise): the cumulative path
+    # still yields a plausible speed, but net displacement is tiny -> the
+    # straightness signal collapses, which is what the gate keys on.
+    xs = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1]
+    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(float(x), 0.0),
+                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
+    r = estimate(Track(id=1, samples=samples), BASE_CFG)
+    assert r is not None                 # a phantom speed is produced...
+    assert r.straightness < 0.2          # ...but the wander is unmistakable
+
+
 def test_kmh_mph_are_consistent():
     r = estimate(make_track(15.0), BASE_CFG)
     assert r.speed_mph / r.speed_kmh == pytest.approx(MPH_PER_MS / KMH_PER_MS, rel=1e-9)

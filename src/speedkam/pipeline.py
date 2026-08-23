@@ -146,6 +146,15 @@ class SpeedCamera:
              # off-road junk). 0 disables. See _on_road_fraction / on_road_side.
              "min_on_road_frac":
                  float(cfg["speed"].get("min_on_road_frac", 0) or 0),
+             # Trajectory-quality gates (deterministic motion physics): a real
+             # vehicle tracks in a near-straight line (min_straightness) and its
+             # blob area changes smoothly, not in a flicker (max_area_cv). These
+             # catch wind-blown foliage / noise phantoms that beat the shape and
+             # size proxies. Either 0 disables. See _classify_reading / _area_cv.
+             "min_straightness":
+                 float(cfg["speed"].get("min_straightness", 0) or 0),
+             "max_area_cv":
+                 float(cfg["speed"].get("max_area_cv", 0) or 0),
              "dedupe_seconds":
                  float(cfg["speed"].get("dedupe_seconds", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
@@ -263,6 +272,23 @@ class SpeedCamera:
         return float(self.state.get("min_on_road_frac") or 0)
 
     @property
+    def min_straightness(self) -> float:
+        """Min ratio of straight-line (net) displacement to traversed path length
+        for a real vehicle pass. A car tracks straight along the road (~1.0);
+        wind-blown foliage / a bug on the lens / a noise blob wanders, so its net
+        displacement is only a fraction of its path length. Below this the track
+        is auto-rejected. 0 disables the gate. See SpeedResult.straightness."""
+        return float(self.state.get("min_straightness") or 0)
+
+    @property
+    def max_area_cv(self) -> float:
+        """Max coefficient of variation (std/mean) of the bbox area across a pass.
+        A vehicle's silhouette changes smoothly with perspective (low CV); noise
+        and swaying foliage flicker in size (high CV). Above this the track is
+        auto-rejected. 0 disables the gate. See _area_cv."""
+        return float(self.state.get("max_area_cv") or 0)
+
+    @property
     def dedupe_seconds(self) -> float:
         """Count a drive-by ONCE: a second confirmed pass in the SAME direction
         finishing within this many seconds of the last counted one is treated as
@@ -271,7 +297,8 @@ class SpeedCamera:
 
     def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
                               min_aspect=None, dedupe_seconds=None,
-                              min_on_road_frac=None) -> dict:
+                              min_on_road_frac=None, min_straightness=None,
+                              max_area_cv=None) -> dict:
         """Live-tune the auto-reject envelope; persists across restarts."""
         if max_distance_m is not None:
             self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
@@ -285,11 +312,19 @@ class SpeedCamera:
             # A fraction, so clamp to [0, 1].
             self.state.set("min_on_road_frac",
                            min(1.0, max(0.0, float(min_on_road_frac))))
+        if min_straightness is not None:
+            # Also a ratio in [0, 1].
+            self.state.set("min_straightness",
+                           min(1.0, max(0.0, float(min_straightness))))
+        if max_area_cv is not None:
+            self.state.set("max_area_cv", max(0.0, float(max_area_cv)))
         return {"max_track_distance_m": self.max_track_distance_m,
                 "min_vehicle_span_m": self.min_vehicle_span_m,
                 "min_vehicle_aspect": self.min_vehicle_aspect,
                 "dedupe_seconds": self.dedupe_seconds,
-                "min_on_road_frac": self.min_on_road_frac}
+                "min_on_road_frac": self.min_on_road_frac,
+                "min_straightness": self.min_straightness,
+                "max_area_cv": self.max_area_cv}
 
     @staticmethod
     def _aspect_ratio(track):
@@ -301,6 +336,27 @@ class SpeedCamera:
         if not ratios:
             return None
         return float(np.median(ratios))
+
+    @staticmethod
+    def _area_cv(track):
+        """Coefficient of variation (std/mean) of the bbox area across the track,
+        or None when there are too few samples to judge.
+
+        A real vehicle's silhouette grows and shrinks smoothly as it crosses the
+        scene, so its area has a low CV. Wind-blown foliage and sensor noise
+        stitched into a track flicker wildly in size, so their CV is high. Pixel-
+        only (no homography), so a foreground phantom can't hide from it. Needs a
+        few samples to be meaningful."""
+        areas = [s.bbox[2] * s.bbox[3]
+                 for s in track.samples
+                 if len(s.bbox) == 4 and s.bbox[2] > 0 and s.bbox[3] > 0]
+        if len(areas) < 3:
+            return None
+        a = np.asarray(areas, dtype=np.float64)
+        mean = float(a.mean())
+        if mean <= 0:
+            return None
+        return float(a.std() / mean)
 
     def _is_duplicate(self, result, now=None):
         """Is this pass a fragmented re-detection of the vehicle we just counted?
@@ -374,7 +430,8 @@ class SpeedCamera:
             return None
         return float(np.mean(mask)) if len(mask) else None
 
-    def _classify_reading(self, result, span_m, aspect, on_road_frac=None):
+    def _classify_reading(self, result, span_m, aspect, on_road_frac=None,
+                          area_cv=None):
         """Auto-reject anything that isn't a car on the road so junk never
         pollutes the stats. Returns (status, reason): "ok" for a real vehicle,
         else "rejected" with a human explanation (shown in the dashboards' bin)."""
@@ -393,6 +450,32 @@ class SpeedCamera:
                     f"off the calibrated road — only {on_road_frac * 100:.0f}% "
                     f"of the track was on the road surface (foreground/sidewalk, "
                     f"not a road vehicle)")
+        # Straightness next: the strongest motion-physics check. A real vehicle
+        # tracks in a near-straight line along the road, so its net displacement
+        # is nearly the whole path it traversed (ratio ~1). Foliage swaying in the
+        # wind, a bug crawling the lens, or a noise blob stitched into a "track"
+        # wanders back and forth -- net displacement collapses to a fraction of
+        # the path length. Invariant to blob shape, so it catches the wind-in-the-
+        # trees phantom the aspect/size proxies can't. (0 or an undefined
+        # straightness -> skipped.)
+        min_straight = self.min_straightness
+        straightness = getattr(result, "straightness", None)
+        if (min_straight > 0 and straightness is not None
+                and straightness < min_straight):
+            return ("rejected",
+                    f"path wandered — straight-line travel was only "
+                    f"{straightness * 100:.0f}% of the {result.distance_m:.0f} m "
+                    f"it tracked (a vehicle goes straight; likely foliage/noise)")
+        # Area coherence: a vehicle's silhouette changes size smoothly across the
+        # scene; noise and wind-blown foliage flicker. A high coefficient of
+        # variation in the bbox area is the flicker signature. Only fires on
+        # egregious flicker, so it never rejects a real car. (0 or too-few-samples
+        # -> skipped.)
+        max_acv = self.max_area_cv
+        if max_acv > 0 and area_cv is not None and area_cv > max_acv:
+            return ("rejected",
+                    f"blob size flickered ({area_cv * 100:.0f}% variation) — "
+                    f"a vehicle's outline changes smoothly (likely foliage/noise)")
         # Shape next: a car is wider than it is tall on a side-on camera; a
         # pedestrian/dog-walker/cyclist is not. Pixel-only, so a person close to
         # the lens (which fools the world-size gate) is still caught.
@@ -879,6 +962,7 @@ class SpeedCamera:
             "span_m": self._vehicle_span_m(track),
             "aspect": self._aspect_ratio(track),
             "on_road_frac": self._on_road_fraction(track),
+            "area_cv": self._area_cv(track),
             "brightness": self.scene_brightness,
             # Finalize time, so the recognition worker's dedupe/last-count timing
             # reflects when the pass ended, not when its (delayed) vote committed.
@@ -1031,6 +1115,7 @@ class SpeedCamera:
         span_m = job["span_m"]
         aspect = job["aspect"]
         on_road_frac = job["on_road_frac"]
+        area_cv = job.get("area_cv")
 
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
@@ -1041,7 +1126,7 @@ class SpeedCamera:
         # and it confirms real cars (filling vehicle_type). A geometry reject
         # stands regardless -- an object must clear BOTH to be counted.
         status, reason = self._classify_reading(result, span_m, aspect,
-                                                on_road_frac)
+                                                on_road_frac, area_cv)
         yolo_type = None
         if status == "ok" and verdict is not None:
             decision, info = self._yolo_gate(verdict, job.get("brightness"))
@@ -1079,13 +1164,17 @@ class SpeedCamera:
         aspect_txt = f", aspect={aspect:.2f}" if aspect is not None else ""
         road_txt = (f", on_road={on_road_frac * 100:.0f}%"
                     if on_road_frac is not None else "")
+        straight = getattr(result, "straightness", None)
+        straight_txt = f", straight={straight * 100:.0f}%" if straight is not None else ""
+        area_txt = f", area_cv={area_cv:.2f}" if area_cv is not None else ""
         vote_txt = ""
         if verdict is not None:
             vote_txt = (f", yolo={verdict.get('vehicle_frames', 0)}/"
                         f"{verdict.get('frames', 0)}veh")
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
               f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
-              f"{aspect_txt}{road_txt}{vote_txt}, conf={result.confidence}){extra}"
+              f"{aspect_txt}{road_txt}{straight_txt}{area_txt}{vote_txt}, "
+              f"conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))
 
