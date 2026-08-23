@@ -30,6 +30,11 @@ deliberately traded some of that frame rate back for **detail**, moving capture 
 native **1456×1088** (720p had been a downscale of it) and dropping `detect_scale` to 0.3 to hold
 **~23 fps** on the Pi 3 while clips gain the full 1.58 MP.
 
+A final chapter — [Browser-playable clips](#browser-playable-clips-2026-08-22) — is off the
+fps/detail axis entirely: the clips were being written in a codec (`mp4v`) that desktop players
+accept but **browsers refuse**, so the dashboard's inline player showed only an error. The fix
+switched the encoder to H.264 (`avc1`) and back-filled the existing clips.
+
 ## The board question that started it
 
 The original question was whether to buy a **Pi 4 (2 GB)** or a **Pi 5 (1 GB)**, later
@@ -319,6 +324,66 @@ raise `max_buffer_mb` toward 320–384.
 
 **Committed:** `cf47f3b` (`camera.width`/`height` → 1456×1088, `detect_scale` → 0.3). The
 `config.py` defaults were separately synced to the live `config.yaml` in `5a10e89`.
+
+## Browser-playable clips (2026-08-22)
+
+Every chapter above is about *making* the clips — frame rate, resolution, pre-roll. This one is
+about a clip that recorded perfectly and still wouldn't **play**. Clicking the 7:03 PM / 49 mph
+pass in the dashboard's clip grid returned a bare browser error:
+
+> No video with supported format and MIME type found.
+
+**Root cause: codec, not container.** `recorder.py` wrote clips with
+`cv2.VideoWriter_fourcc(*"mp4v")` — an `.mp4` file, but the *codec* inside was **MPEG-4 Part 2**
+(the old DivX/Xvid family). Desktop players (VLC, the OS media player) decode it fine, so it
+looked correct for years. But **HTML5 `<video>` supports only H.264 (`avc1`), VP9, and AV1** —
+never MPEG-4 Part 2. The bug had always existed; it only became *visible* when Phase 10 added the
+inline clip player. Before that, clips were download-and-open-in-VLC, which hid it. The `.mp4`
+extension is a container name and says nothing about whether a browser can play the bytes inside.
+
+Confirmed by reading the offending file's fourcc back with OpenCV: `mp4v`, 1456×1088, 22 fps.
+
+### The fix (two parts)
+
+**1. Future clips — the encoder.** Switched the `VideoWriter` to `avc1` (real H.264). The node's
+OpenCV is FFmpeg-backed (`avcodec 59.37`), and a probe confirmed it writes genuine `avc1` for the
+`avc1`/`H264`/`X264` tags (all fall through to the same encoder); only `mp4v` stays MPEG-4 Part 2.
+The change keeps an **mp4v fallback** guarded on `writer.isOpened()`: if some fleet node's OpenCV
+build can't open an H.264 writer, it still records a (VLC-playable) clip rather than a silently
+**empty** file — a failed-to-open `VideoWriter` drops every frame. Committed `18b8e5c`, deployed
+to the node (pull + restart), clean restart verified.
+
+**2. Existing clips — the backfill.** The 19 clips already recorded (on the node *and* mirrored
+off-site) were still `mp4v` and stayed unplayable regardless of the source fix. Re-encoded all 19
+on the Pi — OpenCV decodes `mp4v` → re-encodes `avc1`, written to a temp file and `os.replace`d
+in only after verifying the output's fourcc is `avc1` and frame count > 0 (atomic, never leaves a
+half-written clip). Then pushed the re-encoded files up to the webhost, overwriting the `mp4v`
+copies. **The transcode had to run on the Pi**: the Bluehost webhost is SFTP-only with no shell
+and no ffmpeg, so it can't transcode its own copies — the node is the only machine in the system
+that can encode video. Verified byte-for-byte size match between the local re-encode and the
+uploaded file.
+
+### Verification: actually play it, don't trust the fourcc
+
+Same discipline as the `record_fps` chapter — a clip reading back as `avc1` proves the *tag*, not
+that a browser will decode it (profile, pixel format, and moov atom all matter). So the
+re-encoded 49 mph clip was served over a real localhost HTTP server and loaded into an actual
+Chromium engine with `<video>` event listeners. It fired **`loadeddata` (1456×1088)** and
+**`playing`** — genuine decode-and-play in a browser, not just a valid-looking header.
+
+### Gotcha: the cache hides the fix
+
+The dashboard's media proxy sends `Cache-Control: private, max-age=3600`. The broken `mp4v`
+response for a given `?media=…` URL can sit in the browser cache for up to an hour, so the fixed
+clip won't appear until a **hard refresh** (Ctrl/Cmd-F5) evicts it. The clip was already fixed
+on-disk; the stale 200 was purely client-side.
+
+### Lesson
+
+**A file extension is a container; playability is a codec.** `.mp4` told us nothing — `mp4v`
+inside it is a browser dead-end. And "it plays on my machine" meant VLC, not the target
+(browsers), which is the whole point of a web dashboard. When the surface is a browser, the only
+honest test is a browser.
 
 ## Lessons
 
