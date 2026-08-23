@@ -11,6 +11,7 @@ Both share the exact same detection/tracking/speed logic.
 """
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections import deque
@@ -90,6 +91,13 @@ class SpeedCamera:
 
         # Optional best-effort vehicle attribute recognition (type/color/...).
         self.recognizer = VehicleRecognizer(cfg.get("recognition", {}))
+        # YOLO gate worker (Phase 14): when the recognizer is a real on-node
+        # classifier, the per-pass car-vs-not vote runs on this thread instead of
+        # the detection loop, so a burst of traffic can't stall detection while
+        # ~vote_frames inferences run. Created in run() only when the gate is
+        # active; None means "decide inline" (geometry-only nodes).
+        self._recog_q = None
+        self._recog_thread = None
 
         # Local + remote media rotation so storage doesn't fill up.
         self.retention = RetentionManager(
@@ -294,16 +302,18 @@ class SpeedCamera:
             return None
         return float(np.median(ratios))
 
-    def _is_duplicate(self, result):
+    def _is_duplicate(self, result, now=None):
         """Is this pass a fragmented re-detection of the vehicle we just counted?
         Returns a reason string if so (same direction, within dedupe_seconds),
         else None. Keeps one drive-by from being counted twice when a track
-        breaks and re-acquires."""
+        breaks and re-acquires. ``now`` defaults to the wall clock but callers on
+        the recognition worker pass the pass's *finalize* time, so the vote's
+        latency can't stretch the gap and defeat the dedupe."""
         window = self.dedupe_seconds
         last = self._last_count
         if window <= 0 or last is None:
             return None
-        gap = time.monotonic() - last["t"]
+        gap = (time.monotonic() if now is None else now) - last["t"]
         if 0 <= gap <= window and result.direction == last["direction"]:
             return (f"duplicate — same {result.direction} vehicle counted "
                     f"{gap:.1f}s ago (one drive-by)")
@@ -452,6 +462,18 @@ class SpeedCamera:
         if self.remote is not None:
             self.remote.start()
         self.retention.start()
+        if self._gate_active():
+            # Bounded queue: under a rare burst of back-to-back traffic that
+            # outruns inference, _finalize commits the overflow inline
+            # (geometry-only) rather than blocking detection -- see _finalize.
+            self._recog_q = queue.Queue(maxsize=8)
+            self._recog_thread = threading.Thread(
+                target=self._recog_worker, name="speedkam-recog", daemon=True)
+            self._recog_thread.start()
+            print(f"[SpeedKam] YOLO gate ON (imgsz={self.recognizer.imgsz}, "
+                  f"vote {self.recognizer.min_vehicle_frames}/"
+                  f"{self.recognizer.vote_frames} frames) -- car-vs-not runs on "
+                  f"a worker thread.")
         where = "window" if show else "web/headless"
         mode = "parallel capture+process" if frame_callback is not None else "single-thread"
         print(f"[SpeedKam] Running ({where}, {mode}). Ctrl+C to stop.")
@@ -475,6 +497,15 @@ class SpeedCamera:
             if self.remote is not None:
                 self.remote.stop()
             self.retention.stop()
+            if self._recog_thread is not None:
+                # Drain: let queued passes finish classifying so their rows land.
+                try:
+                    self._recog_q.put(None, timeout=1.0)
+                except queue.Full:
+                    pass
+                self._recog_thread.join(timeout=10.0)
+                self._recog_thread = None
+                self._recog_q = None
             self.camera.release()
             if show:
                 cv2.destroyAllWindows()
@@ -840,22 +871,189 @@ class SpeedCamera:
             self._last_over = False
             return
 
+        # Geometry signals for the false-positive gates. Computed here (on the
+        # detect thread, while the track object is fresh) and carried in the job.
+        job = {
+            "track": track,
+            "result": result,
+            "span_m": self._vehicle_span_m(track),
+            "aspect": self._aspect_ratio(track),
+            "on_road_frac": self._on_road_fraction(track),
+            "brightness": self.scene_brightness,
+            # Finalize time, so the recognition worker's dedupe/last-count timing
+            # reflects when the pass ended, not when its (delayed) vote committed.
+            "t_finalize": time.monotonic(),
+        }
+
+        # When the YOLO gate is active, hand the pass to the worker thread so the
+        # ~vote_frames inferences never stall the detection loop. The buffered
+        # clip frames the vote reads live for ~1.5x clip_seconds, so a verdict a
+        # second or two later still sees them. Under a burst that fills the queue,
+        # commit inline (geometry-only) rather than block detection or drop it.
+        if self._recog_q is not None:
+            try:
+                self._recog_q.put_nowait(job)
+                return
+            except queue.Full:
+                print("[SpeedKam] recognition queue full -- committing "
+                      f"#{track.id} on geometry alone (traffic burst).")
+        self._commit_reading(job, verdict=None)
+
+    # ------------------------------------------------------------ gate worker
+    def _gate_active(self):
+        """True when the on-node YOLO car-vs-not gate should run (real detector
+        loaded, gate enabled, and a recorder to read pass frames from)."""
+        r = self.recognizer
+        return bool(getattr(r, "gate_enabled", False)
+                    and getattr(r, "active", False)
+                    and getattr(r, "can_classify", False)
+                    and self.recorder is not None)
+
+    def _recog_worker(self):
+        """Pop finished passes, run the pass-level vote, then commit the reading.
+        Runs off the detection loop so classification latency never throttles
+        capture/detect. FIFO, so dedupe/counter ordering matches arrival order."""
+        while True:
+            job = self._recog_q.get()
+            try:
+                if job is None:
+                    break
+                verdict = None
+                try:
+                    verdict = self._yolo_pass(job["track"])
+                except Exception as exc:  # noqa: BLE001 - never kill the worker
+                    print(f"[SpeedKam] recognition vote failed: {exc}")
+                try:
+                    self._commit_reading(job, verdict)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[SpeedKam] commit failed for "
+                          f"#{job['track'].id}: {exc}")
+            finally:
+                self._recog_q.task_done()
+
+    def _yolo_pass(self, track):
+        """Sample up to ``vote_frames`` frames spanning the finished track and
+        tally a pass-level car-vs-not verdict. None when there's nothing to
+        score (no recorder / no samples / no buffered frames)."""
+        if self.recorder is None or not track.samples:
+            return None
+        from .recognition import _crop
+        samples = track.samples
+        n = max(1, self.recognizer.vote_frames)
+        if len(samples) <= n:
+            chosen = samples
+        else:
+            step = len(samples) / n
+            chosen = [samples[min(len(samples) - 1, int(i * step))]
+                      for i in range(n)]
+        crops = []
+        for s in chosen:
+            frame = self.recorder.frame_at(s.t)
+            if frame is None:
+                continue
+            crop = _crop(frame, s.bbox)
+            if crop is not None:
+                crops.append(crop)
+        if not crops:
+            return None
+        return self._yolo_vote(crops)
+
+    def _yolo_vote(self, crops):
+        """Tally per-frame classify() results into a pass verdict dict. Pure
+        (no I/O), so tests can drive it with a stubbed recognizer.classify."""
+        v = {"frames": 0, "vehicle_frames": 0, "nuisance_frames": 0,
+             "best_vehicle_label": None, "best_vehicle_conf": 0.0,
+             "best_nuisance_label": None, "best_nuisance_conf": 0.0}
+        for crop in crops:
+            r = self.recognizer.classify(crop)
+            v["frames"] += 1
+            vc = float(r.get("vehicle_conf") or 0.0)
+            nc = float(r.get("nuisance_conf") or 0.0)
+            if vc > 0:
+                v["vehicle_frames"] += 1
+                if vc > v["best_vehicle_conf"]:
+                    v["best_vehicle_conf"] = vc
+                    v["best_vehicle_label"] = r.get("vehicle_label")
+            elif nc > 0:
+                v["nuisance_frames"] += 1
+            if nc > v["best_nuisance_conf"]:
+                v["best_nuisance_conf"] = nc
+                v["best_nuisance_label"] = r.get("nuisance_label")
+        return v
+
+    def _yolo_gate(self, verdict, brightness):
+        """Car-vs-not decision from a pass verdict. Returns (decision, info):
+          ("keep", vehicle_label)   -- enough frames showed a vehicle
+          ("reject", reason)        -- zero vehicle frames in good light (phantom
+                                       / on-road pedestrian geometry can't catch)
+          ("fallback", None)        -- unsure (too few frames, too dark, or the
+                                       vote was inconclusive) -> geometry decides
+        """
+        if verdict is None or verdict.get("frames", 0) == 0:
+            return ("fallback", None)
+        k = max(1, self.recognizer.min_vehicle_frames)
+        vf = verdict.get("vehicle_frames", 0)
+        frames = verdict["frames"]
+        if vf >= k:
+            return ("keep", verdict.get("best_vehicle_label"))
+        if vf == 0:
+            # Zero vehicles across the whole pass. Trust this as a hard reject
+            # only in good light -- in the dark YOLO is unreliable, so defer to
+            # geometry (the low-light gate usually pauses detection first).
+            floor = self.recognizer.min_reject_brightness
+            if brightness is not None and floor > 0 and brightness < floor:
+                return ("fallback", None)
+            nlabel = verdict.get("best_nuisance_label")
+            if nlabel:
+                return ("reject",
+                        f"classified as a {nlabel} "
+                        f"({verdict.get('best_nuisance_conf', 0.0):.2f}) — "
+                        f"no vehicle in {frames} frames, not a car")
+            return ("reject",
+                    f"no vehicle detected in {frames} frames — "
+                    f"phantom (empty road)")
+        # Nonzero but below the vote threshold: inconclusive.
+        if self.recognizer.fallback == "reject":
+            return ("reject",
+                    f"only {vf}/{frames} frames showed a vehicle "
+                    f"(need {k}) — likely not a car")
+        if self.recognizer.fallback == "keep":
+            return ("keep", verdict.get("best_vehicle_label"))
+        return ("fallback", None)
+
+    # --------------------------------------------------------------- commit
+    def _commit_reading(self, job, verdict):
+        """Apply the gates, then log/record/count/mirror a finished pass. Called
+        inline (geometry-only nodes) or from the recognition worker (with a YOLO
+        verdict). Everything after speed estimation lives here."""
+        track = job["track"]
+        result = job["result"]
+        span_m = job["span_m"]
+        aspect = job["aspect"]
+        on_road_frac = job["on_road_frac"]
+
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
 
-        # False-positive gate: is this a real CAR, or a phantom/cyclist/
-        # pedestrian/dog? A rejected reading is logged (for the review bin) but
-        # never counted, never flagged as a speeder, and never films a clip.
-        span_m = self._vehicle_span_m(track)
-        aspect = self._aspect_ratio(track)
-        on_road_frac = self._on_road_fraction(track)
+        # False-positive gates. Geometry runs first (location + speed sanity); it
+        # can REJECT. Then the YOLO gate is the decider for car-vs-not: it can
+        # reject a geometrically-plausible phantom/pedestrian that geometry kept,
+        # and it confirms real cars (filling vehicle_type). A geometry reject
+        # stands regardless -- an object must clear BOTH to be counted.
         status, reason = self._classify_reading(result, span_m, aspect,
                                                 on_road_frac)
+        yolo_type = None
+        if status == "ok" and verdict is not None:
+            decision, info = self._yolo_gate(verdict, job.get("brightness"))
+            if decision == "reject":
+                status, reason = "rejected", info
+            elif decision == "keep":
+                yolo_type = info
         # Count-once-per-drive-by: a real pass that repeats the last counted one
         # (same direction, within dedupe_seconds) is a fragmented re-detection of
         # the same vehicle -> drop it as a duplicate.
         if status == "ok":
-            dup = self._is_duplicate(result)
+            dup = self._is_duplicate(result, now=job.get("t_finalize"))
             if dup:
                 status, reason = "rejected", dup
         rejected = status == "rejected"
@@ -864,8 +1062,9 @@ class SpeedCamera:
         capture = (not rejected) and self._should_capture(display_speed)
 
         # Best-effort attributes (type/make/model/year/color) -- run for EVERY
-        # counted pass, even ones below the SpeedKapture threshold.
-        attrs = self._recognize(track)
+        # counted pass, even ones below the SpeedKapture threshold. When the YOLO
+        # vote already ran, reuse its vehicle_type instead of a second inference.
+        attrs = self._recognize(track, yolo_type=yolo_type)
 
         self._last_result_text = (
             f"#{track.id}: {result.display(self.units)} {result.direction}"
@@ -880,9 +1079,13 @@ class SpeedCamera:
         aspect_txt = f", aspect={aspect:.2f}" if aspect is not None else ""
         road_txt = (f", on_road={on_road_frac * 100:.0f}%"
                     if on_road_frac is not None else "")
+        vote_txt = ""
+        if verdict is not None:
+            vote_txt = (f", yolo={verdict.get('vehicle_frames', 0)}/"
+                        f"{verdict.get('frames', 0)}veh")
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
               f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
-              f"{aspect_txt}{road_txt}, conf={result.confidence}){extra}"
+              f"{aspect_txt}{road_txt}{vote_txt}, conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))
 
@@ -916,8 +1119,9 @@ class SpeedCamera:
             if over:
                 self.speeder_count += 1
             # Remember this counted pass so the next fragmented re-detection of
-            # the same vehicle can be deduped (count-once-per-drive-by).
-            self._last_count = {"t": time.monotonic(),
+            # the same vehicle can be deduped (count-once-per-drive-by). Keyed to
+            # the finalize time so dedupe spacing is independent of vote latency.
+            self._last_count = {"t": job.get("t_finalize") or time.monotonic(),
                                 "direction": result.direction,
                                 "speed_kmh": result.speed_kmh}
 
@@ -953,15 +1157,38 @@ class SpeedCamera:
             self.sync.enqueue(event)
 
     # --------------------------------------------------------------- recognition
-    def _recognize(self, track):
-        """Pick a representative buffered frame + bbox and run the recognizer."""
-        from .recognition import EMPTY
+    def _recognize(self, track, yolo_type=None):
+        """Representative-frame attributes (color always; vehicle_type from the
+        YOLO vote when it already ran, else from the single-crop recognizer).
+
+        ``yolo_type`` avoids a second inference: when the gate's pass-level vote
+        already classified the vehicle, we reuse its label and only run the cheap
+        OpenCV color pass here."""
+        from .recognition import EMPTY, _crop, estimate_color
         if not self.recognizer.active or self.recorder is None or not track.samples:
-            return dict(EMPTY)
+            out = dict(EMPTY)
+            if yolo_type:
+                out["vehicle_type"] = yolo_type
+            return out
         sample = track.samples[len(track.samples) // 2]  # near mid-pass
         frame = self.recorder.frame_at(sample.t)
         if frame is None:
-            return dict(EMPTY)
+            out = dict(EMPTY)
+            if yolo_type:
+                out["vehicle_type"] = yolo_type
+            return out
+        # Gate path: YOLO already ran in the vote. Reuse its type; just add color.
+        if yolo_type is not None or self._recog_q is not None:
+            out = dict(EMPTY)
+            out["vehicle_type"] = yolo_type
+            if self.recognizer.want_color:
+                crop = _crop(frame, sample.bbox)
+                try:
+                    out["color"] = (estimate_color(crop)
+                                    if crop is not None else None)
+                except Exception:  # noqa: BLE001 - color is best-effort
+                    pass
+            return out
         return self.recognizer.recognize(frame, sample.bbox)
 
     @staticmethod

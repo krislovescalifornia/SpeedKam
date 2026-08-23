@@ -419,3 +419,48 @@ recognition:
   # class names look like "Toyota Camry 2018". Leave empty if you don't have one
   # -> make/model/year stay blank ("when available").
   make_model_weights: ""
+
+  # --- YOLO gate: the classifier as the gate of record (Phase 14) -----------
+  # On a board that can run the detector (Pi 4 / 8 GB, 64-bit, ultralytics+torch
+  # installed, and defer:false so the model actually loads), promote YOLO from
+  # best-effort enrichment to the CAR-VS-NOT decider. Once per finished pass, on
+  # a worker thread (never the detection loop), it samples several frames across
+  # the track and votes: a pass with too few vehicle frames -- and especially
+  # ZERO in good light -- is rejected as a phantom / on-road pedestrian, the
+  # false positive the geometry gates provably cannot catch (an empty road that
+  # reads as a plausible car). Geometry stays on for location + speed sanity;
+  # an object must clear BOTH. Leave enabled:false on geometry-only nodes.
+  gate:
+    enabled: false
+    # Inference size. 320 is the Pi-4 sweet spot: ~0.7 s/frame vs ~2.3 s at 640.
+    # At 320 the detector emits faint phantom "cars" (<=0.55) that 640 doesn't,
+    # so the gate leans on min_confidence below rather than a bigger, slower
+    # image. Measured on the board; don't assume.
+    imgsz: 320
+    # The gate's OWN detection-confidence floor (separate from the enrichment
+    # min_confidence above). 0.60 cleanly splits empty-road phantoms (best 0.41-
+    # 0.54 at imgsz 320) from real cars (0.86-0.91) -- validated 7/7 on the
+    # labelled regression clips (tools/yolo_validate.py). Raise if phantoms leak.
+    min_confidence: 0.60
+    # Frames sampled evenly across the pass, and the minimum of them that must
+    # contain a vehicle to KEEP. A real car shows in ~70% of frames (30-34/45 in
+    # validation), a phantom in none -- so 2 of 6 is safe and forgiving of the
+    # entering/leaving frames where the car is marginal. Fewer frames = lower
+    # per-pass latency on the worker thread (6 x ~0.7 s ~= 4 s/pass at imgsz 320).
+    vote_frames: 6
+    min_vehicle_frames: 2
+    # What to do when the vote is nonzero but under the threshold (a
+    # tiny/distant/blurry crop the model was unsure about):
+    #   geometry -> defer to the geometry gates (default, safest: don't drop a
+    #               real car the model merely wasn't confident about)
+    #   reject   -> treat as junk
+    #   keep     -> count it
+    low_confidence_fallback: geometry
+    # A zero-vehicle pass is hard-rejected only when the scene is at least this
+    # bright (0-255 mean luma): YOLO degrades in the dark, so a dim scene defers
+    # to geometry instead of inventing rejections. The low-light gate usually
+    # pauses detection before it gets this dark anyway. 0 disables the guard.
+    min_reject_brightness: 60
+    # COCO classes counted as "not a vehicle" nuisances (names or ids). Empty =
+    # person, bicycle, cat, dog. (Vehicles are always car/truck/bus/motorcycle.)
+    nuisance_classes: []

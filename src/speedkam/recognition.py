@@ -29,6 +29,35 @@ import numpy as np
 # COCO class ids we treat as vehicles -> our label.
 _COCO_VEHICLES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
+# COCO class ids that are explicitly NOT vehicles -- the nuisances the geometry
+# gates provably cannot separate from a car once they're on the road plane (a
+# pedestrian/cyclist whose feet are on the calibrated surface). The YOLO gate
+# (Phase 14) exists to catch exactly these, plus the zero-detection phantom.
+_COCO_NUISANCES = {0: "person", 1: "bicycle", 15: "cat", 16: "dog"}
+
+# Name<->id lookups for resolving a configured nuisance list.
+_COCO_NAMES = dict(_COCO_VEHICLES)
+_COCO_NAMES.update(_COCO_NUISANCES)
+_NAME_TO_ID = {name: cid for cid, name in _COCO_NAMES.items()}
+
+
+def _resolve_nuisances(spec):
+    """Map a config `nuisance_classes` list (COCO ids or names) to {id: name}.
+    Empty/unset -> the sensible default (person/bicycle/cat/dog)."""
+    if not spec:
+        return dict(_COCO_NUISANCES)
+    out = {}
+    for item in spec:
+        if isinstance(item, bool):  # guard: bool is an int subclass
+            continue
+        if isinstance(item, int):
+            out[item] = _COCO_NAMES.get(item, str(item))
+        else:
+            name = str(item).strip().lower()
+            if name in _NAME_TO_ID:
+                out[_NAME_TO_ID[name]] = name
+    return out or dict(_COCO_NUISANCES)
+
 EMPTY = {
     "vehicle_type": None,
     "make": None,
@@ -101,6 +130,28 @@ class VehicleRecognizer:
         self.defer = bool(self.cfg.get("defer"))
         self.want_color = bool(self.cfg.get("color", True))
         self.min_conf = float(self.cfg.get("min_confidence", 0.35))
+        # --- YOLO gate (Phase 14) config ------------------------------------
+        # The classifier acting as the gate of record for car-vs-not. Parsed
+        # even when disabled so the pipeline can read the knobs uniformly.
+        gate = self.cfg.get("gate", {}) or {}
+        self.gate_enabled = bool(gate.get("enabled", False))
+        # The gate's own detection confidence, decoupled from the enrichment
+        # min_confidence: at the Pi-4 sweet-spot imgsz 320 the detector
+        # hallucinates faint (<=0.55) "vehicles" on empty-road phantoms, so the
+        # gate needs a higher bar (~0.60) to separate them from real cars (0.85+)
+        # -- validated 7/7 on the labelled regression clips.
+        self.gate_min_conf = float(gate.get("min_confidence", self.min_conf)
+                                   or self.min_conf)
+        self.imgsz = int(gate.get("imgsz", 320) or 320)
+        self.vote_frames = int(gate.get("vote_frames", 8) or 8)
+        self.min_vehicle_frames = int(gate.get("min_vehicle_frames", 2) or 2)
+        self.fallback = str(
+            gate.get("low_confidence_fallback", "geometry") or "geometry").lower()
+        self.min_reject_brightness = float(gate.get("min_reject_brightness", 60) or 0)
+        self.nuisance_ids = _resolve_nuisances(gate.get("nuisance_classes"))
+        # True once a real COCO detector is loaded (below) on a non-defer node --
+        # the precondition for running the pass-level vote gate.
+        self.can_classify = False
         self._type_model = None
         self._mm_model = None
         self._active = False
@@ -130,6 +181,9 @@ class VehicleRecognizer:
         self._type_model = self._try_load(self.cfg.get("model"), "type")
         self._mm_model = self._try_load(self.cfg.get("make_model_weights"),
                                         "make/model")
+        # The COCO type model recognizes people/bicycles too, so it can also
+        # serve as the car-vs-not gate's classifier (see classify()).
+        self.can_classify = self._type_model is not None
         self._active = bool(self._type_model or self._mm_model or self.want_color)
         if self._active:
             bits = []
@@ -236,6 +290,45 @@ class VehicleRecognizer:
                         x0, y0, x1, y1 = xy
                         best_box = (x0, y0, x1 - x0, y1 - y0)
         return (best_label, best_box) if want_box else best_label
+
+    # ------------------------------------------------------------- gate verdict
+    def classify(self, crop) -> dict:
+        """One YOLO pass over a crop, scoring it for the car-vs-not gate.
+
+        Returns the best VEHICLE detection and the best NUISANCE detection found
+        (person/bicycle/animal), each as (label, confidence):
+
+            {"vehicle_label": str|None, "vehicle_conf": float,
+             "nuisance_label": str|None, "nuisance_conf": float}
+
+        All None/0.0 when no model is loaded, the crop is empty, or nothing
+        relevant clears ``min_confidence``. This is the per-frame primitive the
+        pipeline's pass-level vote tallies -- real cars light up vehicle_conf on
+        most frames; an empty-road phantom lights up neither on any frame."""
+        out = {"vehicle_label": None, "vehicle_conf": 0.0,
+               "nuisance_label": None, "nuisance_conf": 0.0}
+        if self._type_model is None or crop is None or getattr(crop, "size", 0) == 0:
+            return out
+        try:
+            res = self._type_model.predict(crop, verbose=False,
+                                           conf=self.gate_min_conf,
+                                           imgsz=self.imgsz)
+        except Exception:  # noqa: BLE001 - inference must never break the loop
+            return out
+        for r in res:
+            boxes = getattr(r, "boxes", None)
+            if boxes is None:
+                continue
+            for cls_id, conf in zip(boxes.cls.tolist(), boxes.conf.tolist()):
+                cid = int(cls_id)
+                conf = float(conf)
+                if cid in _COCO_VEHICLES and conf > out["vehicle_conf"]:
+                    out["vehicle_label"] = _COCO_VEHICLES[cid]
+                    out["vehicle_conf"] = conf
+                elif cid in self.nuisance_ids and conf > out["nuisance_conf"]:
+                    out["nuisance_label"] = self.nuisance_ids[cid]
+                    out["nuisance_conf"] = conf
+        return out
 
     def _classify_make_model(self, crop):
         try:
