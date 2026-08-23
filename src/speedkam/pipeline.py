@@ -969,6 +969,23 @@ class SpeedCamera:
             "t_finalize": time.monotonic(),
         }
 
+        # Grab the clip frames NOW, while the vehicle is still fresh in the ring
+        # buffer. Media saving is deferred to _commit_reading, which for a gated
+        # node runs on the recognition worker ~vote_frames inferences later -- by
+        # then the shallow (~1-2s) buffer has rotated PAST the car, so a clip
+        # encoded then is empty road. Holding the frame references here (cheap --
+        # no copy) means the deferred encode still shows the vehicle. center_t is
+        # the mid-pass time, so the snapshot is framed on the car, not the buffer
+        # middle (which on a fast pass is empty).
+        if self.recorder is not None and track.samples:
+            center_t = track.samples[len(track.samples) // 2].t
+            half = float(self.cfg["recording"].get("clip_seconds", 8)) / 2.0
+            job["center_t"] = center_t
+            job["clip_frames"] = self.recorder.grab_window(center_t, half)
+        else:
+            job["center_t"] = None
+            job["clip_frames"] = None
+
         # When the YOLO gate is active, hand the pass to the worker thread so the
         # ~vote_frames inferences never stall the detection loop. The buffered
         # clip frames the vote reads live for ~1.5x clip_seconds, so a verdict a
@@ -1182,11 +1199,14 @@ class SpeedCamera:
         # always log the row so counts + attributes are recorded even for
         # uncaptured passes. Rejected readings still keep a snapshot for review.
         clip_name = snap_name = None
+        clip_frames = job.get("clip_frames")
+        center_t = job.get("center_t")
         if self.recorder is not None:
             if capture:
                 clip, snap = self.recorder.save_media(
                     track.id, result, self.units, self.limit_kmh,
                     self.cfg["recording"]["burn_overlay"],
+                    frames=clip_frames, center_t=center_t,
                 )
                 clip_name = clip.name if clip else None
                 snap_name = snap.name if snap else None
@@ -1196,7 +1216,8 @@ class SpeedCamera:
                 # No clip, but keep a JPEG: for rejects so the bin is reviewable,
                 # for sub-threshold passes so a deferred worker can enrich later.
                 snap = self.recorder.save_snapshot_only(
-                    track.id, result, self.units, self.limit_kmh)
+                    track.id, result, self.units, self.limit_kmh,
+                    frames=clip_frames, center_t=center_t)
                 snap_name = snap.name if snap else None
             self.recorder.log_row(track.id, result, self.units, attrs,
                                   clip_name, snap_name, captured=capture,

@@ -252,6 +252,32 @@ class Recorder:
         with self._lock:
             return list(self.buffer)
 
+    def grab_window(self, center_t, half_seconds):
+        """A stable list of buffered (t, frame) within +/- half_seconds of
+        center_t, oldest first -- captured NOW so it survives later buffer
+        rotation.
+
+        This is the fix for empty clips: the media save is deferred until after
+        the (slow) recognition vote, by which point the ring buffer -- only a
+        second or two deep -- has rotated PAST the vehicle. Grabbing the window
+        at finalize (while the car is still fresh in the buffer) and holding the
+        frame references means the encode can happen seconds later and still show
+        the car. Falls back to the whole buffer if nothing lands in the window
+        (e.g. a clock reset)."""
+        with self._lock:
+            if not self.buffer:
+                return []
+            win = [tf for tf in self.buffer if abs(tf[0] - center_t) <= half_seconds]
+            return win if win else list(self.buffer)
+
+    @staticmethod
+    def _center_index(frames, center_t):
+        """Index of the frame nearest center_t (for snapshot framing), or the
+        middle frame when center_t is unknown."""
+        if center_t is None:
+            return len(frames) // 2
+        return min(range(len(frames)), key=lambda i: abs(frames[i][0] - center_t))
+
     def _measured_fps(self, frames):
         if len(frames) >= 2:
             span = frames[-1][0] - frames[0][0]
@@ -266,34 +292,47 @@ class Recorder:
         return float(self.fps_hint)
 
     # ----------------------------------------------------------------- media
-    def save_snapshot_only(self, track_id, result, units, limit_kmh):
+    def save_snapshot_only(self, track_id, result, units, limit_kmh,
+                           frames=None, center_t=None):
         """Write just the annotated JPEG snapshot (no clip) for one pass.
 
         Used for counted passes BELOW the SpeedKapture threshold when
         recording.always_snapshot is on, so a deferred recognition worker has
         an image to enrich later. Returns the snapshot Path, or None.
+
+        ``frames`` -- a pre-grabbed (t, frame) window (from grab_window at
+        finalize); falls back to the live buffer. ``center_t`` frames the
+        snapshot on the vehicle's mid-pass time rather than the buffer middle,
+        so the JPEG actually shows the car.
         """
-        frames = self._snapshot()
+        frames = frames if frames is not None else self._snapshot()
         if not frames:
             return None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         speed_tag = (f"{result.speed_mph:.0f}mph" if units == "mph"
                      else f"{result.speed_kmh:.0f}kmh")
         base = f"{stamp}_id{track_id}_{speed_tag}"
-        _, fr = frames[len(frames) // 2]
+        _, fr = frames[self._center_index(frames, center_t)]
         snap = fr.copy()
         annotate.draw_speed_banner(snap, result, limit_kmh, units)
         snapshot_path = self.output_dir / f"{base}.jpg"
         cv2.imwrite(str(snapshot_path), snap)
         return snapshot_path
 
-    def save_media(self, track_id, result, units, limit_kmh, burn_overlay):
+    def save_media(self, track_id, result, units, limit_kmh, burn_overlay,
+                   frames=None, center_t=None):
         """Write clip (+ optional snapshot) for one finished vehicle.
 
         Returns (clip_path, snapshot_path); either may be None. Does NOT touch
         the CSV -- call log_row() for that.
+
+        ``frames`` is a pre-grabbed (t, frame) window captured at finalize (see
+        grab_window), so a clip encoded seconds later -- after the recognition
+        vote -- still contains the vehicle instead of the empty road the ring
+        buffer has since rotated to. ``center_t`` frames the snapshot on the
+        vehicle's mid-pass time.
         """
-        frames = self._snapshot()
+        frames = frames if frames is not None else self._snapshot()
         if not frames:
             return None, None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -316,13 +355,13 @@ class Recorder:
             writer = cv2.VideoWriter(
                 str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
         snapshot_path = None
-        mid = len(frames) // 2
+        snap_idx = self._center_index(frames, center_t)
         for i, (_, fr) in enumerate(frames):
             out = fr.copy()
             if burn_overlay:
                 annotate.draw_speed_banner(out, result, limit_kmh, units)
             writer.write(out)
-            if self.cfg["save_snapshot"] and i == mid:
+            if self.cfg["save_snapshot"] and i == snap_idx:
                 snap = fr.copy()
                 annotate.draw_speed_banner(snap, result, limit_kmh, units)
                 snapshot_path = self.output_dir / f"{base}.jpg"

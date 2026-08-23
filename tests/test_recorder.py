@@ -8,6 +8,13 @@ swap-thrashed a 1GB Pi."""
 import numpy as np
 
 from speedkam.recorder import Recorder
+from speedkam.speed import SpeedResult
+
+
+def _result(mph=30.0):
+    return SpeedResult(speed_kmh=mph * 1.60934, speed_mph=mph,
+                       direction="Eastbound", distance_m=6.0, duration_s=0.4,
+                       n_samples=12, confidence="ok", peak_index=6)
 
 
 def _rec(tmp_path, clip_seconds=8, max_buffer_mb=128, record_fps=0):
@@ -60,3 +67,49 @@ def test_record_fps_caps_stored_rate(tmp_path):
     times = [t for t, _ in rec.buffer]
     gaps = [b - a for a, b in zip(times, times[1:])]
     assert min(gaps) >= 1.0 / 15 - 1e-6
+
+
+# --------------------------------------------------- media framing (empty-clip fix)
+def test_center_index_picks_nearest_to_vehicle_time():
+    frames = [(float(i), None) for i in range(11)]   # t = 0..10, middle = idx 5
+    # With the vehicle at t=8, the snapshot must frame on idx 8, NOT the buffer
+    # middle (idx 5) -- that middle-of-buffer choice is what saved empty road.
+    assert Recorder._center_index(frames, 8.0) == 8
+    assert Recorder._center_index(frames, None) == 5   # fallback = middle
+
+
+def test_grab_window_selects_around_center_and_survives_rotation(tmp_path):
+    rec = _rec(tmp_path, clip_seconds=1000, max_buffer_mb=1024)
+    for i in range(20):
+        rec.push(float(i), np.full((8, 8, 3), i, np.uint8))
+    win = rec.grab_window(center_t=10.0, half_seconds=2.0)   # t in [8, 12]
+    ts = [t for t, _ in win]
+    assert ts == [8.0, 9.0, 10.0, 11.0, 12.0]
+    # The grabbed frames are held by reference, so evicting the buffer entirely
+    # can't blank them -- this is what lets a deferred encode still show the car.
+    for i in range(20, 60):
+        rec.push(float(i), np.zeros((8, 8, 3), np.uint8))
+    assert [t for t, _ in win] == [8.0, 9.0, 10.0, 11.0, 12.0]
+    assert int(win[2][1].mean()) == 10               # frame content intact
+
+
+def test_snapshot_frames_on_the_car_not_empty_road(tmp_path):
+    # The regression: a shallow buffer of mostly-empty frames with the car
+    # present only near center_t. The saved JPEG must be the CAR frame (bright),
+    # not the buffer-middle empty-road frame the old code always picked.
+    rec = _rec(tmp_path)
+    empty = np.zeros((64, 64, 3), np.uint8)
+    car = np.zeros((64, 64, 3), np.uint8)
+    car[:20, :, :] = 200                             # bright marker up top (clear of the banner)
+    frames = [(float(i), empty) for i in range(11)]
+    frames[8] = (8.0, car)                           # car present at t=8 only
+    path = rec.save_snapshot_only(1, _result(), "mph", 40.0,
+                                  frames=frames, center_t=8.0)
+    assert path is not None and path.exists()
+    import cv2
+    img = cv2.imread(str(path))
+    assert img[:20, :, :].mean() > 120               # the CAR frame was saved
+    # And with no center_t it would fall back to the empty middle frame.
+    path2 = rec.save_snapshot_only(2, _result(), "mph", 40.0, frames=frames)
+    img2 = cv2.imread(str(path2))
+    assert img2[:20, :, :].mean() < 40               # buffer-middle = empty road
