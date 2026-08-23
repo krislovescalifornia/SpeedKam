@@ -108,6 +108,29 @@ tracker:
   # Frames a track can go unmatched before it's finalized (car left frame).
   max_missed: 12
 
+# --- Low-light gate ----------------------------------------------------------
+# In the dark the motion detector has no real vehicles to lock onto, so it tracks
+# headlight glare and sensor noise instead -- inventing phantom "cars" at absurd
+# speeds (90-170 km/h) that wreck the night's stats. This gate pauses detection
+# and recording once the scene goes dark, and resumes automatically at dawn.
+# It's driven purely by measured frame brightness (no clock, sunset table, or
+# GPS needed), and the SERVICE STAYS UP -- the dashboard and live view keep
+# serving, and the camera itself notices when morning arrives. The live
+# brightness reading is shown on both dashboards to make tuning easy.
+light_gate:
+  enabled: true
+  # Mean frame brightness on a 0-255 scale. Hysteresis: it only falls asleep
+  # below sleep_below and only wakes above wake_above; the gap keeps dusk/dawn
+  # flicker from flapping it. Reference node measured ~90-100 in daylight, the
+  # dusk collapse crossing 40 right as detection quality died, and <15 in full
+  # dark -- so 40/60 sits safely in the dead zone. Watch the dashboard's
+  # brightness readout at your site and adjust if your lens/exposure differ.
+  sleep_below: 40
+  wake_above: 60
+  # Brightness must hold past a threshold this long (seconds) before the gate
+  # flips -- so a passing headlight or a momentary dark truck can't toggle it.
+  dwell_seconds: 30.0
+
 speed:
   # Path to the calibration produced by tools/calibrate.py. If missing, the app
   # runs in DETECTION-ONLY mode (records clips, but reports no speed).

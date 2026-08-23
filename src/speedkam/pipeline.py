@@ -170,6 +170,18 @@ class SpeedCamera:
         # case the camera hands back a different resolution than requested.
         self.frame_wh = (cfg["camera"]["width"], cfg["camera"]["height"])
 
+        # --- low-light gate ------------------------------------------------
+        # In the dark the motion detector tracks headlight glare and sensor
+        # noise, inventing phantom "vehicles" at absurd speeds (90-170 km/h).
+        # Rather than pollute the data, pause detection/recording once the scene
+        # goes dark and resume automatically at dawn -- driven purely by measured
+        # frame brightness, with hysteresis so dusk/dawn don't flap it. Read by
+        # the dashboards so the operator sees WHY it's idle.
+        self._lg = cfg.get("light_gate", {}) or {}
+        self.paused_low_light = False
+        self.scene_brightness = None   # last measured mean luma (0-255) or None
+        self._lg_since = None          # monotonic time the pending flip began
+
     # --------------------------------------------------------------- calibration
     def set_calibration(self, calibration):
         """Hot-swap the calibration (called by the web recalibration flow)."""
@@ -416,6 +428,54 @@ class SpeedCamera:
                       f"({frames / dur:.1f} FPS).")
 
     # ------------------------------------------------------------ frame work
+    # ------------------------------------------------------------- light gate
+    @staticmethod
+    def _measure_brightness(img):
+        """Mean luma (0-255) of a frame -- averaged over whatever channels it
+        has (BGR or a single-plane detection frame). cv2.mean is a fast C reduce,
+        so this is negligible next to detection even at full resolution."""
+        if img is None:
+            return None
+        m = cv2.mean(img)               # (c0, c1, c2, c3); unused channels are 0
+        chans = img.shape[2] if img.ndim == 3 else 1
+        return sum(m[:chans]) / max(1, chans)
+
+    def _update_light_gate(self, t, brightness):
+        """Advance the day/night state machine and return True while paused.
+
+        Hysteresis + dwell: fall asleep only after brightness holds below
+        ``sleep_below`` for ``dwell_seconds``, and wake only after it holds above
+        ``wake_above`` for the same -- so a passing headlight or a dark truck
+        can't toggle the gate, and dusk/dawn cross the dead-band once."""
+        if not self._lg.get("enabled", True) or brightness is None:
+            self.paused_low_light = False
+            return False
+        sleep_below = float(self._lg.get("sleep_below", 40))
+        wake_above = float(self._lg.get("wake_above", 60))
+        dwell = float(self._lg.get("dwell_seconds", 30))
+        # Condition that would flip the current state, and the log line for it.
+        if self.paused_low_light:
+            pending = brightness > wake_above
+        else:
+            pending = brightness < sleep_below
+        if not pending:
+            self._lg_since = None
+            return self.paused_low_light
+        if self._lg_since is None:
+            self._lg_since = t
+        elif t - self._lg_since >= dwell:
+            self.paused_low_light = not self.paused_low_light
+            self._lg_since = None
+            if self.paused_low_light:
+                print(f"[SpeedKam] Light gate: scene too dark "
+                      f"(brightness {brightness:.0f} < {sleep_below:.0f}) -- "
+                      f"pausing detection until daylight.")
+            else:
+                print(f"[SpeedKam] Light gate: daylight restored "
+                      f"(brightness {brightness:.0f} > {wake_above:.0f}) -- "
+                      f"resuming detection.")
+        return self.paused_low_light
+
     def _process_frame(self, t, frame, detect_frame, frame_callback,
                        draw_debug, show):
         """Detect -> track -> finalize one frame and publish the view.
@@ -426,6 +486,26 @@ class SpeedCamera:
         only when the desktop window asked to quit ('q'); True otherwise.
         """
         self.frame_wh = (frame.shape[1], frame.shape[0])
+
+        # Low-light gate: measure scene brightness (cheap, on the tiny detection
+        # frame) and, if it's too dark to work, skip detection/tracking entirely.
+        # No detections => no tracks => no phantom night readings and no clips.
+        # The preview still publishes so the live view shows the dark scene and a
+        # "paused" banner; the gate wakes itself when light returns at dawn.
+        self.scene_brightness = self._measure_brightness(
+            detect_frame if detect_frame is not None else frame)
+        if self._update_light_gate(t, self.scene_brightness):
+            self._last_result_text = "PAUSED - low light (waiting for daylight)"
+            self._last_over = False
+            if show:
+                view = self.render_preview(frame, self._overlay([], draw_debug))
+                cv2.imshow("SpeedKam", view)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    return False
+            elif frame_callback is not None:
+                frame_callback(frame, self._overlay([], draw_debug))
+            return True
+
         # Prefer the camera's hardware-downscaled detection frame (the picamera2
         # lores stream) when present -- detection runs on a tiny frame with no
         # software resize. Otherwise the detector downscales the full frame.

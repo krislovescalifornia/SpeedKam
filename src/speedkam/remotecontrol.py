@@ -80,6 +80,12 @@ class RemoteControl:
             "orientation": cam.orientation,
             "speed_limit_kmh": cam.limit_kmh,
             "units": cam.units,
+            # Low-light gate: paused==idle-because-dark, plus the live brightness
+            # reading so the off-site dashboard can show why and help tuning.
+            "paused_low_light": bool(getattr(cam, "paused_low_light", False)),
+            "scene_brightness": (round(cam.scene_brightness, 1)
+                                 if getattr(cam, "scene_brightness", None)
+                                 is not None else None),
             # car-filter ("only count cars") thresholds, so the off-site
             # dashboard can show current values + a pending/applied indicator.
             "max_track_distance_m": getattr(cam, "max_track_distance_m", None),

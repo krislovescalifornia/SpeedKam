@@ -52,6 +52,22 @@ DEFAULTS = {
         "min_hits": 3,
     },
     "tracker": {"max_match_distance": 120, "max_missed": 12},
+    "light_gate": {
+        # Pause detection/recording when the scene is too dark to work (dusk ->
+        # night) and auto-resume when light returns (dawn). The service stays up
+        # (dashboard + live view keep serving) so the camera detects morning
+        # itself -- no clock, sunset table, or location needed.
+        "enabled": True,
+        # Mean frame brightness (0-255). Hysteresis: fall asleep only below
+        # sleep_below, wake only above wake_above; the gap stops dusk/dawn flicker
+        # from flapping the gate. Tune per site from the dashboard's live
+        # brightness readout (daylight ~90-100, full dark <15 on the ref node).
+        "sleep_below": 40,
+        "wake_above": 60,
+        # Seconds the brightness must hold past a threshold before switching, so a
+        # passing headlight or a momentary dark truck can't toggle the gate.
+        "dwell_seconds": 30.0,
+    },
     "speed": {
         "calibration_file": "calibration.json",
         "min_track_distance_m": 3.0,

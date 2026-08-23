@@ -204,6 +204,10 @@ class Runner:
             "fps": round(sc.current_fps, 1),
             "units": sc.units,
             "speed_limit_kmh": sc.limit_kmh,
+            "paused_low_light": bool(getattr(sc, "paused_low_light", False)),
+            "scene_brightness": (round(sc.scene_brightness, 1)
+                                 if getattr(sc, "scene_brightness", None)
+                                 is not None else None),
             "total_count": sc.total_count,
             "speeder_count": sc.speeder_count,
             "last_event": sc.last_event,
