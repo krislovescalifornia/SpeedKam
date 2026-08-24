@@ -1,0 +1,4 @@
+# Never commit real neighbourhood video to this public repo (privacy).
+# Clips are re-pulled from the off-site backup via fetch.sh.
+*.mp4
+*.jpg
