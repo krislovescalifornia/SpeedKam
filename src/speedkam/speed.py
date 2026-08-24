@@ -128,7 +128,10 @@ def _crossing_seconds(ts, xs, xa, xb):
     ta, tb = first_cross(xa), first_cross(xb)
     if ta is None or tb is None:
         return None
-    return abs(tb - ta)
+    # float() so downstream speed/duration are plain Python floats, not numpy
+    # scalars -- a numpy value propagates into `over = speed > limit` as a
+    # numpy bool_, which then breaks jsonify() of the status/event payloads.
+    return float(abs(tb - ta))
 
 
 def estimate(track, cfg, frame_wh=None, orientation=None) -> SpeedResult | None:
