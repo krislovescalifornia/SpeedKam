@@ -104,29 +104,34 @@ def estimate_color(crop) -> str | None:
     sat = hsv[:, :, 1].reshape(-1).astype(np.int32)
     val = hsv[:, :, 2].reshape(-1).astype(np.int32)
 
-    # Achromatic pixels: low saturation. Decide black/gray/white by the brightness
-    # of the PAINT -- the median of the achromatic pixels. Averaging the whole
-    # crop lets dark windows/wheels/shadow drag a white body down into "gray" (a
-    # real white truck read val.mean()=188, one point under the old 190 cutoff,
-    # while its paint was 214). The paint median ignores the dark trim.
-    achroma = sat < 45
-    if achroma.mean() > 0.6:
-        v = float(np.median(val[achroma]))
-        if v < 55:
-            return "black"
-        if v > 175:
-            return "white"
-        return "gray"
-
-    # Chromatic: vote hue among reasonably saturated, non-dark pixels.
-    good = (sat >= 45) & (val >= 40)
-    if good.sum() < 8:
+    # Neutral by default. Real cars are overwhelmingly white / silver / gray /
+    # black, so the only way to earn a chromatic name is STRONG saturation over a
+    # real slice of the body. This is what stops a white van reading "blue":
+    # glossy paint reflects the blue sky and dark windows break up the body,
+    # leaving a lot of washed-out (sat 45-85) blue-hued pixels. Those are
+    # reflections, not paint -- the old code let them win. Genuine coloured paint
+    # sits well above sat 90.
+    painted = (sat >= 90) & (val >= 50)
+    if painted.mean() >= 0.35:
+        dom = int(np.median(hue[painted]))
+        for lo, hi, name in _HUE_NAMES:
+            if lo <= dom < hi:
+                return name
         return None
-    dom = int(np.median(hue[good]))
-    for lo, hi, name in _HUE_NAMES:
-        if lo <= dom < hi:
-            return name
-    return None
+
+    # Neutral: black / gray / white by the brightness of the PAINT -- the median
+    # of the non-dark neutral pixels. Averaging the whole crop lets dark
+    # windows/wheels/shadow drag a white body down into "gray"; the median of the
+    # neutral pixels ignores that dark trim.
+    neutral = ~painted
+    if neutral.sum() < 8:
+        return None
+    v = float(np.median(val[neutral]))
+    if v < 55:
+        return "black"
+    if v > 175:
+        return "white"
+    return "gray"
 
 
 class VehicleRecognizer:
