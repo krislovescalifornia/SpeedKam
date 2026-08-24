@@ -19,9 +19,6 @@ can run it repeatedly (cron, or --watch) and it only does new work.
 
     # keep watching for new pending rows every 30s:
     python tools/recognize_worker.py --config config.yaml --watch 30
-
-    # add a fine-grained make/model classifier:
-    python tools/recognize_worker.py --make-model-weights stanford_cars.pt
 """
 from __future__ import annotations
 
@@ -233,8 +230,6 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--weights", default=None,
                     help="YOLO type weights (default: recognition.model or yolov8n.pt)")
-    ap.add_argument("--make-model-weights", default=None,
-                    help="optional fine-grained make/model YOLOv8-cls weights")
     ap.add_argument("--watch", type=float, default=0,
                     help="seconds between passes (0 = run once and exit)")
     ap.add_argument("--limit", type=int, default=0,
@@ -255,8 +250,6 @@ def main():
     rec_cfg["enabled"] = True
     rec_cfg["defer"] = False
     rec_cfg["model"] = args.weights or rec_cfg.get("model") or "yolov8n.pt"
-    if args.make_model_weights is not None:
-        rec_cfg["make_model_weights"] = args.make_model_weights
     recognizer = VehicleRecognizer(rec_cfg)
     if not recognizer.active or recognizer._type_model is None:
         print("[worker] No YOLO type model loaded -- install ultralytics/torch "

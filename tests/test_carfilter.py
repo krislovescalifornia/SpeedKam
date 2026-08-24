@@ -16,6 +16,8 @@ class R:
     distance_m: float = 6.0
     direction: str = "Eastbound"
     straightness: float = 1.0
+    monotonicity: float = 1.0
+    max_accel_mps2: float = 0.0
 
 
 class FakeState:
@@ -151,6 +153,68 @@ def test_straightness_gate_disabled_when_zero():
     t = _track([(0, 0, 200, 80)] * 5)
     status, _ = cam._classify_reading(
         R(distance_m=6.0, straightness=0.05), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "ok"
+
+
+# ------------------------------------------------------- monotonicity gate
+def test_reversing_track_rejected():
+    cam = _cam(min_monotonicity=0.75)
+    # Car-shaped, car-sized, plausibly straight -- but only half its steps moved
+    # forward: it reversed repeatedly, the swaying-foliage signature.
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, reason = cam._classify_reading(
+        R(distance_m=6.0, monotonicity=0.5), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "rejected"
+    assert "path reversed" in reason
+
+
+def test_forward_track_accepted():
+    cam = _cam(min_monotonicity=0.75)
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0, monotonicity=1.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "ok"
+
+
+def test_monotonicity_gate_disabled_by_default():
+    # min_monotonicity defaults to 0 (off) in the base _cam thresholds, so even a
+    # heavily reversing track is not rejected on this signal.
+    cam = _cam()
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0, monotonicity=0.1), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "ok"
+
+
+# ------------------------------------------------------- acceleration gate
+def test_teleporting_track_rejected():
+    cam = _cam(max_accel_mps2=20.0)
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, reason = cam._classify_reading(
+        R(distance_m=6.0, max_accel_mps2=250.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "rejected"
+    assert "impossible acceleration" in reason
+
+
+def test_smooth_speed_accepted():
+    cam = _cam(max_accel_mps2=20.0)
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0, max_accel_mps2=5.0), span_m=2.0,
+        aspect=SpeedCamera._aspect_ratio(t))
+    assert status == "ok"
+
+
+def test_accel_gate_disabled_by_default():
+    cam = _cam()
+    t = _track([(0, 0, 200, 80)] * 5)
+    status, _ = cam._classify_reading(
+        R(distance_m=6.0, max_accel_mps2=9999.0), span_m=2.0,
         aspect=SpeedCamera._aspect_ratio(t))
     assert status == "ok"
 

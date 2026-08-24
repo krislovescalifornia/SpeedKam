@@ -118,6 +118,23 @@ DEFAULTS = {
         # Either 0 disables that gate.
         "min_straightness": 0.80,
         "max_area_cv": 0.90,
+        # Motion-physics gates (completing the deterministic gate of record).
+        # Both default OFF (0) so nothing regresses before they're calibrated:
+        # run tools/measure_residual.py to see the distribution of these signals
+        # on real passes vs. adversaries, then set a threshold with headroom.
+        #   min_monotonicity -- minimum fraction of a track's steps that must
+        #     advance ALONG the net direction of travel (world coords). A real
+        #     vehicle never reverses (~1.0); swaying foliage / a noise blob
+        #     oscillates back and forth (~0.5). Catches a path that is straight
+        #     enough to beat min_straightness but still jitters along its axis.
+        #     A sane enforced value is ~0.75. 0 disables.
+        #   max_accel_mps2 -- maximum plausible frame-to-frame acceleration
+        #     magnitude (m/s^2). A real vehicle changes speed smoothly (a few
+        #     m/s^2 even braking hard); a phantom teleporting between noise blobs
+        #     implies an impossible spike. Sensitive to fps/jitter, so measure
+        #     before enabling; a typical enforced ceiling is ~15-25. 0 disables.
+        "min_monotonicity": 0.0,
+        "max_accel_mps2": 0.0,
         # Count each drive-by ONCE: a second confirmed pass in the same direction
         # within this many seconds is treated as a fragmented re-detection of the
         # same vehicle and rejected. 0 disables.
@@ -270,9 +287,14 @@ DEFAULTS = {
         "poll_seconds": 30,
     },
     "recognition": {
-        # Optional, best-effort vehicle attributes (type/make/model/year/color).
-        # Fully optional: with this off, or ultralytics/torch not installed,
-        # every pass is still counted and timed -- attributes just stay blank.
+        # Optional, best-effort vehicle attributes (type + color). The GATE OF
+        # RECORD (real vehicle? how fast?) is deterministic geometry in the
+        # pipeline, not this. Fully optional: with this off (the default), or
+        # ultralytics/torch not installed, every pass is still counted and timed
+        # -- color is done inline on a bare CPU, type just stays blank. Leave OFF
+        # unless you specifically want the COCO type label; the YOLO type/gate is
+        # a heavy, hot dependency the geometry gates don't need (kept dormant as
+        # a break-glass classifier). Make/model/year recognition was dropped.
         "enabled": False,
         # Deferred (offloaded) recognition. When true, this node does NOT load
         # or run the heavy YOLO models -- it only does the cheap color pass and
@@ -287,10 +309,6 @@ DEFAULTS = {
         # Estimate the dominant body color from the crop. Cheap (no model), so
         # it works on a bare Pi. Set false to skip color too.
         "color": True,
-        # Optional fine-grained make/model/year classifier (a YOLOv8-cls model
-        # whose class names look like "Toyota Camry 2018"). Empty = not
-        # available -> make/model/year stay blank ("when available").
-        "make_model_weights": "",
     },
 }
 

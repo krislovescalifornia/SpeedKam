@@ -155,6 +155,13 @@ class SpeedCamera:
                  float(cfg["speed"].get("min_straightness", 0) or 0),
              "max_area_cv":
                  float(cfg["speed"].get("max_area_cv", 0) or 0),
+             # Motion-physics gates: a real vehicle only moves forward
+             # (min_monotonicity) and changes speed smoothly (max_accel_mps2).
+             # Both default 0 (off) until measured; see config.DEFAULTS["speed"].
+             "min_monotonicity":
+                 float(cfg["speed"].get("min_monotonicity", 0) or 0),
+             "max_accel_mps2":
+                 float(cfg["speed"].get("max_accel_mps2", 0) or 0),
              "dedupe_seconds":
                  float(cfg["speed"].get("dedupe_seconds", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
@@ -289,6 +296,22 @@ class SpeedCamera:
         return float(self.state.get("max_area_cv") or 0)
 
     @property
+    def min_monotonicity(self) -> float:
+        """Min fraction of a track's steps that must advance along the net
+        direction of travel. A real vehicle only moves forward (~1.0); foliage /
+        noise oscillates. Below this the track is auto-rejected. 0 disables the
+        gate. See SpeedResult.monotonicity."""
+        return float(self.state.get("min_monotonicity") or 0)
+
+    @property
+    def max_accel_mps2(self) -> float:
+        """Max plausible frame-to-frame acceleration magnitude (m/s^2). A real
+        vehicle changes speed smoothly; a phantom teleporting between noise blobs
+        spikes it. Above this the track is auto-rejected. 0 disables the gate.
+        See SpeedResult.max_accel_mps2."""
+        return float(self.state.get("max_accel_mps2") or 0)
+
+    @property
     def dedupe_seconds(self) -> float:
         """Count a drive-by ONCE: a second confirmed pass in the SAME direction
         finishing within this many seconds of the last counted one is treated as
@@ -298,7 +321,8 @@ class SpeedCamera:
     def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
                               min_aspect=None, dedupe_seconds=None,
                               min_on_road_frac=None, min_straightness=None,
-                              max_area_cv=None) -> dict:
+                              max_area_cv=None, min_monotonicity=None,
+                              max_accel_mps2=None) -> dict:
         """Live-tune the auto-reject envelope; persists across restarts."""
         if max_distance_m is not None:
             self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
@@ -318,13 +342,21 @@ class SpeedCamera:
                            min(1.0, max(0.0, float(min_straightness))))
         if max_area_cv is not None:
             self.state.set("max_area_cv", max(0.0, float(max_area_cv)))
+        if min_monotonicity is not None:
+            # A fraction, so clamp to [0, 1].
+            self.state.set("min_monotonicity",
+                           min(1.0, max(0.0, float(min_monotonicity))))
+        if max_accel_mps2 is not None:
+            self.state.set("max_accel_mps2", max(0.0, float(max_accel_mps2)))
         return {"max_track_distance_m": self.max_track_distance_m,
                 "min_vehicle_span_m": self.min_vehicle_span_m,
                 "min_vehicle_aspect": self.min_vehicle_aspect,
                 "dedupe_seconds": self.dedupe_seconds,
                 "min_on_road_frac": self.min_on_road_frac,
                 "min_straightness": self.min_straightness,
-                "max_area_cv": self.max_area_cv}
+                "max_area_cv": self.max_area_cv,
+                "min_monotonicity": self.min_monotonicity,
+                "max_accel_mps2": self.max_accel_mps2}
 
     @staticmethod
     def _aspect_ratio(track):
@@ -466,6 +498,30 @@ class SpeedCamera:
                     f"path wandered — straight-line travel was only "
                     f"{straightness * 100:.0f}% of the {result.distance_m:.0f} m "
                     f"it tracked (a vehicle goes straight; likely foliage/noise)")
+        # Monotonic progress: a real vehicle only ever moves forward down the
+        # road, so nearly every step advances along its net direction of travel.
+        # Foliage swaying or a noise blob stitched into a track reverses often, so
+        # its forward fraction collapses toward ~0.5. Catches a path straight
+        # enough to beat the straightness gate that still oscillates along its
+        # axis. (0 or an undefined monotonicity -> skipped.)
+        min_mono = self.min_monotonicity
+        monotonicity = getattr(result, "monotonicity", None)
+        if (min_mono > 0 and monotonicity is not None
+                and monotonicity < min_mono):
+            return ("rejected",
+                    f"path reversed — only {monotonicity * 100:.0f}% of steps "
+                    f"moved forward (a vehicle never backs up; likely "
+                    f"foliage/noise)")
+        # Acceleration bound: a real vehicle changes speed smoothly (a few m/s^2
+        # even braking hard); a phantom teleporting between noise blobs implies an
+        # impossible frame-to-frame jump. (0 or an undefined accel -> skipped.)
+        max_acc = self.max_accel_mps2
+        accel = getattr(result, "max_accel_mps2", None)
+        if max_acc > 0 and accel is not None and accel > max_acc:
+            return ("rejected",
+                    f"impossible acceleration ({accel:.0f} m/s² frame-to-frame, "
+                    f"max plausible {max_acc:.0f}) — teleporting track, "
+                    f"not a vehicle")
         # Area coherence: a vehicle's silhouette changes size smoothly across the
         # scene; noise and wind-blown foliage flicker. A high coefficient of
         # variation in the bbox area is the flicker signature. Only fires on
@@ -1183,6 +1239,10 @@ class SpeedCamera:
                     if on_road_frac is not None else "")
         straight = getattr(result, "straightness", None)
         straight_txt = f", straight={straight * 100:.0f}%" if straight is not None else ""
+        mono = getattr(result, "monotonicity", None)
+        mono_txt = f", fwd={mono * 100:.0f}%" if mono is not None else ""
+        accel = getattr(result, "max_accel_mps2", None)
+        accel_txt = f", accel={accel:.0f}" if accel else ""
         area_txt = f", area_cv={area_cv:.2f}" if area_cv is not None else ""
         vote_txt = ""
         if verdict is not None:
@@ -1190,7 +1250,8 @@ class SpeedCamera:
                         f"{verdict.get('frames', 0)}veh")
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
               f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
-              f"{aspect_txt}{road_txt}{straight_txt}{area_txt}{vote_txt}, "
+              f"{aspect_txt}{road_txt}{straight_txt}{mono_txt}{accel_txt}"
+              f"{area_txt}{vote_txt}, "
               f"conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))

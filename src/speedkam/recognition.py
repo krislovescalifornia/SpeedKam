@@ -3,25 +3,29 @@
 
 """Optional, best-effort vehicle attribute recognition.
 
-Given a frame and a vehicle's bounding box, try to fill in:
+The gate of record -- is this a real road vehicle, and how fast? -- is
+deterministic geometry/motion physics in the pipeline, NOT a neural net. This
+module is purely optional enrichment on top of that:
 
+  * ``color``         -- dominant body colour, from a cheap HSV analysis of the
+                          crop. No model needed, so it works on a bare Pi. This
+                          is the part that runs in normal operation.
   * ``vehicle_type``  -- car / truck / bus / motorcycle, from a YOLO detector
                           (COCO classes) when ``recognition.model`` is loadable.
-  * ``color``         -- dominant body colour, from a cheap HSV analysis of the
-                          crop. No model needed, so it works on a bare Pi.
-  * ``make`` / ``model`` / ``year`` -- only when you point
-                          ``recognition.make_model_weights`` at a fine-grained
-                          YOLOv8-cls model whose class names look like
-                          "Toyota Camry 2018". Otherwise they stay ``None``.
+                          Optional and OFF by default: a heavy, thermally hot
+                          dependency the geometry gates don't need. Kept as a
+                          dormant break-glass classifier (see the gate below),
+                          not the thing holding the line on phantoms.
+
+Make/model/year fine-grained recognition was dropped (low value; a torch weight
+and per-backend tuning we're not paying for). The make/model/year fields remain
+in the record schema but always stay ``None``.
 
 Everything here is *optional and defensive*. If ``ultralytics``/``torch`` aren't
 installed, or a model fails to load, the recognizer disables itself and every
 call returns empty attributes -- the pipeline still counts and times vehicles.
-That's the "when available" contract from the spec.
 """
 from __future__ import annotations
-
-import re
 
 import cv2
 import numpy as np
@@ -153,7 +157,6 @@ class VehicleRecognizer:
         # the precondition for running the pass-level vote gate.
         self.can_classify = False
         self._type_model = None
-        self._mm_model = None
         self._active = False
 
         if not self.enabled:
@@ -179,20 +182,16 @@ class VehicleRecognizer:
 
         self._YOLO = YOLO
         self._type_model = self._try_load(self.cfg.get("model"), "type")
-        self._mm_model = self._try_load(self.cfg.get("make_model_weights"),
-                                        "make/model")
         # The COCO type model recognizes people/bicycles too, so it can also
         # serve as the car-vs-not gate's classifier (see classify()).
         self.can_classify = self._type_model is not None
-        self._active = bool(self._type_model or self._mm_model or self.want_color)
+        self._active = bool(self._type_model or self.want_color)
         if self._active:
             bits = []
             if self._type_model:
                 bits.append("type")
             if self.want_color:
                 bits.append("color")
-            if self._mm_model:
-                bits.append("make/model/year")
             print(f"[SpeedKam] Recognition on: {', '.join(bits) or 'none'}.")
 
     @property
@@ -229,10 +228,6 @@ class VehicleRecognizer:
         if self._type_model is not None:
             out["vehicle_type"] = self._detect_type(crop)
 
-        if self._mm_model is not None:
-            make, model, year = self._classify_make_model(crop)
-            out["make"], out["model"], out["year"] = make, model, year
-
         return out
 
     # ---------------------------------------------------------- full-frame
@@ -241,8 +236,8 @@ class VehicleRecognizer:
 
         Used by the deferred worker: it reads a saved snapshot/clip frame that
         has no stored crop coordinates, so we run the type detector over the
-        full image, pick the best vehicle box, and derive color + make/model
-        from that box. Falls back to the whole frame for color when no box.
+        full image, pick the best vehicle box, and derive color from that box.
+        Falls back to the whole frame for color when no box.
         """
         out = _empty()
         if not self._active or frame is None:
@@ -259,10 +254,6 @@ class VehicleRecognizer:
                 out["color"] = estimate_color(crop)
             except Exception:  # noqa: BLE001 - color is best-effort
                 pass
-
-        if self._mm_model is not None and crop is not None:
-            make, model, year = self._classify_make_model(crop)
-            out["make"], out["model"], out["year"] = make, model, year
 
         return out
 
@@ -330,24 +321,6 @@ class VehicleRecognizer:
                     out["nuisance_conf"] = conf
         return out
 
-    def _classify_make_model(self, crop):
-        try:
-            res = self._mm_model.predict(crop, verbose=False)
-        except Exception:  # noqa: BLE001
-            return None, None, None
-        label = None
-        for r in res:
-            probs = getattr(r, "probs", None)
-            names = getattr(r, "names", None)
-            if probs is None or names is None:
-                continue
-            top = int(probs.top1)
-            if float(probs.top1conf) >= self.min_conf:
-                label = names.get(top, None) if isinstance(names, dict) \
-                    else names[top]
-            break
-        return _parse_make_model(label)
-
 
 def _crop(frame, bbox):
     x, y, w, h = [int(v) for v in bbox]
@@ -357,19 +330,3 @@ def _crop(frame, bbox):
     if x1 - x0 < 4 or y1 - y0 < 4:
         return None
     return frame[y0:y1, x0:x1]
-
-
-def _parse_make_model(label):
-    """Split a class label like 'Toyota Camry 2018' into make/model/year."""
-    if not label:
-        return None, None, None
-    text = str(label).replace("_", " ").strip()
-    year = None
-    m = re.search(r"\b(19|20)\d{2}\b", text)
-    if m:
-        year = m.group(0)
-        text = (text[:m.start()] + text[m.end():]).strip()
-    parts = text.split()
-    make = parts[0] if parts else None
-    model = " ".join(parts[1:]) if len(parts) > 1 else None
-    return make, model, year

@@ -190,6 +190,19 @@ speed:
   #     real car. Pixel-only (no homography). Both live-tunable; 0 disables.
   min_straightness: 0.80
   max_area_cv: 0.90
+  #   min_monotonicity: the fraction of a track's steps that advance ALONG the net
+  #     direction of travel (world coords). A real vehicle only ever moves forward
+  #     down the road (~1.0); swaying foliage / a noise blob reverses often (~0.5).
+  #     Catches a path straight enough to beat min_straightness that still
+  #     oscillates along its axis. Default 0 (off): measure with
+  #     tools/measure_residual.py, then enable ~0.75 with headroom.
+  #   max_accel_mps2: the peak plausible frame-to-frame acceleration magnitude
+  #     (m/s^2). A real vehicle changes speed smoothly (a few m/s^2 even braking
+  #     hard); a phantom teleporting between noise blobs spikes it. Sensitive to
+  #     fps/jitter, so measure before enabling; a typical ceiling is ~15-25.
+  #     Default 0 (off). Both live-tunable; 0 disables.
+  min_monotonicity: 0.0
+  max_accel_mps2: 0.0
   # "My Road Speed Limit": flags/annotates speeders (over-limit line). This is
   # only the shipped default that seeds a newly imaged node; each node's live
   # value is editable from the dashboard and persists in its runtime state.
@@ -434,10 +447,9 @@ recognition:
   min_confidence: 0.35
   # Estimate the dominant body color from the crop (cheap, no model needed).
   color: true
-  # Optional fine-grained make/model/year classifier: a YOLOv8-cls model whose
-  # class names look like "Toyota Camry 2018". Leave empty if you don't have one
-  # -> make/model/year stay blank ("when available").
-  make_model_weights: ""
+  # (Fine-grained make/model/year recognition was dropped -- low value, a heavy
+  # weight we're not paying for. The make/model/year fields stay in the schema
+  # but always blank.)
 
   # --- YOLO gate: the classifier as the gate of record (Phase 14) -----------
   # On a board that can run the detector (Pi 4 / 8 GB, 64-bit, ultralytics+torch

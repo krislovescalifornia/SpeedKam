@@ -12,6 +12,7 @@ from speedkam.speed import (
     normalize_orientation,
     resolve_band,
     _in_band,
+    _theil_sen_slope,
 )
 from speedkam.tracker import Sample, Track
 
@@ -70,6 +71,62 @@ def test_wandering_track_has_low_straightness():
     r = estimate(Track(id=1, samples=samples), BASE_CFG)
     assert r is not None                 # a phantom speed is produced...
     assert r.straightness < 0.2          # ...but the wander is unmistakable
+
+
+# --------------------------------------------------------------- Theil-Sen
+def test_theil_sen_matches_clean_line():
+    import numpy as np
+    t = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    s = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0])
+    assert _theil_sen_slope(t, s) == pytest.approx(10.0, abs=1e-9)
+
+
+def test_theil_sen_ignores_single_outlier_both_ways():
+    import numpy as np
+    t = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    # One badly corrupted sample. Least-squares would be dragged toward it;
+    # Theil-Sen's median of pairwise slopes shrugs it off -- and does so
+    # symmetrically, so there is no systematic bias (unlike the old min() rule,
+    # which could only ever pull the speed DOWN).
+    s_hi = np.array([0.0, 10.0, 20.0, 999.0, 40.0, 50.0])   # outlier high
+    s_lo = np.array([0.0, 10.0, 20.0, -999.0, 40.0, 50.0])  # outlier low
+    assert _theil_sen_slope(t, s_hi) == pytest.approx(10.0, abs=1e-9)
+    assert _theil_sen_slope(t, s_lo) == pytest.approx(10.0, abs=1e-9)
+
+
+def test_theil_sen_degenerate_returns_zero():
+    import numpy as np
+    assert _theil_sen_slope(np.array([1.0]), np.array([1.0])) == 0.0
+
+
+# ---------------------------------------------------- monotonicity + accel
+def test_straight_track_is_fully_monotonic_and_smooth():
+    r = estimate(make_track(10.0), BASE_CFG)
+    assert r.monotonicity == pytest.approx(1.0, abs=1e-9)
+    # Constant velocity -> essentially zero frame-to-frame acceleration.
+    assert r.max_accel_mps2 < 1e-6
+
+
+def test_oscillating_track_has_low_monotonicity():
+    # World x reverses repeatedly (foliage / branch swaying): well under half the
+    # steps advance along the net direction.
+    xs = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1]
+    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(float(x), 0.0),
+                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
+    r = estimate(Track(id=1, samples=samples), BASE_CFG)
+    assert r is not None
+    assert r.monotonicity < 0.7
+
+
+def test_teleporting_track_spikes_acceleration():
+    # A track that jumps far in a single frame then settles: a huge instantaneous
+    # speed change -> a large peak acceleration the bound gate keys on.
+    xs = [0.0, 0.5, 1.0, 30.0, 30.5, 31.0, 31.5, 32.0]
+    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(x, 0.0),
+                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
+    r = estimate(Track(id=1, samples=samples), BASE_CFG)
+    assert r is not None
+    assert r.max_accel_mps2 > 100.0   # ~0->fast->0 across two frames
 
 
 def test_kmh_mph_are_consistent():
