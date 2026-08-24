@@ -263,10 +263,13 @@ def run_clips(clips_dir, calib_path, labels_path=None, enforce="proposed",
         cap = cv2.VideoCapture(path)
         fr = 0
         finished_all = []
+        frame_wh = None
         while fr < maxfr:
             ok, frame = cap.read()
             if not ok:
                 break
+            if frame_wh is None:
+                frame_wh = (frame.shape[1], frame.shape[0])
             t = fr / 30.0
             dets, _ = detector.detect(frame)
             pts = [d.ground_point for d in dets]
@@ -282,12 +285,12 @@ def run_clips(clips_dir, calib_path, labels_path=None, enforce="proposed",
 
         # Grade the best (longest) confirmed track in the clip.
         best = max(finished_all, key=lambda tr: len(tr.samples), default=None)
-        if best is None:
+        if best is None or frame_wh is None:
             verdict, reason = "drop", "no confirmed track"
             r = None
         else:
             r = speed_mod.estimate(best, {**SPEED_CFG, "min_samples": 4},
-                                   (frame.shape[1], frame.shape[0]))
+                                   frame_wh)
             if r is None:
                 verdict, reason = "drop", "no speed"
             else:

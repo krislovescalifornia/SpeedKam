@@ -1,5 +1,14 @@
 # Phase 14 — Pi 4 rebuild: YOLO as the gate of record (execution plan)
 
+> **⚠️ SUPERSEDED (2026-08-23).** This plan makes **YOLO the gate of record**. That
+> decision was reversed the same night by the "Telling a Car From a Dog" review
+> (commit `4f1682c`): **deterministic geometry/physics is now the gate of record,
+> and YOLO is demoted to a dormant, off-by-default break-glass classifier**
+> (`recognition.defer: true`, `gate.enabled: false` — no torch loaded on the node).
+> The running Pi 4 follows the *new* decision, not this doc. Kept for history only.
+> Current direction: `docs/` gate-of-record notes + the "Telling a Car From a Dog"
+> report. Do **not** re-implement torch-as-gate from this file.
+
 **Status:** planned, ready to execute in a fresh session once the Pi 4 is booted.
 **Read first:** [`pi4-yolo-classifier-phase14.md`](pi4-yolo-classifier-phase14.md) — the
 kickoff brief. It has the hardware rationale (why Pi 3 OOMs, why 64-bit is mandatory), the
