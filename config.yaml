@@ -142,6 +142,17 @@ speed:
   # Reject implausible readings (km/h).
   min_speed_kmh: 3
   max_speed_kmh: 200
+  # --- SIMPLE two-line crossing-time speed (replaces the old homography) --------
+  # A car crossing between image columns x_a and x_b at a KNOWN speed fixes the
+  # real distance of that stretch -- one number per travel direction (d_east_m /
+  # d_west_m), set by driving past once each way at a known speed (the log prints
+  # the crossing time: d = known_mps * crossing_seconds). Every other car's speed
+  # is then that distance over its own crossing time. Raw pixel x + timestamps
+  # only -- no homography, no undistortion, no trajectory gates. Per node.
+  x_a: 1000
+  x_b: 450
+  d_east_m: null
+  d_west_m: null
   # --- Automatic false-positive rejection ----------------------------------
   # Cyclists, pedestrians, and wind-blown foreground plants get tracked and
   # timed just like cars (inline recognition is deferred, so there's no "is it a
@@ -157,8 +168,9 @@ speed:
   #     <~0.8 m -- so this rejects the cyclist/pedestrian passes that otherwise
   #     look like plausible speeders. Needs a calibration to apply.
   # Both are live-tunable from either dashboard and persist per node. 0 disables.
-  max_track_distance_m: 45.0
-  min_vehicle_span_m: 1.0
+  # Retired by the crossing-time engine (world-coord gates, no homography now).
+  max_track_distance_m: 0.0
+  min_vehicle_span_m: 0.0
   #   min_vehicle_aspect: the single most reliable "is it a car?" check on a
   #     side-on camera -- a car's bounding box is WIDE (width/height ~2-3), a
   #     walking person's is TALL (~0.3-0.5), a side-on cyclist ~square (~0.9). So
@@ -169,7 +181,12 @@ speed:
   #   dedupe_seconds: count each drive-by ONCE -- a second confirmed pass going
   #     the same direction within this window is a fragmented re-detection of the
   #     same vehicle and is rejected. 0 disables.
-  min_vehicle_aspect: 1.1
+  #   min_car_width_px: the size half of the car filter -- a car is a BIG object
+  #     even in the far lane (bbox width well over 200px), while a dog, bicycle or
+  #     pedestrian is small. With the aspect (shape) check above, nothing that
+  #     isn't a car clears both. Pixel-only (no homography). 0 disables.
+  min_vehicle_aspect: 1.4
+  min_car_width_px: 200
   dedupe_seconds: 3.0
   #   --- Trajectory-quality gates (deterministic motion physics) --------------
   #   These are the gate of record for "is it a vehicle?": the phantoms that used
@@ -188,8 +205,9 @@ speed:
   #     with perspective (low CV); noise and wind-blown foliage flicker in size
   #     (high CV). 0.90 fires only on egregious flicker, so it never rejects a
   #     real car. Pixel-only (no homography). Both live-tunable; 0 disables.
-  min_straightness: 0.80
-  max_area_cv: 0.90
+  # Retired by the crossing-time engine (these tested homography world paths).
+  min_straightness: 0.0
+  max_area_cv: 0.0
   #   min_monotonicity: the fraction of a track's steps that advance ALONG the net
   #     direction of travel (world coords). A real vehicle only ever moves forward
   #     down the road (~1.0); swaying foliage / a noise blob reverses often (~0.5).

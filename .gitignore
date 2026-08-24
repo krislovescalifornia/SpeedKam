@@ -30,3 +30,4 @@ test_headon_calibration.json
 test_headon.meta.json
 # YOLO weights (downloaded on demand by ultralytics)
 *.pt
+tools/simple_speed.json

@@ -115,94 +115,66 @@ def _in_band(samples, band, frame_wh):
     ]
 
 
+def _crossing_seconds(ts, xs, xa, xb):
+    """Seconds for the centre-x to travel between image columns xa and xb, by
+    linear interpolation of the first crossing of each. None if it never crossed
+    both (e.g. a car turning off, or noise that didn't traverse the stretch)."""
+    def first_cross(xc):
+        for i in range(1, len(xs)):
+            if (xs[i - 1] - xc) * (xs[i] - xc) <= 0 and xs[i] != xs[i - 1]:
+                f = (xc - xs[i - 1]) / (xs[i] - xs[i - 1])
+                return ts[i - 1] + f * (ts[i] - ts[i - 1])
+        return None
+    ta, tb = first_cross(xa), first_cross(xb)
+    if ta is None or tb is None:
+        return None
+    return abs(tb - ta)
+
+
 def estimate(track, cfg, frame_wh=None, orientation=None) -> SpeedResult | None:
-    samples = [s for s in track.samples if s.world is not None]
-    band = resolve_band(cfg.get("measure_band"), orientation)
-    samples = _in_band(samples, band, frame_wh)
+    """Two-line crossing-time speed. A car crossing between image columns ``x_a``
+    and ``x_b`` at a KNOWN speed fixes the real distance of that stretch -- one
+    number per travel direction (``d_east_m`` / ``d_west_m``). Every other car's
+    speed is then that distance over its own crossing time. Uses raw pixel x and
+    timestamps only -- no homography, no undistortion. In this camera's view
+    eastbound runs right-to-left (x decreasing)."""
+    samples = list(track.samples)
     if len(samples) < cfg["min_samples"]:
         return None
+    ts = np.array([s.t for s in samples], dtype=np.float64)
+    xs = np.array([s.ground_px[0] for s in samples], dtype=np.float64)
+    xa = float(cfg.get("x_a", 1000)); xb = float(cfg.get("x_b", 450))
+    dt = _crossing_seconds(ts, xs, xa, xb)
+    if dt is None or dt <= 0:
+        return None  # never traversed the measured stretch -> not a road pass
 
-    t = np.array([s.t for s in samples], dtype=np.float64)
-    xy = np.array([s.world for s in samples], dtype=np.float64)
-    t = t - t[0]
-
-    # Cumulative arc length along the traversed path.
-    seg = np.linalg.norm(np.diff(xy, axis=0), axis=1)
-    s = np.concatenate([[0.0], np.cumsum(seg)])
-    total_dist = float(s[-1])
-    duration = float(t[-1])
-
-    if total_dist < cfg["min_track_distance_m"] or duration <= 0:
+    east = xs[-1] < xs[0]
+    direction = cfg["direction_negative"] if east else cfg["direction_positive"]
+    D = cfg.get("d_east_m") if east else cfg.get("d_west_m")
+    if not D:
+        # Not calibrated for this direction yet. Emit the crossing time so a
+        # known-speed pass can be turned into the distance: d = known_mps * dt.
+        print(f"[SpeedKam] CALIBRATE {direction}: crossed x{xa:.0f}->{xb:.0f} in "
+              f"{dt:.3f}s  (set d_{'east' if east else 'west'}_m = known_mps * "
+              f"{dt:.3f})", flush=True)
         return None
 
-    # Reported speed: Theil-Sen slope of cumulative path length s vs time t --
-    # the median of all pairwise slopes. Outlier-robust and, unlike the old
-    # min(regression, median) rule, free of any systematic low bias.
-    v = _theil_sen_slope(t, s)
-
-    # Confidence cross-check ONLY: median per-segment instantaneous speed. If it
-    # disagrees wildly with Theil-Sen the pass is flagged low-confidence, but the
-    # reported value is never pulled toward the smaller estimator.
-    dt = np.diff(t)
-    good = dt > 1e-6
-    v_med = float(np.median(seg[good] / dt[good])) if np.any(good) else v
-    confidence = "ok"
-    if v_med > 0 and v > 0 and (max(v, v_med) / max(min(v, v_med), 1e-6)) > 1.5:
-        confidence = "low"
-
+    v = float(D) / dt                       # metres / second
     kmh = v * KMH_PER_MS
     if kmh < cfg["min_speed_kmh"] or kmh > cfg["max_speed_kmh"]:
         return None
-
-    # Direction: sign of net displacement along the dominant world axis.
-    net = xy[-1] - xy[0]
-    dominant = net[0] if abs(net[0]) >= abs(net[1]) else net[1]
-    direction = (
-        cfg["direction_positive"] if dominant >= 0 else cfg["direction_negative"]
-    )
-
-    # Straightness: net (straight-line) displacement over the traversed path
-    # length. ~1.0 for a real vehicle; low for wandering foliage/noise. total_dist
-    # is >= min_track_distance_m here (we returned above otherwise), so the ratio
-    # is well-conditioned.
-    net_disp = float(np.linalg.norm(net))
-    straightness = net_disp / total_dist if total_dist > 1e-6 else 1.0
-
-    # Monotonic progress: project each world point onto the net-travel direction
-    # and measure the fraction of steps that advance forward along it. A real
-    # vehicle never reverses (~1.0); swaying foliage / stitched noise oscillates.
-    if net_disp > 1e-6 and len(xy) >= 2:
-        u = net / net_disp
-        proj = xy @ u
-        dproj = np.diff(proj)
-        monotonicity = float(np.mean(dproj > 0)) if dproj.size else 1.0
-    else:
-        monotonicity = 1.0
-
-    # Peak frame-to-frame acceleration: differentiate the per-segment
-    # instantaneous speed. A real vehicle changes speed smoothly; a phantom that
-    # jumps between noise blobs spikes this. 0.0 when there aren't two good
-    # segments to difference.
-    max_accel = 0.0
-    if np.count_nonzero(good) >= 2:
-        v_inst = seg[good] / dt[good]
-        dt_good = dt[good]
-        dv = np.diff(v_inst)
-        acc = np.abs(dv) / np.maximum(dt_good[1:], 1e-6)
-        max_accel = float(np.max(acc)) if acc.size else 0.0
-
     return SpeedResult(
         speed_kmh=kmh,
         speed_mph=v * MPH_PER_MS,
         direction=direction,
-        distance_m=total_dist,
-        duration_s=duration,
+        distance_m=float(D),
+        duration_s=dt,
         n_samples=len(samples),
-        confidence=confidence,
+        confidence="ok",
         peak_index=len(samples) // 2,
-        straightness=straightness,
-        monotonicity=monotonicity,
-        max_accel_mps2=max_accel,
+        straightness=1.0,      # trajectory-quality gates retired with the homography
+        monotonicity=1.0,
+        max_accel_mps2=0.0,
     )
 
 

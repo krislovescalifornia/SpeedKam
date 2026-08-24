@@ -104,13 +104,17 @@ def estimate_color(crop) -> str | None:
     sat = hsv[:, :, 1].reshape(-1).astype(np.int32)
     val = hsv[:, :, 2].reshape(-1).astype(np.int32)
 
-    # Achromatic pixels: low saturation. Decide black/gray/white by brightness.
+    # Achromatic pixels: low saturation. Decide black/gray/white by the brightness
+    # of the PAINT -- the median of the achromatic pixels. Averaging the whole
+    # crop lets dark windows/wheels/shadow drag a white body down into "gray" (a
+    # real white truck read val.mean()=188, one point under the old 190 cutoff,
+    # while its paint was 214). The paint median ignores the dark trim.
     achroma = sat < 45
     if achroma.mean() > 0.6:
-        v = float(val.mean())
-        if v < 60:
+        v = float(np.median(val[achroma]))
+        if v < 55:
             return "black"
-        if v > 190:
+        if v > 175:
             return "white"
         return "gray"
 

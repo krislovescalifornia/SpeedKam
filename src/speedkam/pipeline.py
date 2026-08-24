@@ -270,6 +270,13 @@ class SpeedCamera:
         return float(self.state.get("min_vehicle_aspect") or 0)
 
     @property
+    def min_car_width_px(self) -> float:
+        """Min bbox pixel width for a real car. A car is a big object even in the
+        far lane; a bike, dog or pedestrian is small. The size half of the car
+        filter (paired with min_vehicle_aspect). 0 disables."""
+        return float(self.state.get("min_car_width_px") or 0)
+
+    @property
     def min_on_road_frac(self) -> float:
         """Min fraction of a track's ground points that must sit on the
         calibrated road surface for it to count as a road vehicle. Below it the
@@ -370,6 +377,17 @@ class SpeedCamera:
         return float(np.median(ratios))
 
     @staticmethod
+    def _vehicle_width_px(track):
+        """Median bbox WIDTH in pixels across the track. A car is a big object
+        even in the far lane; a dog, bicycle or pedestrian is small. Pixel-only
+        (no homography), so it's the size half of the car filter -- paired with
+        the aspect (shape) check, it cleanly rejects everything that isn't a car.
+        The median shrugs off the odd merged/split frame."""
+        widths = [s.bbox[2] for s in track.samples
+                  if len(s.bbox) == 4 and s.bbox[2] > 0]
+        return float(np.median(widths)) if widths else None
+
+    @staticmethod
     def _area_cv(track):
         """Coefficient of variation (std/mean) of the bbox area across the track,
         or None when there are too few samples to judge.
@@ -463,10 +481,13 @@ class SpeedCamera:
         return float(np.mean(mask)) if len(mask) else None
 
     def _classify_reading(self, result, span_m, aspect, on_road_frac=None,
-                          area_cv=None):
-        """Auto-reject anything that isn't a car on the road so junk never
-        pollutes the stats. Returns (status, reason): "ok" for a real vehicle,
-        else "rejected" with a human explanation (shown in the dashboards' bin)."""
+                          area_cv=None, width_px=None):
+        """Auto-reject anything that isn't a car so junk never pollutes the stats.
+        The car filter is two cheap PIXEL checks -- a car is WIDE (aspect) and BIG
+        (width); a person is tall, a dog/bike/tree is small -- plus the two-line
+        crossing requirement (foliage that never traverses the road is never even
+        timed). Returns (status, reason): "ok" for a real vehicle, else "rejected"
+        with a human explanation (shown in the dashboards' bin)."""
         # Road-region FIRST -- the most reliable check and the one that catches
         # what the shape/size proxies miss. Is the object actually ON the road,
         # or in the camera-side foreground (kerb/grass/sidewalk) / off to the
@@ -546,11 +567,15 @@ class SpeedCamera:
             return ("rejected",
                     f"traveled {result.distance_m:.0f} m across the scene "
                     f"(max plausible {max_dist:.0f} m) — phantom track")
-        min_span = self.min_vehicle_span_m
-        if min_span > 0 and span_m is not None and span_m < min_span:
+        # Size: a car is a big object even in the far lane; a bike, dog or
+        # pedestrian is small. Pixel width (no homography) is the size half of the
+        # car filter -- with the aspect (shape) check above, nothing that isn't a
+        # car survives both.
+        min_width = self.min_car_width_px
+        if min_width > 0 and width_px is not None and width_px < min_width:
             return ("rejected",
-                    f"object ~{span_m:.1f} m wide — smaller than a vehicle "
-                    f"(likely a cyclist or pedestrian)")
+                    f"object only {width_px:.0f}px wide — smaller than a car "
+                    f"(likely a bike, dog, or pedestrian)")
         return ("ok", "")
 
     # --------------------------------------------------------------- orientation
@@ -1017,6 +1042,7 @@ class SpeedCamera:
             "result": result,
             "span_m": self._vehicle_span_m(track),
             "aspect": self._aspect_ratio(track),
+            "width_px": self._vehicle_width_px(track),
             "on_road_frac": self._on_road_fraction(track),
             "area_cv": self._area_cv(track),
             "brightness": self.scene_brightness,
@@ -1189,6 +1215,7 @@ class SpeedCamera:
         aspect = job["aspect"]
         on_road_frac = job["on_road_frac"]
         area_cv = job.get("area_cv")
+        width_px = job.get("width_px")
 
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
@@ -1199,7 +1226,7 @@ class SpeedCamera:
         # and it confirms real cars (filling vehicle_type). A geometry reject
         # stands regardless -- an object must clear BOTH to be counted.
         status, reason = self._classify_reading(result, span_m, aspect,
-                                                on_road_frac, area_cv)
+                                                on_road_frac, area_cv, width_px)
         yolo_type = None
         if status == "ok" and verdict is not None:
             decision, info = self._yolo_gate(verdict, job.get("brightness"))
