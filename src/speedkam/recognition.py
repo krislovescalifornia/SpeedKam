@@ -122,11 +122,14 @@ def _trim_foliage_top(crop):
 _SAT_MIN = 90
 _VAL_MIN = 50
 # Fraction of pixels that must be strongly-saturated in ONE hue before we call a
-# car chromatic. Below this it's neutral (white/gray/black). 0.40 keeps a grey
-# SUV's big blue-reflecting windows from reading "blue" while still catching a
-# genuinely red/blue/green car (which is >50% its own hue). Tuned on labelled
-# passes.
-_CHROMA_FRAC = 0.40
+# car chromatic (below this it's neutral: white/gray/black). Blue is the colour
+# the sky reflects into glossy paint and glass, so a grey SUV's big windows read
+# as ~35% saturated blue -- we demand MORE evidence for blue/teal than for a real
+# paint hue like red, which is almost never a reflection. This keeps charcoal
+# cars grey while still catching a dark maroon car (which is ~38% saturated red).
+# Tuned on labelled passes.
+_CHROMA_FRAC = 0.30
+_CHROMA_FRAC_BLUE = 0.45
 
 
 def _name_pixels(pixels) -> str | None:
@@ -149,15 +152,22 @@ def _name_pixels(pixels) -> str | None:
     val = hsv[:, 2].astype(np.int32)
 
     chroma = (sat >= _SAT_MIN) & (val >= _VAL_MIN)
-    if chroma.mean() >= _CHROMA_FRAC:
+    frac = float(chroma.mean())
+    if frac >= _CHROMA_FRAC:
         hist = np.bincount(hue[chroma] // 10, minlength=18)
         hist[0] += hist[17]          # red wraps: fold 170-179 into 0-9
         hist[17] = 0
         peak = int(np.argmax(hist)) * 10 + 5
-        for lo, hi, name in _HUE_NAMES:
+        name = "red"
+        for lo, hi, nm in _HUE_NAMES:
             if lo <= peak < hi:
-                return name
-        return "red"
+                name = nm
+                break
+        need = _CHROMA_FRAC_BLUE if name in ("blue", "teal") else _CHROMA_FRAC
+        if frac >= need:
+            return name
+        # Not enough evidence for a reflection-prone blue -> fall through to
+        # the neutral (gray/white/black) decision below.
 
     # Neutral: black / gray / white by the brightness of the non-dark paint --
     # the median of the neutral pixels, so dark windows/wheels/shadow don't drag a

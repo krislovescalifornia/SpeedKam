@@ -87,3 +87,22 @@ def test_changed_pixels_returns_only_the_car():
 def test_changed_pixels_none_when_nothing_moved():
     plate = _block(GRAY, 300, 300)
     assert changed_pixels(plate.copy(), plate) is None
+
+
+# --- blue needs more evidence than real paint (sky reflects blue) ------------
+def test_dark_red_paint_beats_neutral_gate():
+    # A dark-maroon car is only ~38% saturated; red is real paint, so the lower
+    # chroma gate still calls it red rather than washing out to neutral.
+    body = np.zeros((100, 100, 3), np.uint8)
+    body[:] = (30, 30, 30)                       # dark neutral majority
+    body[:, :40] = (40, 40, 150)                 # ~40% dark-red paint
+    assert estimate_color_pixels(body.reshape(-1, 3)) == "red"
+
+
+def test_minority_blue_reflection_stays_neutral():
+    # A grey car with big sky-reflecting windows: ~35% saturated blue must NOT
+    # win -- blue needs the higher gate, so it reads gray.
+    body = np.zeros((100, 100, 3), np.uint8)
+    body[:] = (130, 130, 130)                    # grey body majority
+    body[:, :35] = (200, 60, 0)                  # ~35% saturated blue (glass)
+    assert estimate_color_pixels(body.reshape(-1, 3)) == "gray"
