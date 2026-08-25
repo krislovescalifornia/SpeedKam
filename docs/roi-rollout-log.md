@@ -83,3 +83,34 @@ Safety properties confirmed by tests: with the crop OFF (shipped default) the
 detection path is unchanged; with a valid band ON, a blob inside it yields the
 identical full-res bbox + ground point as full-frame; an invalid band never
 enables (degrades to full-frame).
+
+### 2026-08-25 — deployed to node (crop OFF) + audit enabled
+- Commit `30fd86b` pushed to origin/main; node pulled via
+  `speedkam-update.service`. Node HEAD now `30fd86b`; changed files byte-compile
+  on the node's system python3; service active.
+- Post-deploy default state (before any config change): `/api/status` →
+  `roi_enabled=false, roi_audit=false`, fps ~30, running, camera_ok. Detection
+  byte-identical to before — nothing changed by shipping the code.
+- Backed up node `config.local.yaml` → `config.local.yaml.bak.<ts>`, then added
+  under `detection`: `roi: {enabled: false, audit: true}`. Restarted.
+- Audit-mode state confirmed: `/api/status` → `roi_enabled=false` (crop still
+  OFF), `roi_audit=true`, fps ~26 (unchanged). Startup log:
+  `detection ROI AUDIT on: full-frame detection unchanged; recording counted-car
+  coverage + envelope.`
+
+**Current state: OBSERVING.** Detection is exactly as it was; the node is now
+recording every counted car's ground-point envelope to `captures/roi_audit.json`
+and exposing `roi_observed_envelope` in `/api/status`.
+
+### NEXT (do not skip)
+1. Let real traffic accumulate (aim for a day / dozens of counted cars across
+   BOTH directions, ideally including edge cases — far lane, fast, dusk).
+2. Read `captures/roi_audit.json`: `observed_envelope_frac` and the padded
+   `recommended_band_frac` (already widened to include x_a/x_b).
+3. Sanity-check the recommended band covers every counted car (envelope) with
+   margin and contains the crossing columns.
+4. Set `detection.roi.x0..y1` to the recommended band and `enabled: true` (keep
+   `audit: true` a while longer to keep watching coverage), restart.
+5. Confirm live fps climbs (expect ~27 → ~45-55) AND counts/speeds unchanged vs
+   the audit period. If any counted car would be clipped, widen the band. Rollback
+   = `enabled: false`.
