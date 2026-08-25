@@ -85,10 +85,47 @@ _HUE_NAMES = [
 ]
 
 
+def _trim_foliage_top(crop):
+    """Strip leading rows dominated by green vegetation off the top of a crop.
+
+    The motion box handed to colour is the MOG2 blob, which on a windy day can
+    merge the car with the swaying tree canopy behind/above it, or simply run
+    tall enough to reach the treeline. Because the car always sits at the BOTTOM
+    of that box (its wheels are the road-contact) and the canopy is always ABOVE
+    the roofline, we can tighten the crop to the vehicle by dropping the
+    contiguous band of leaf-green rows at the top -- without any ML or geometry.
+
+    A row counts as foliage when >=50% of its pixels are green-hued with real
+    saturation. We stop at the first non-foliage (car/roof) row and never remove
+    more than 70% of the height, so a tight car box (whose top rows are roof, not
+    leaves) is left untouched and genuine paint keeps its colour.
+    """
+    h, w = crop.shape[:2]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0].astype(np.int32)
+    sat = hsv[:, :, 1].astype(np.int32)
+    val = hsv[:, :, 2].astype(np.int32)
+    green_row = (((hue >= 33) & (hue < 85) & (sat >= 60) & (val >= 40))
+                 .mean(axis=1))
+    top = 0
+    while top < h and green_row[top] >= 0.5:
+        top += 1
+    if top == 0:
+        return crop
+    top = min(top, int(h * 0.70))
+    return crop[top:]
+
+
 def estimate_color(crop) -> str | None:
     """Return a human colour name for a BGR vehicle crop, or None if unclear."""
     if crop is None or crop.size == 0:
         return None
+    h, w = crop.shape[:2]
+    if h < 6 or w < 6:
+        return None
+    # Tighten to the vehicle: drop tree canopy merged in above the roofline, so
+    # colour reads the car's paint and not the green backdrop behind it.
+    crop = _trim_foliage_top(crop)
     h, w = crop.shape[:2]
     if h < 6 or w < 6:
         return None
