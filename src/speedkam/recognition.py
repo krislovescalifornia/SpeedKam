@@ -116,59 +116,118 @@ def _trim_foliage_top(crop):
     return crop[top:]
 
 
-def estimate_color(crop) -> str | None:
-    """Return a human colour name for a BGR vehicle crop, or None if unclear."""
-    if crop is None or crop.size == 0:
-        return None
-    h, w = crop.shape[:2]
-    if h < 6 or w < 6:
-        return None
-    # Tighten to the vehicle: drop tree canopy merged in above the roofline, so
-    # colour reads the car's paint and not the green backdrop behind it.
-    crop = _trim_foliage_top(crop)
-    h, w = crop.shape[:2]
-    if h < 6 or w < 6:
-        return None
-    # Sample the central body of the vehicle, away from road/edges/windows.
-    y0, y1 = int(h * 0.30), int(h * 0.75)
-    x0, x1 = int(w * 0.20), int(w * 0.80)
-    body = crop[y0:y1, x0:x1]
-    if body.size == 0:
-        body = crop
-    body = cv2.resize(body, (32, 32), interpolation=cv2.INTER_AREA)
-    hsv = cv2.cvtColor(body, cv2.COLOR_BGR2HSV)
-    hue = hsv[:, :, 0].reshape(-1).astype(np.int32)
-    sat = hsv[:, :, 1].reshape(-1).astype(np.int32)
-    val = hsv[:, :, 2].reshape(-1).astype(np.int32)
+# A pixel earns a chromatic (hue) name only with STRONG saturation -- glossy
+# paint and glass reflect blue sky as washed-out (sat 45-85) blue pixels that are
+# reflections, not paint. Real coloured paint sits well above sat 90.
+_SAT_MIN = 90
+_VAL_MIN = 50
+# Fraction of pixels that must be strongly-saturated in ONE hue before we call a
+# car chromatic. Below this it's neutral (white/gray/black). 0.40 keeps a grey
+# SUV's big blue-reflecting windows from reading "blue" while still catching a
+# genuinely red/blue/green car (which is >50% its own hue). Tuned on labelled
+# passes.
+_CHROMA_FRAC = 0.40
 
-    # Neutral by default. Real cars are overwhelmingly white / silver / gray /
-    # black, so the only way to earn a chromatic name is STRONG saturation over a
-    # real slice of the body. This is what stops a white van reading "blue":
-    # glossy paint reflects the blue sky and dark windows break up the body,
-    # leaving a lot of washed-out (sat 45-85) blue-hued pixels. Those are
-    # reflections, not paint -- the old code let them win. Genuine coloured paint
-    # sits well above sat 90.
-    painted = (sat >= 90) & (val >= 50)
-    if painted.mean() >= 0.35:
-        dom = int(np.median(hue[painted]))
+
+def _name_pixels(pixels) -> str | None:
+    """Human colour name for a bag of BGR car pixels (Nx3), or None if unclear.
+
+    The colour is the MOST COMMON one, never the average: hue is circular, and
+    red lives at BOTH ends of it (0-10 and 170-180). Averaging/medianing the hue
+    of a red car lands halfway round the wheel at ~90 = cyan/blue -- that is the
+    bug that logged a fire-engine-red car "blue". So we take the histogram PEAK
+    and fold red's two ends together before picking.
+    """
+    if pixels is None:
+        return None
+    pixels = np.asarray(pixels).reshape(-1, 3)
+    if len(pixels) < 8:
+        return None
+    hsv = cv2.cvtColor(pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    hue = hsv[:, 0].astype(np.int32)
+    sat = hsv[:, 1].astype(np.int32)
+    val = hsv[:, 2].astype(np.int32)
+
+    chroma = (sat >= _SAT_MIN) & (val >= _VAL_MIN)
+    if chroma.mean() >= _CHROMA_FRAC:
+        hist = np.bincount(hue[chroma] // 10, minlength=18)
+        hist[0] += hist[17]          # red wraps: fold 170-179 into 0-9
+        hist[17] = 0
+        peak = int(np.argmax(hist)) * 10 + 5
         for lo, hi, name in _HUE_NAMES:
-            if lo <= dom < hi:
+            if lo <= peak < hi:
                 return name
-        return None
+        return "red"
 
-    # Neutral: black / gray / white by the brightness of the PAINT -- the median
-    # of the non-dark neutral pixels. Averaging the whole crop lets dark
-    # windows/wheels/shadow drag a white body down into "gray"; the median of the
-    # neutral pixels ignores that dark trim.
-    neutral = ~painted
+    # Neutral: black / gray / white by the brightness of the non-dark paint --
+    # the median of the neutral pixels, so dark windows/wheels/shadow don't drag a
+    # white body down to "gray".
+    neutral = ~chroma
     if neutral.sum() < 8:
-        return None
+        neutral = np.ones(len(val), bool)
     v = float(np.median(val[neutral]))
     if v < 55:
         return "black"
     if v > 175:
         return "white"
     return "gray"
+
+
+def estimate_color_pixels(pixels) -> str | None:
+    """Colour name from the car's actual moving pixels (background-subtracted).
+
+    This is the preferred path: the pixels are the car silhouette only, so the
+    static tree/house/grass backdrop is already gone and can't poison the colour.
+    """
+    return _name_pixels(pixels)
+
+
+def changed_pixels(crop, background, thresh=45, min_px=200):
+    """BGR pixels of ``crop`` that differ from the static ``background`` plate.
+
+    The background (empty street) never changes; the only thing that moved into
+    the box is the car. Diff, clean up, keep the largest changed blob, and return
+    its pixels -- or None if too little changed to trust. ``crop`` and
+    ``background`` must be the same-size view of the same region.
+    """
+    if crop is None or background is None or crop.shape != background.shape:
+        return None
+    diff = cv2.absdiff(crop, background).max(2)
+    mask = (diff > thresh).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if n <= 1:
+        return None
+    big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    px = crop[labels == big]
+    return px if len(px) >= min_px else None
+
+
+def estimate_color(crop) -> str | None:
+    """Colour name for a BGR vehicle crop (bbox rectangle), or None if unclear.
+
+    Fallback for when no background plate is available yet: the crop is the whole
+    motion box, so we first drop any tree canopy merged in above the roofline,
+    then read the most common colour of the central body.
+    """
+    if crop is None or crop.size == 0:
+        return None
+    h, w = crop.shape[:2]
+    if h < 6 or w < 6:
+        return None
+    crop = _trim_foliage_top(crop)
+    h, w = crop.shape[:2]
+    if h < 6 or w < 6:
+        return None
+    # Sample the central body of the vehicle, away from road/edges/windows.
+    body = crop[int(h * 0.30):int(h * 0.75), int(w * 0.20):int(w * 0.80)]
+    if body.size == 0:
+        body = crop
+    body = cv2.resize(body, (32, 32), interpolation=cv2.INTER_AREA)
+    return _name_pixels(body.reshape(-1, 3))
 
 
 class VehicleRecognizer:

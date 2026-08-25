@@ -51,6 +51,10 @@ class SpeedCamera:
         )
         self.detector = MotionDetector(cfg["detection"])
         self.tracker = Tracker(cfg["tracker"], min_hits=cfg["detection"]["min_hits"])
+        # Rolling background plate (the empty street) for reading a car's colour
+        # from ONLY its own moving pixels -- see _update_bg_plate / _car_color.
+        self._bg_plate = None      # float32 full-res EMA, or None until warmed up
+        self._bg_plate_t = 0.0
 
         self.recorder = None
         if cfg["recording"]["enabled"]:
@@ -646,6 +650,12 @@ class SpeedCamera:
             detections, _ = self.detector.detect(frame, roi=self._det_roi)
         active, finished = self.tracker.update(detections, t)
 
+        # Learn the empty street: when nothing is moving, fold this full-res frame
+        # into the background plate. Colour later reads only what differs from it
+        # (the car), so the static trees/house/grass can never poison the colour.
+        if not active and not detections:
+            self._update_bg_plate(t, frame)
+
         for tr in finished:
             self._finalize(tr)
 
@@ -1152,6 +1162,44 @@ class SpeedCamera:
             self.sync.enqueue(event)
 
     # --------------------------------------------------------------- recognition
+    def _update_bg_plate(self, t, frame):
+        """Fold an empty-road frame into the background plate (slow EMA).
+
+        Throttled to ~every 2 s so the per-frame cost is nil, and slow enough
+        (alpha 0.15) that a car briefly stopped on the road can't burn into the
+        plate, yet fast enough to track the light drifting toward dusk.
+        """
+        if frame is None:
+            return
+        if self._bg_plate is None:
+            self._bg_plate = frame.astype(np.float32)
+            self._bg_plate_t = t
+            return
+        if self._bg_plate.shape != frame.shape or (t - self._bg_plate_t) < 2.0:
+            return
+        self._bg_plate_t = t
+        cv2.accumulateWeighted(frame, self._bg_plate, 0.15)
+
+    def _car_color(self, frame, bbox):
+        """Colour of the car at ``bbox`` from ONLY its moving pixels.
+
+        Diffs the box against the background plate (empty street) so the tree/
+        house/grass backdrop drops out and the colour is read from the car alone.
+        Falls back to the whole-box estimate before the plate has warmed up or
+        when too little changed to trust.
+        """
+        from .recognition import (_crop, changed_pixels, estimate_color,
+                                   estimate_color_pixels)
+        crop = _crop(frame, bbox)
+        if crop is None:
+            return None
+        if self._bg_plate is not None:
+            bg = _crop(self._bg_plate.astype(np.uint8), bbox)
+            px = changed_pixels(crop, bg)
+            if px is not None:
+                return estimate_color_pixels(px)
+        return estimate_color(crop)
+
     def _recognize(self, track, yolo_type=None):
         """Representative-frame attributes (color always; vehicle_type from the
         YOLO vote when it already ran, else from the single-crop recognizer).
@@ -1159,7 +1207,7 @@ class SpeedCamera:
         ``yolo_type`` avoids a second inference: when the gate's pass-level vote
         already classified the vehicle, we reuse its label and only run the cheap
         OpenCV color pass here."""
-        from .recognition import EMPTY, _crop, estimate_color
+        from .recognition import EMPTY
         if not self.recognizer.active or self.recorder is None or not track.samples:
             out = dict(EMPTY)
             if yolo_type:
@@ -1172,19 +1220,23 @@ class SpeedCamera:
             if yolo_type:
                 out["vehicle_type"] = yolo_type
             return out
-        # Gate path: YOLO already ran in the vote. Reuse its type; just add color.
+        color = None
+        if self.recognizer.want_color:
+            try:
+                color = self._car_color(frame, sample.bbox)
+            except Exception:  # noqa: BLE001 - colour is best-effort
+                pass
+        # Gate path: YOLO already ran in the vote. Reuse its type; add colour.
         if yolo_type is not None or self._recog_q is not None:
             out = dict(EMPTY)
             out["vehicle_type"] = yolo_type
-            if self.recognizer.want_color:
-                crop = _crop(frame, sample.bbox)
-                try:
-                    out["color"] = (estimate_color(crop)
-                                    if crop is not None else None)
-                except Exception:  # noqa: BLE001 - color is best-effort
-                    pass
+            out["color"] = color
             return out
-        return self.recognizer.recognize(frame, sample.bbox)
+        # No gate: get vehicle_type from the single-crop recognizer, but keep the
+        # background-subtracted colour computed above.
+        out = self.recognizer.recognize(frame, sample.bbox)
+        out["color"] = color
+        return out
 
     @staticmethod
     def _attr_label(attrs):
