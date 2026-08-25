@@ -24,16 +24,6 @@ DEFAULTS = {
         "exposure_us": 0,
         "analogue_gain": 0,
         "loop": False,
-        # Optional lens undistortion applied to every frame before detection and
-        # calibration. Off by default. dist_coeffs is OpenCV order [k1,k2,p1,p2,k3];
-        # intrinsics are derived from fov_deg + frame size unless fx/fy/cx/cy given.
-        "undistort": {
-            "enabled": False,
-            "fov_deg": 70.0,
-            "fx": None, "fy": None, "cx": None, "cy": None,
-            "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
-            "alpha": 0.0,
-        },
     },
     "detection": {
         "min_area": 1500,
@@ -69,98 +59,53 @@ DEFAULTS = {
         "dwell_seconds": 30.0,
     },
     "speed": {
-        "calibration_file": "calibration.json",
-        "min_track_distance_m": 3.0,
         "min_samples": 6,
         "min_speed_kmh": 3,
         "max_speed_kmh": 200,
-        # False-positive auto-reject (dashboard-tunable, persisted per node):
-        #   max_track_distance_m -- a reading whose vehicle "traveled" farther than
-        #     this across the scene is a phantom track (noise/vegetation stitched
-        #     into a path) and is rejected. Real passes here cover only a few metres
-        #     through the measure band; 45 m is a generous ceiling.
-        #   min_vehicle_span_m -- the object's real-world ground footprint; below
-        #     this it's sub-car-sized (a cyclist or pedestrian) and rejected. A car
-        #     is >~1.3 m; a bike+rider <~0.8 m. 0 disables either gate.
-        "max_track_distance_m": 45.0,
-        "min_vehicle_span_m": 1.0,
-        # Car-shape gate: minimum bbox aspect ratio (width/height). A side-on
-        # car's box is wide (~2-3); a walking person's is tall (~0.3-0.5), a
-        # side-on cyclist ~square (~0.9). 1.1 keeps cars, rejects people/bikes.
-        # Pixel-only (no homography), so a person close to the lens is caught.
-        # Lower it for a head-on camera (cars look squarer). 0 disables.
-        "min_vehicle_aspect": 1.1,
-        # Road-region gate: the fraction of a track's ground points that must lie
-        # ON the calibrated road surface (vs the camera-side foreground -- kerb,
-        # grass, sidewalk -- or well off to the side) for it to count as a road
-        # vehicle. A foreground pedestrian's ground point maps through the road
-        # homography to garbage and invents phantom speeds (this is what once
-        # logged two kids on the lawn as a 69 mph car). Below this fraction the
-        # pass happened mostly off the road and is rejected. Only the NEAR and
-        # LATERAL road edges are bounded; the far edge is left open so distant
-        # cars still count. Needs a calibration to apply; 0 disables. road_margin_
-        # frac widens the road box by this fraction of the frame on those edges.
-        "min_on_road_frac": 0.6,
-        "road_margin_frac": 0.03,
-        # Trajectory-quality gates -- deterministic motion physics, no classifier.
-        #   min_straightness -- minimum ratio of straight-line (net) displacement
-        #     to total traversed path length, in world meters. A real vehicle
-        #     tracks straight along the road (~1.0); foliage swaying in the wind,
-        #     a bug crawling the lens, or a noise blob stitched into a "track"
-        #     wanders back and forth, so its net displacement is a fraction of its
-        #     path length. 0.80 keeps real passes (typ. >0.95) and kills wander.
-        #     Invariant to blob shape, so it catches what the aspect gate can't.
+        # --- SIMPLE two-line crossing-time speed --------------------------------
+        # A car crossing between image columns x_a and x_b at a KNOWN speed fixes
+        # the real distance of that stretch -- one number per travel direction
+        # (d_east_m / d_west_m), set once by driving past each way at a known
+        # speed (the log prints the crossing time; d = known_mps * seconds). Every
+        # other car's speed is then that distance over its own crossing time. Raw
+        # pixel x + timestamps only -- no homography, no undistortion. Per node,
+        # so x_a/x_b and the two distances live in config.local.yaml. Until a
+        # direction's distance is set the node logs its crossing time and reports
+        # no speed for that direction (detection-only).
+        "x_a": 1000,
+        "x_b": 450,
+        "d_east_m": None,
+        "d_west_m": None,
+        # --- Automatic false-positive rejection (all PIXEL-ONLY) ----------------
+        # Cyclists, pedestrians, and wind-blown foreground plants get tracked and
+        # timed just like cars. Cheap pixel checks throw the junk out
+        # automatically -- it's still LOGGED (visible in the dashboard's
+        # auto-reject bin, restorable) but kept out of every count, average and
+        # graph. All live-tunable from either dashboard and persisted per node.
+        #   min_vehicle_aspect -- minimum bbox aspect ratio (width/height). On a
+        #     side-on camera a car's box is WIDE (~2-3), a walking person's TALL
+        #     (~0.3-0.5), a side-on cyclist ~square (~0.9). 1.4 keeps cars and
+        #     rejects people/bikes. Lower it for a head-on mount. 0 disables.
+        #   min_car_width_px -- the size half of the car filter: a car is a BIG
+        #     object even in the far lane (bbox width well over 200px), a dog,
+        #     bike or pedestrian is small. With the aspect check, nothing that
+        #     isn't a car clears both. 0 disables.
         #   max_area_cv -- maximum coefficient of variation (std/mean) of the
-        #     bounding-box area across the pass. A vehicle's silhouette grows and
-        #     shrinks smoothly with perspective (low CV); noise and wind-blown
-        #     foliage flicker in size (high CV). 0.90 only fires on egregious
-        #     flicker, so it never rejects a real car. Pixel-only (no homography).
-        # Either 0 disables that gate.
-        "min_straightness": 0.80,
+        #     bbox area across the pass. A vehicle's silhouette changes size
+        #     smoothly (low CV); noise and wind-blown foliage flicker (high CV).
+        #     0.90 only fires on egregious flicker, so it never rejects a real
+        #     car. 0 disables.
+        #   dedupe_seconds -- count each drive-by ONCE: a second confirmed pass in
+        #     the same direction within this window is a fragmented re-detection
+        #     of the same vehicle and is rejected. 0 disables.
+        "min_vehicle_aspect": 1.4,
+        "min_car_width_px": 200,
         "max_area_cv": 0.90,
-        # Motion-physics gates (completing the deterministic gate of record).
-        # Both default OFF (0) so nothing regresses before they're calibrated:
-        # run tools/measure_residual.py to see the distribution of these signals
-        # on real passes vs. adversaries, then set a threshold with headroom.
-        #   min_monotonicity -- minimum fraction of a track's steps that must
-        #     advance ALONG the net direction of travel (world coords). A real
-        #     vehicle never reverses (~1.0); swaying foliage / a noise blob
-        #     oscillates back and forth (~0.5). Catches a path that is straight
-        #     enough to beat min_straightness but still jitters along its axis.
-        #     A sane enforced value is ~0.75. 0 disables.
-        #   max_accel_mps2 -- maximum plausible frame-to-frame acceleration
-        #     magnitude (m/s^2). A real vehicle changes speed smoothly (a few
-        #     m/s^2 even braking hard); a phantom teleporting between noise blobs
-        #     implies an impossible spike. Sensitive to fps/jitter, so measure
-        #     before enabling; a typical enforced ceiling is ~15-25. 0 disables.
-        "min_monotonicity": 0.0,
-        "max_accel_mps2": 0.0,
-        # Count each drive-by ONCE: a second confirmed pass in the same direction
-        # within this many seconds is treated as a fragmented re-detection of the
-        # same vehicle and rejected. 0 disables.
         "dedupe_seconds": 3.0,
         "speed_limit_kmh": 40.2336,   # 25 mph
         "display_units": "mph",
         "direction_positive": "Westbound",
         "direction_negative": "Eastbound",
-        # Center-band measurement gate: only time a vehicle while its ground
-        # point is inside a band of the frame (fractions of width/height), where
-        # the pixels->meters map is trustworthy. The right band depends on how
-        # the camera is mounted, so two presets are kept and `orientation`
-        # selects the active one (toggle it live on the dashboard):
-        #   parallel (side-on): traffic crosses L<->R, edges distorted
-        #     horizontally -> a horizontal centre band. Tuned to +2.0% against a
-        #     synthetic side-on clip (tools/tune_measure_band.py); re-tune per lens.
-        #   head_on (receding): car stays near centre-x and shrinks toward the
-        #     vanishing point, where pixels-per-metre collapses -> a vertical
-        #     near/mid band dropping the far top. Tuned to -1.4% (vs +32%
-        #     full-frame) against a synthetic head-on clip (make_headon_video.py).
-        "measure_band": {
-            "enabled": True,
-            "orientation": "parallel",
-            "parallel": {"x_min": 0.3, "x_max": 0.7, "y_min": 0.0, "y_max": 1.0},
-            "head_on": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.55, "y_max": 0.95},
-        },
     },
     "recording": {
         "enabled": True,

@@ -18,7 +18,6 @@ CFG = {
     "fps": 30,
     "windows_use_dshow": False,
     "manual_exposure": -1,
-    "undistort": None,
 }
 
 
@@ -119,14 +118,6 @@ def test_lores_size_from_detect_scale(monkeypatch):
     cam = capture.Camera(CFG, detect_scale=0.5)          # 320x240 -> 160x120
     assert cam._lores_size == (160, 120)
     assert capture.Camera(CFG, detect_scale=1.0)._lores_size is None
-
-
-def test_lores_disabled_when_undistort_on(monkeypatch):
-    """The lores frame isn't undistorted, so it must not be used when lens
-    undistortion is enabled (its coordinates wouldn't match the calibration)."""
-    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: FakeCap(opened=True))
-    cfg = dict(CFG, undistort={"enabled": True, "dist_coeffs": [0, 0, 0, 0, 0]})
-    assert capture.Camera(cfg, detect_scale=0.5)._lores_size is None
 
 
 def test_detect_upscale_maps_to_full_resolution():

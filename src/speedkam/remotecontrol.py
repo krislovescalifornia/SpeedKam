@@ -65,10 +65,9 @@ class RemoteControl:
     # ------------------------------------------------------------------ status
     def _status(self):
         cam = self.camera
-        # Calibration + camera health, so the off-site dashboard can mirror the
-        # on-Pi status pills (calibrated/points/error, camera up/down). Read
-        # defensively -- a heartbeat must never crash the poll loop.
-        calib = getattr(cam, "calibration", None)
+        # Camera health + live counters, so the off-site dashboard can mirror the
+        # on-Pi status pills. Read defensively -- a heartbeat must never crash the
+        # poll loop.
         return {
             "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "running": cam.running,
@@ -77,7 +76,6 @@ class RemoteControl:
             "total_count": cam.total_count,
             "speeder_count": cam.speeder_count,
             "speedkapture_threshold": cam.speedkapture_threshold,
-            "orientation": cam.orientation,
             "speed_limit_kmh": cam.limit_kmh,
             "units": cam.units,
             # Low-light gate: paused==idle-because-dark, plus the live brightness
@@ -88,14 +86,10 @@ class RemoteControl:
                                  is not None else None),
             # car-filter ("only count cars") thresholds, so the off-site
             # dashboard can show current values + a pending/applied indicator.
-            "max_track_distance_m": getattr(cam, "max_track_distance_m", None),
-            "min_vehicle_span_m": getattr(cam, "min_vehicle_span_m", None),
             "min_vehicle_aspect": getattr(cam, "min_vehicle_aspect", None),
+            "min_car_width_px": getattr(cam, "min_car_width_px", None),
+            "max_area_cv": getattr(cam, "max_area_cv", None),
             "dedupe_seconds": getattr(cam, "dedupe_seconds", None),
-            "calibrated": calib is not None,
-            "calibration_points": (len(calib.image_points) if calib else 0),
-            "reprojection_error_m": (round(calib.reprojection_error(), 3)
-                                     if calib else None),
             "last_event": cam.last_event,
         }
 
@@ -142,20 +136,16 @@ class RemoteControl:
                       f"{self.camera.units} (rev {rev}).")
             except (TypeError, ValueError):
                 pass
-        orient = settings.get("orientation")
-        if orient is not None:
-            new = self.camera.set_orientation(orient)
-            print(f"[SpeedKam] Remote set orientation -> {new} (rev {rev}).")
         # car-filter thresholds (set together on the dashboard's "only count
-        # cars" panel; any subset may be present).
-        reject_keys = ("max_track_distance_m", "min_vehicle_span_m",
-                       "min_vehicle_aspect", "dedupe_seconds")
+        # cars" panel; any subset may be present). All pixel-only.
+        reject_keys = ("min_vehicle_aspect", "min_car_width_px",
+                       "max_area_cv", "dedupe_seconds")
         if any(settings.get(k) is not None for k in reject_keys):
             try:
                 new = self.camera.set_reject_thresholds(
-                    max_distance_m=settings.get("max_track_distance_m"),
-                    min_span_m=settings.get("min_vehicle_span_m"),
                     min_aspect=settings.get("min_vehicle_aspect"),
+                    min_car_width_px=settings.get("min_car_width_px"),
+                    max_area_cv=settings.get("max_area_cv"),
                     dedupe_seconds=settings.get("dedupe_seconds"))
                 print(f"[SpeedKam] Remote set car-filter thresholds -> {new} "
                       f"(rev {rev}).")

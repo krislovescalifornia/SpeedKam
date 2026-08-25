@@ -25,17 +25,12 @@ import time
 import cv2
 import numpy as np
 
-from .undistort import Undistorter
-
 
 class Camera:
     def __init__(self, cfg, detect_scale=1.0):
         self.cfg = cfg
         self._configured_backend = cfg["backend"]
         self.backend = None            # resolved on open: 'opencv' | 'picamera2'
-        # Optional lens undistortion, applied to every frame BEFORE anything
-        # downstream sees it -- so calibration and detection share one geometry.
-        self.undistorter = Undistorter(cfg.get("undistort"))
         self._picam = None
         self._cap = None
 
@@ -45,11 +40,10 @@ class Camera:
         # for clips/annotation -- a big win on a weak Pi, where software
         # downscaling the full frame every tick is itself expensive. Sized from
         # the detector's detect_scale so one knob controls detection resolution
-        # on both backends. Disabled when undistortion is on (the lores frame
-        # isn't undistorted, so its coordinates wouldn't match the calibration).
+        # on both backends.
         self._lores_size = None        # (w, h) or None if no lores stream
         ds = float(detect_scale or 1.0)
-        if 0.0 < ds < 1.0 and not self.undistorter.enabled:
+        if 0.0 < ds < 1.0:
             lw = int(round(cfg["width"] * ds)) & ~1   # even dims for YUV420
             lh = int(round(cfg["height"] * ds)) & ~1
             if lw >= 64 and lh >= 64:
@@ -279,12 +273,12 @@ class Camera:
                     # red<->blue in every clip/snapshot (green sits in the
                     # middle and survives, which is the tell).
                     frame = np.ascontiguousarray(main)
-                    return t, self.undistorter.apply(frame)
+                    return t, frame
                 main = self._picam.capture_array()
                 self.detect_frame = None
                 # See note above: "RGB888" is already BGR; use it as-is.
                 frame = np.ascontiguousarray(main)
-                return t, self.undistorter.apply(frame)
+                return t, frame
 
             self.detect_frame = None
             ok, frame = self._cap.read()
@@ -300,7 +294,7 @@ class Camera:
                 self._frame_idx += 1
             else:
                 t = time.monotonic()
-            return t, self.undistorter.apply(frame)
+            return t, frame
         except Exception:  # noqa: BLE001 - treat a mid-read failure as a drop
             self.mark_closed()
             return None, None

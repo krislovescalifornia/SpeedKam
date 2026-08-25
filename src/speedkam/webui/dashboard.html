@@ -212,10 +212,8 @@
     <span class="pill" id="p-cam">camera —</span>
     <span class="pill" id="p-fps">— fps</span>
     <span class="pill" id="p-skap">SpeedKapture —</span>
-    <span class="pill" id="p-orient">mount —</span>
     <span class="pill" id="p-backup">backup —</span>
-    <span class="pill" id="p-calib">calibration —</span>
-    <a class="btn sm" href="/calibrate">Calibrate</a>
+    <a class="btn sm" href="/calibrate">Calibration</a>
     <button class="btn ghost sm" id="btn-restart" onclick="powerConfirm('reboot')">Restart</button>
     <button class="btn warn sm" id="btn-shutdown" onclick="powerConfirm('shutdown')">Shutdown</button>
   </div>
@@ -273,43 +271,28 @@
         </div>
       </div>
       <div class="card">
-        <h2>Camera orientation</h2>
-        <div class="skap">
-          <div class="row">
-            <span>Mounted</span>
-            <div class="seg" id="orient-seg">
-              <button data-o="parallel" onclick="saveOrient('parallel')">Parallel</button>
-              <button data-o="head_on" onclick="saveOrient('head_on')">Head-on</button>
-            </div>
-            <span class="saved" id="orient-saved">saved ✓</span>
-          </div>
-          <div class="hint"><b>Parallel:</b> beside the road (L↔R). <b>Head-on:</b> facing traffic.</div>
-        </div>
-      </div>
-      <div class="card">
         <h2>Only count cars</h2>
         <div class="skap">
           <div class="row">
             <span>Min car shape (w:h)</span>
             <input type="number" id="rej-aspect" min="0" step="0.1" title="A car's box is wider than tall (~2-3); a person's is taller (~0.4). Below this = not a car.">
+            <span>Min car width</span>
+            <input type="number" id="rej-width" min="0" step="10" title="A car is a big object even in the far lane (well over 200px wide); a bike/dog/pedestrian is small.">
+            <span class="u">px</span>
+          </div>
+          <div class="row">
+            <span>Max size flicker</span>
+            <input type="number" id="rej-area" min="0" step="0.05" title="Coefficient of variation of the box area across the pass. A car's outline changes size smoothly (low); noise/foliage flicker (high). ~0.9 only catches egregious flicker.">
             <span>Dedupe window</span>
             <input type="number" id="rej-dedupe" min="0" step="0.5">
             <span class="u">s</span>
-          </div>
-          <div class="row">
-            <span>Max travel</span>
-            <input type="number" id="rej-dist" min="0" step="1">
-            <span class="u">m</span>
-            <span>Min size</span>
-            <input type="number" id="rej-span" min="0" step="0.1">
-            <span class="u">m</span>
             <button class="btn sm" onclick="saveReject()">Save</button>
             <span class="saved" id="rej-saved">saved ✓</span>
           </div>
-          <div class="hint"><b>Car shape</b> rejects pedestrians, dog-walkers &amp; cyclists (their box is
-            taller than a car's). <b>Dedupe</b> counts each drive-by once. <b>Max travel</b> kills phantom
-            tracks; <b>Min size</b> drops tiny objects. <b id="rej-count">0</b> readings auto-rejected so far
-            — see the bin below.</div>
+          <div class="hint"><b>Car shape</b> &amp; <b>width</b> reject pedestrians, dog-walkers &amp; cyclists
+            (too tall or too small). <b>Size flicker</b> drops wind-blown foliage / noise blobs whose
+            outline jitters. <b>Dedupe</b> counts each drive-by once. All pixel-only, no calibration.
+            <b id="rej-count">0</b> readings auto-rejected so far — see the bin below.</div>
         </div>
       </div>
     </div>
@@ -423,7 +406,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-let UNITS="mph", LIMIT_KMH=null, SKAP=0, ORIENT="parallel";
+let UNITS="mph", LIMIT_KMH=null, SKAP=0;
 let FROM="", TO="", PERIOD="today";
 const KMH_PER_MPH=1.609344;
 const q=s=>document.querySelector(s);
@@ -483,14 +466,6 @@ function refreshStatus(s){
   q('#p-skap').innerHTML='SpeedKapture <b>'+(SKAP>0?('>'+SKAP+' '+uLbl()):'all')+'</b>';
   const skI=q('#skap-val');if(document.activeElement!==skI)skI.value=SKAP;
 
-  ORIENT=s.orientation||ORIENT;
-  q('#p-orient').innerHTML='mount <b>'+(ORIENT==="head_on"?"head-on":"parallel")+'</b>';
-  qa('#orient-seg button').forEach(b=>b.classList.toggle('on',b.dataset.o===ORIENT));
-
-  const c=q('#p-calib');
-  if(s.calibrated){c.className='pill ok';c.innerHTML='calibrated <b>'+s.calibration_points+'pts</b> ±'+s.reprojection_error_m+'m';}
-  else{c.className='pill bad';c.innerHTML='not calibrated';}
-
   const b=q('#p-backup'),bk=s.backup||{};
   if(!bk.enabled){b.className='pill';b.innerHTML='backup <b>off</b>';}
   else if(bk.last_error&&bk.pending>0){b.className='pill bad';b.innerHTML='backup <b>'+bk.pending+' queued</b>';b.title=bk.last_error;}
@@ -505,10 +480,10 @@ function refreshStatus(s){
   const limI=q('#limit-val');if(document.activeElement!==limI)limI.value=limitDisp;
 
   // reject config
-  const rd=q('#rej-dist'),rs=q('#rej-span'),ra=q('#rej-aspect'),rdd=q('#rej-dedupe');
-  if(document.activeElement!==rd)rd.value=s.max_track_distance_m??"";
-  if(document.activeElement!==rs)rs.value=s.min_vehicle_span_m??"";
+  const ra=q('#rej-aspect'),rw=q('#rej-width'),rac=q('#rej-area'),rdd=q('#rej-dedupe');
   if(document.activeElement!==ra)ra.value=s.min_vehicle_aspect??"";
+  if(document.activeElement!==rw)rw.value=s.min_car_width_px??"";
+  if(document.activeElement!==rac)rac.value=s.max_area_cv??"";
   if(document.activeElement!==rdd)rdd.value=s.dedupe_seconds??"";
   q('#rej-count').textContent=s.rejected_count||0;
   q('#rej-cnt').textContent=s.rejected_count||0;
@@ -767,15 +742,12 @@ async function saveSkap(){const v=parseFloat(q('#skap-val').value);if(isNaN(v)||
 async function saveLimit(){const v=parseFloat(q('#limit-val').value);if(isNaN(v)||v<=0)return;
   const r=await fetch('/api/speedlimit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({limit:v,units:UNITS})}).then(r=>r.json()).catch(()=>null);
   if(r&&r.ok){LIMIT_KMH=r.speed_limit_kmh;flash('limit-saved');refreshAll();}}
-async function saveOrient(v){if(v===ORIENT)return;
-  const r=await fetch('/api/orientation',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({orientation:v})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){ORIENT=r.orientation;flash('orient-saved');refreshAll();}}
 async function saveReject(){
-  const d=parseFloat(q('#rej-dist').value),s=parseFloat(q('#rej-span').value),
-        a=parseFloat(q('#rej-aspect').value),dd=parseFloat(q('#rej-dedupe').value);
+  const a=parseFloat(q('#rej-aspect').value),w=parseFloat(q('#rej-width').value),
+        ac=parseFloat(q('#rej-area').value),dd=parseFloat(q('#rej-dedupe').value);
   const r=await fetch('/api/rejectconfig',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({max_track_distance_m:isNaN(d)?null:d,min_vehicle_span_m:isNaN(s)?null:s,
-      min_vehicle_aspect:isNaN(a)?null:a,dedupe_seconds:isNaN(dd)?null:dd})}).then(r=>r.json()).catch(()=>null);
+    body:JSON.stringify({min_vehicle_aspect:isNaN(a)?null:a,min_car_width_px:isNaN(w)?null:w,
+      max_area_cv:isNaN(ac)?null:ac,dedupe_seconds:isNaN(dd)?null:dd})}).then(r=>r.json()).catch(()=>null);
   if(r&&r.ok){flash('rej-saved');refreshAll();}}
 function flash(id){const sv=q('#'+id);sv.classList.add('show');setTimeout(()=>sv.classList.remove('show'),1500);}
 

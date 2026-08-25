@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Kris Kling
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Web dashboard: live view, recent clips, stats, and browser calibration.
+"""Web dashboard: live view, recent clips, and stats.
 
 A background thread runs the SpeedCamera pipeline and publishes each annotated
-frame here; Flask serves an MJPEG live view, a REST API, the capture files, and
-a click-to-calibrate page. This is what makes the headless Pi usable from a
-phone/laptop -- browse to http://<pi-ip>:8080.
+frame here; Flask serves an MJPEG live view, a REST API, and the capture files.
+This is what makes the headless Pi usable from a phone/laptop -- browse to
+http://<pi-ip>:8080.
 """
 from __future__ import annotations
 
@@ -24,8 +24,6 @@ from datetime import date, datetime as _dt, timedelta
 from flask import (Flask, Response, jsonify, request, send_file,
                    send_from_directory)
 
-from .calibration import Calibration
-from . import driveby
 from .pipeline import SpeedCamera
 from .recorder import CSV_COLUMNS, row_key as recorder_row_key
 
@@ -44,10 +42,9 @@ class Runner:
         self.speedcam = SpeedCamera(cfg)
         self.captures_dir = Path(cfg["recording"]["output_dir"]).resolve()
         self.csv_path = Path(cfg["logging"]["csv_file"]).resolve()
-        self.calibration_file = cfg["speed"]["calibration_file"]
 
         self._latest_jpeg = None       # annotated, for the live stream
-        self._latest_raw = None        # clean frame, for calibration snapshot
+        self._latest_raw = None        # clean frame, for the latest-snapshot tile
         self._last_frame_ts = None     # monotonic time of the last frame (freshness)
         self._cond = threading.Condition()
         self._stop = threading.Event()
@@ -78,11 +75,6 @@ class Runner:
         # weak Pi: encoding 1280x720 costs ~34ms, but ~640 wide costs ~8ms.
         # 0 = encode at full resolution.
         self._stream_max_width = int(web.get("stream_max_width", 640) or 0)
-
-        # Drive-by calibration session (see driveby.py). One session at a time,
-        # which is fine for single-operator home use.
-        self._db_lock = threading.Lock()
-        self._db = {"armed": False, "since": 0.0, "passes": []}
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -178,7 +170,6 @@ class Runner:
     # ------------------------------------------------------------------ data
     def status(self):
         sc = self.speedcam
-        calib = sc.calibration
         backup = (sc.sync.status() if getattr(sc, "sync", None)
                   else {"enabled": False})
         retention = (sc.retention.status() if getattr(sc, "retention", None)
@@ -196,10 +187,6 @@ class Runner:
             "frame_age": frame_age,
             "power_controls": bool((self.cfg.get("web") or {})
                                    .get("allow_power_control", True)),
-            "calibrated": calib is not None,
-            "calibration_points": (len(calib.image_points) if calib else 0),
-            "reprojection_error_m": (round(calib.reprojection_error(), 3)
-                                     if calib else None),
             "camera_source": self.cfg["camera"]["source"],
             "fps": round(sc.current_fps, 1),
             "units": sc.units,
@@ -216,26 +203,30 @@ class Runner:
             "recognition": bool(getattr(sc, "recognizer", None)
                                 and sc.recognizer.active),
             "speedkapture_threshold": sc.speedkapture_threshold,
-            "orientation": sc.orientation,
-            "measure_band": sc._active_band(),
-            "max_track_distance_m": sc.max_track_distance_m,
-            "min_vehicle_span_m": sc.min_vehicle_span_m,
             "min_vehicle_aspect": sc.min_vehicle_aspect,
+            "min_car_width_px": sc.min_car_width_px,
+            "max_area_cv": sc.max_area_cv,
             "dedupe_seconds": sc.dedupe_seconds,
+            # Crossing-time calibration (read-only here; set in config.local.yaml).
+            # The two image columns a car is timed between, and the per-direction
+            # distances that turn a crossing time into a speed. A null distance =
+            # that direction isn't calibrated yet (node logs its crossing time).
+            "x_a": self.cfg["speed"].get("x_a"),
+            "x_b": self.cfg["speed"].get("x_b"),
+            "d_east_m": self.cfg["speed"].get("d_east_m"),
+            "d_west_m": self.cfg["speed"].get("d_west_m"),
             "rejected_count": sum(1 for r in self._all_rows()
                                   if self._is_rejected(r)),
         }
 
-    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
-                              min_aspect=None, dedupe_seconds=None):
+    def set_reject_thresholds(self, min_aspect=None, min_car_width_px=None,
+                              max_area_cv=None, dedupe_seconds=None):
         return self.speedcam.set_reject_thresholds(
-            max_distance_m, min_span_m, min_aspect, dedupe_seconds)
+            min_aspect=min_aspect, min_car_width_px=min_car_width_px,
+            max_area_cv=max_area_cv, dedupe_seconds=dedupe_seconds)
 
     def set_speedkapture(self, value):
         return self.speedcam.set_speedkapture_threshold(value)
-
-    def set_orientation(self, value):
-        return self.speedcam.set_orientation(value)
 
     def set_speed_limit(self, value, units=None):
         """Set 'My Road Speed Limit' from a value typed in display units.
@@ -547,119 +538,6 @@ class Runner:
             w.writerow([r.get(c, "") for c in cols])
         return buf.getvalue()
 
-    # ------------------------------------------------------------- calibrate
-    def recalibrate(self, image_points, world_points, source="web"):
-        calib = Calibration(image_points, world_points, meta={"units": "meters",
-                                                              "source": source})
-        calib.save(self.calibration_file)
-        self.speedcam.set_calibration(calib)
-        return calib.reprojection_error()
-
-    # ---------------------------------------------------------- drive-by calib
-    @staticmethod
-    def _kmh_to_mps(value, units):
-        """A user-entered display speed (mph or km/h) -> metres/second."""
-        v = float(value)
-        if v <= 0:
-            raise ValueError("speed must be positive")
-        return v / MPH_PER_MS if units == "mph" else v / KMH_PER_MS
-
-    def _db_summary(self):
-        """Public view of the session (metadata only; no trails or thumb bytes).
-
-        Every pass that crossed the frame while recording is listed -- yours and
-        any passing traffic alike. The operator selects which are theirs
-        client-side; build() uses only the selected ids."""
-        passes = [{
-            "id": p["id"],
-            "n": p["n"],
-            "direction": p["direction"],       # "→" (right) or "←" (left)
-            "wall": p["wall"],
-            "has_thumb": p["thumb"] is not None,
-        } for p in self._db["passes"]]
-        return {"armed": self._db["armed"], "passes": passes, "count": len(passes)}
-
-    def driveby_start(self):
-        self.speedcam.set_pass_thumbs(True)
-        with self._db_lock:
-            self._db = {"armed": True, "since": time.monotonic(), "passes": []}
-            return self._db_summary()
-
-    def driveby_stop(self):
-        self.speedcam.set_pass_thumbs(False)
-        with self._db_lock:
-            self._db["armed"] = False
-            return self._db_summary()
-
-    def driveby_reset(self):
-        with self._db_lock:
-            self._db["passes"] = []
-            self._db["since"] = time.monotonic()
-            return self._db_summary()
-
-    def driveby_remove(self, pass_id):
-        with self._db_lock:
-            self._db["passes"] = [p for p in self._db["passes"]
-                                  if p["id"] != pass_id]
-            return self._db_summary()
-
-    def driveby_poll(self):
-        """Adopt every pass finished since the last poll. Captures all traffic;
-        the operator sorts out which are theirs later. Returns the session
-        summary plus how many new passes were just added."""
-        with self._db_lock:
-            if not self._db["armed"]:
-                return {**self._db_summary(), "new": 0}
-            since = self._db["since"]
-        added = 0
-        for p in self.speedcam.passes_since(since):
-            trail = p["trail"]
-            direction = "→" if trail[-1][1] >= trail[0][1] else "←"
-            entry = {"id": p["id"], "trail": trail, "thumb": p.get("thumb"),
-                     "direction": direction, "n": len(trail),
-                     "wall": p.get("wall", "")}
-            with self._db_lock:
-                if (self._db["armed"] and p["finish_t"] > self._db["since"]
-                        and all(e["id"] != p["id"] for e in self._db["passes"])):
-                    self._db["passes"].append(entry)
-                    self._db["since"] = p["finish_t"]
-                    added += 1
-        with self._db_lock:
-            return {**self._db_summary(), "new": added}
-
-    def driveby_thumb(self, pass_id):
-        with self._db_lock:
-            for p in self._db["passes"]:
-                if p["id"] == pass_id:
-                    return p["thumb"]
-        return None
-
-    def driveby_build(self, speed_value, units, selected_ids, lane_width_m):
-        """Calibrate from ONLY the operator-selected passes, all driven at the
-        same known speed. Lane is inferred from travel direction: on a two-way
-        street the two directions are the two lanes, which supplies the second
-        (across-road) axis the homography needs."""
-        sel = set(selected_ids or [])
-        with self._db_lock:
-            chosen = [p for p in self._db["passes"] if p["id"] in sel]
-        if len(chosen) < 2:
-            raise driveby.DriveByError(
-                "Select at least 2 of your own passes to calibrate from.")
-        if len({p["direction"] for p in chosen}) < 2:
-            raise driveby.DriveByError(
-                "All selected passes go the same way. Select passes from BOTH "
-                "directions (some → and some ←) -- otherwise every point "
-                "lies on one line and no homography exists.")
-        speed_mps = self._kmh_to_mps(speed_value, units)
-        passes = [{"trail": p["trail"], "speed_mps": speed_mps,
-                   "lane": 0 if p["direction"] == "→" else 1} for p in chosen]
-        img, world, info = driveby.build_correspondences(
-            passes, self.speedcam.frame_wh, lane_width_m=float(lane_width_m))
-        err = self.recalibrate(img, world, source="driveby")
-        info["reprojection_error_m"] = round(err, 3)
-        info["selected"] = len(chosen)
-        return info
-
 
 def _f(v):
     try:
@@ -792,9 +670,9 @@ def create_app(runner: Runner) -> Flask:
         data = request.get_json(force=True, silent=True) or {}
         try:
             applied = runner.set_reject_thresholds(
-                max_distance_m=data.get("max_track_distance_m"),
-                min_span_m=data.get("min_vehicle_span_m"),
                 min_aspect=data.get("min_vehicle_aspect"),
+                min_car_width_px=data.get("min_car_width_px"),
+                max_area_cv=data.get("max_area_cv"),
                 dedupe_seconds=data.get("dedupe_seconds"))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "values must be numbers"}), 400
@@ -827,14 +705,6 @@ def create_app(runner: Runner) -> Flask:
                             "error": "limit must be a positive number"}), 400
         return jsonify({"ok": True, "speed_limit_kmh": applied,
                         "units": runner.speedcam.units})
-
-    @app.route("/api/orientation", methods=["POST"])
-    def orientation():
-        data = request.get_json(force=True, silent=True) or {}
-        val = data.get("orientation", request.form.get("orientation"))
-        applied = runner.set_orientation(val)
-        return jsonify({"ok": True, "orientation": applied,
-                        "measure_band": runner.speedcam._active_band()})
 
     @app.route("/api/power", methods=["POST"])
     def power():
@@ -907,67 +777,5 @@ def create_app(runner: Runner) -> Flask:
     @app.route("/captures/<path:name>")
     def captures(name):
         return send_from_directory(runner.captures_dir, name)
-
-    @app.route("/api/calibrate", methods=["POST"])
-    def do_calibrate():
-        data = request.get_json(force=True, silent=True) or {}
-        img = data.get("image_points")
-        world = data.get("world_points")
-        if not img or not world or len(img) != len(world) or len(img) < 4:
-            return jsonify({"ok": False,
-                            "error": "Need >=4 matching image/world points."}), 400
-        try:
-            err = runner.recalibrate(img, world)
-        except Exception as exc:  # noqa: BLE001 - report any geometry failure
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        return jsonify({"ok": True, "reprojection_error_m": round(err, 3),
-                        "points": len(img)})
-
-    # -------------------------------------------------------- drive-by calib
-    @app.route("/api/driveby/start", methods=["POST"])
-    def driveby_start():
-        return jsonify({"ok": True, **runner.driveby_start()})
-
-    @app.route("/api/driveby/stop", methods=["POST"])
-    def driveby_stop():
-        return jsonify({"ok": True, **runner.driveby_stop()})
-
-    @app.route("/api/driveby/reset", methods=["POST"])
-    def driveby_reset():
-        return jsonify({"ok": True, **runner.driveby_reset()})
-
-    @app.route("/api/driveby/poll", methods=["POST"])
-    def driveby_poll():
-        return jsonify({"ok": True, **runner.driveby_poll()})
-
-    @app.route("/api/driveby/remove", methods=["POST"])
-    def driveby_remove():
-        data = request.get_json(force=True, silent=True) or {}
-        try:
-            pid = int(data.get("id"))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "id must be an integer"}), 400
-        return jsonify({"ok": True, **runner.driveby_remove(pid)})
-
-    @app.route("/api/driveby/pass/<int:pass_id>/thumb.jpg")
-    def driveby_thumb(pass_id):
-        data = runner.driveby_thumb(pass_id)
-        if not data:
-            return ("no thumbnail", 404)
-        return Response(data, mimetype="image/jpeg")
-
-    @app.route("/api/driveby/build", methods=["POST"])
-    def driveby_build():
-        data = request.get_json(force=True, silent=True) or {}
-        lane_width = data.get("lane_width_m", driveby.DEFAULT_LANE_WIDTH_M)
-        units = data.get("units") or runner.speedcam.units
-        try:
-            info = runner.driveby_build(data.get("speed"), units,
-                                        data.get("selected"), lane_width)
-        except driveby.DriveByError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        except Exception as exc:  # noqa: BLE001 - report any geometry failure
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        return jsonify({"ok": True, **info})
 
     return app

@@ -8,7 +8,9 @@
     python run.py --source 1      # override camera index/file (test rig)
     python run.py --no-display    # headless (Raspberry Pi deployment)
 
-Calibrate first with:  python tools/calibrate.py
+Calibrate per direction from a known-speed pass (see the /calibrate page): set
+speed.d_east_m / speed.d_west_m in config.local.yaml from the crossing time the
+node prints. Until then it runs detection-only (records, reports no speed).
 
 This is a thin launcher so the project runs uninstalled (the Pi's apt flow).
 If you `pip install` the project, use the `speedkam` command instead.

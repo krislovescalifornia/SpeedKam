@@ -4,7 +4,8 @@
 """SpeedKam web dashboard entry point.
 
 Runs the speed-camera pipeline AND a web UI (live view, recent clips, stats,
-browser-based calibration). This is the recommended way to run on the Pi:
+and a crossing-time calibration guide). This is the recommended way to run on
+the Pi:
 
     python serve.py                       # http://<this-machine>:8080
     python serve.py --source 1            # override camera

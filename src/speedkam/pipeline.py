@@ -8,6 +8,13 @@ Can be driven two ways:
   * run(frame_callback=..., stop_event=...) headless, publishing each annotated
     frame to a callback (used by the web dashboard, serve.py).
 Both share the exact same detection/tracking/speed logic.
+
+Speed is the two-line crossing-time estimator (speed.estimate): a car's speed
+is a per-direction calibrated distance over the time it takes to cross between
+two fixed image columns. It uses raw pixel x + timestamps -- no homography, no
+lens undistortion. False positives (cyclists, pedestrians, wind-blown foliage,
+noise blobs) are thrown out by cheap PIXEL-ONLY gates: car-shape aspect, pixel
+width, bounding-box area coherence, and a count-once drive-by dedupe.
 """
 from __future__ import annotations
 
@@ -21,7 +28,6 @@ import cv2
 import numpy as np
 
 from . import annotate, speed as speed_mod
-from .calibration import Calibration
 from .capture import Camera
 from .detector import MotionDetector
 from .recognition import VehicleRecognizer
@@ -44,28 +50,6 @@ class SpeedCamera:
         )
         self.detector = MotionDetector(cfg["detection"])
         self.tracker = Tracker(cfg["tracker"], min_hits=cfg["detection"]["min_hits"])
-
-        self._calib_lock = threading.Lock()
-        # Short history of finished tracks' pixel trails, for the drive-by
-        # calibrator (web.py). Populated in _finalize BEFORE the speed step, so
-        # it works even while the node is still uncalibrated (which is exactly
-        # when you'd be drive-by calibrating). Guarded by its own lock because
-        # the pipeline thread writes it and the Flask thread reads it.
-        self._recent_passes = deque(maxlen=40)
-        self._passes_lock = threading.Lock()
-        # When set (by the web drive-by session), also grab a small thumbnail of
-        # each finished vehicle so the operator can pick their own truck out of a
-        # list that includes random neighbour traffic. Off the rest of the time
-        # so normal operation pays no JPEG-encode cost per pass.
-        self._pass_thumbs = threading.Event()
-        self.calibration = Calibration.load(cfg["speed"]["calibration_file"])
-        if self.calibration is None:
-            print("[SpeedKam] No calibration found -> DETECTION-ONLY mode "
-                  "(no speed). Calibrate to enable speed.")
-        else:
-            err = self.calibration.reprojection_error()
-            print(f"[SpeedKam] Calibration loaded (mean reprojection error "
-                  f"{err:.2f} m across {len(self.calibration.image_points)} points).")
 
         self.recorder = None
         if cfg["recording"]["enabled"]:
@@ -111,9 +95,10 @@ class SpeedCamera:
         self._last_result_text = "Ready"
         self._last_over = False
 
-        # SpeedKapture threshold (display units) + the road's speed limit (km/h).
-        # Seeded from config, then overridable live from the dashboard (and the
-        # off-site fleet dashboard) and persisted per-node across restarts.
+        # SpeedKapture threshold (display units), the road's speed limit (km/h),
+        # and the pixel-only false-positive gate thresholds. All seeded from
+        # config, then overridable live from either dashboard (LAN or off-site
+        # fleet) and persisted per node across restarts in the runtime state file.
         self.state = RuntimeState(
             cfg["recording"].get("state_file", "captures/runtime.json"),
             {"speedkapture_threshold":
@@ -122,46 +107,24 @@ class SpeedCamera:
              # Stored in km/h (the internal unit); the UI edits it in whatever
              # display_units the node uses and converts on the way in/out.
              "speed_limit_kmh": float(cfg["speed"]["speed_limit_kmh"]),
-             # Camera mounting: selects which measure_band preset is active.
-             # Dashboard-toggleable (parallel = side-on, head_on = receding).
-             "orientation": speed_mod.normalize_orientation(
-                 (cfg["speed"].get("measure_band") or {}).get("orientation")),
-             # False-positive auto-reject envelope (dashboard-tunable, persisted).
-             # A reading whose vehicle "traveled" farther than max_track_distance_m
-             # across the scene is a phantom track (noise/vegetation stitched into
-             # a path); one whose ground footprint is narrower than
-             # min_vehicle_span_m is sub-car-sized (a cyclist/pedestrian). Either
-             # is auto-rejected: logged for review but kept out of every stat.
-             # 0 disables that gate.
-             "max_track_distance_m":
-                 float(cfg["speed"].get("max_track_distance_m", 0) or 0),
-             "min_vehicle_span_m":
-                 float(cfg["speed"].get("min_vehicle_span_m", 0) or 0),
-             # Car-shape gate: min bbox width/height (side-on cars are wide,
-             # pedestrians/cyclists are not). And the count-once dedupe window.
+             # --- false-positive auto-reject envelope (all PIXEL-ONLY) --------
+             # Car-shape gate: minimum bbox aspect ratio (width/height). On a
+             # side-on camera a car's box is WIDE (~2-3) while a walking person's
+             # is TALL (~0.3-0.5) and a side-on cyclist ~square (~0.9).
              "min_vehicle_aspect":
                  float(cfg["speed"].get("min_vehicle_aspect", 0) or 0),
-             # Road-region gate: min fraction of a track's ground points that
-             # must fall on the calibrated road surface (else it's foreground /
-             # off-road junk). 0 disables. See _on_road_fraction / on_road_side.
-             "min_on_road_frac":
-                 float(cfg["speed"].get("min_on_road_frac", 0) or 0),
-             # Trajectory-quality gates (deterministic motion physics): a real
-             # vehicle tracks in a near-straight line (min_straightness) and its
-             # blob area changes smoothly, not in a flicker (max_area_cv). These
-             # catch wind-blown foliage / noise phantoms that beat the shape and
-             # size proxies. Either 0 disables. See _classify_reading / _area_cv.
-             "min_straightness":
-                 float(cfg["speed"].get("min_straightness", 0) or 0),
+             # Size gate: minimum bbox pixel WIDTH for a real car. A car is a big
+             # object even in the far lane; a dog/bike/pedestrian is small. Paired
+             # with the aspect (shape) check, nothing that isn't a car clears both.
+             "min_car_width_px":
+                 float(cfg["speed"].get("min_car_width_px", 0) or 0),
+             # Area-coherence gate: max coefficient of variation (std/mean) of the
+             # bbox area across the pass. A vehicle's silhouette changes size
+             # smoothly (low CV); noise and wind-blown foliage flicker (high CV).
              "max_area_cv":
                  float(cfg["speed"].get("max_area_cv", 0) or 0),
-             # Motion-physics gates: a real vehicle only moves forward
-             # (min_monotonicity) and changes speed smoothly (max_accel_mps2).
-             # Both default 0 (off) until measured; see config.DEFAULTS["speed"].
-             "min_monotonicity":
-                 float(cfg["speed"].get("min_monotonicity", 0) or 0),
-             "max_accel_mps2":
-                 float(cfg["speed"].get("max_accel_mps2", 0) or 0),
+             # Count each drive-by ONCE: a second confirmed pass in the same
+             # direction within this many seconds is a fragmented re-detection.
              "dedupe_seconds":
                  float(cfg["speed"].get("dedupe_seconds", 0) or 0),
              # Last off-site settings revision we've applied (see RemoteControl).
@@ -194,11 +157,6 @@ class SpeedCamera:
         self.running = False
         self._fps_times = deque(maxlen=30)
 
-        # Actual frame size (w, h), used to resolve the center-band measurement
-        # gate (fractions -> pixels). Seeded from config; refreshed per frame in
-        # case the camera hands back a different resolution than requested.
-        self.frame_wh = (cfg["camera"]["width"], cfg["camera"]["height"])
-
         # --- low-light gate ------------------------------------------------
         # In the dark the motion detector tracks headlight glare and sensor
         # noise, inventing phantom "vehicles" at absurd speeds (90-170 km/h).
@@ -210,12 +168,6 @@ class SpeedCamera:
         self.paused_low_light = False
         self.scene_brightness = None   # last measured mean luma (0-255) or None
         self._lg_since = None          # monotonic time the pending flip began
-
-    # --------------------------------------------------------------- calibration
-    def set_calibration(self, calibration):
-        """Hot-swap the calibration (called by the web recalibration flow)."""
-        with self._calib_lock:
-            self.calibration = calibration
 
     # --------------------------------------------------------------- SpeedKapture
     @property
@@ -248,25 +200,12 @@ class SpeedCamera:
 
     # ------------------------------------------------------- false-positive gate
     @property
-    def max_track_distance_m(self) -> float:
-        """Max plausible across-scene travel (m); above it a reading is a phantom
-        track and auto-rejected. 0 disables the gate."""
-        return float(self.state.get("max_track_distance_m") or 0)
-
-    @property
-    def min_vehicle_span_m(self) -> float:
-        """Min real-world ground footprint (m) for a real vehicle; below it the
-        object is a cyclist/pedestrian and auto-rejected. 0 disables the gate."""
-        return float(self.state.get("min_vehicle_span_m") or 0)
-
-    @property
     def min_vehicle_aspect(self) -> float:
         """Min bbox aspect ratio (width/height) for a real vehicle. On a side-on
         camera a car's box is WIDE (w/h ~2-3) while a walking person's is TALL
         (~0.3-0.5) and a side-on cyclist ~square (~0.9) -- so this is the single
-        most reliable 'is it car-shaped?' check, and (unlike the world-size gate)
-        it needs no homography, so a person close to the lens can't fool it.
-        0 disables the gate."""
+        most reliable 'is it car-shaped?' check, and (being pixel-only) a person
+        close to the lens can't fool it. 0 disables the gate."""
         return float(self.state.get("min_vehicle_aspect") or 0)
 
     @property
@@ -277,46 +216,12 @@ class SpeedCamera:
         return float(self.state.get("min_car_width_px") or 0)
 
     @property
-    def min_on_road_frac(self) -> float:
-        """Min fraction of a track's ground points that must sit on the
-        calibrated road surface for it to count as a road vehicle. Below it the
-        object spent most of the pass in the foreground / off to the side and is
-        auto-rejected. 0 disables the gate (also skipped when uncalibrated --
-        there's no road plane to test against)."""
-        return float(self.state.get("min_on_road_frac") or 0)
-
-    @property
-    def min_straightness(self) -> float:
-        """Min ratio of straight-line (net) displacement to traversed path length
-        for a real vehicle pass. A car tracks straight along the road (~1.0);
-        wind-blown foliage / a bug on the lens / a noise blob wanders, so its net
-        displacement is only a fraction of its path length. Below this the track
-        is auto-rejected. 0 disables the gate. See SpeedResult.straightness."""
-        return float(self.state.get("min_straightness") or 0)
-
-    @property
     def max_area_cv(self) -> float:
         """Max coefficient of variation (std/mean) of the bbox area across a pass.
-        A vehicle's silhouette changes smoothly with perspective (low CV); noise
-        and swaying foliage flicker in size (high CV). Above this the track is
-        auto-rejected. 0 disables the gate. See _area_cv."""
+        A vehicle's silhouette changes size smoothly with perspective (low CV);
+        noise and swaying foliage flicker in size (high CV). Above this the track
+        is auto-rejected. 0 disables the gate. See _area_cv."""
         return float(self.state.get("max_area_cv") or 0)
-
-    @property
-    def min_monotonicity(self) -> float:
-        """Min fraction of a track's steps that must advance along the net
-        direction of travel. A real vehicle only moves forward (~1.0); foliage /
-        noise oscillates. Below this the track is auto-rejected. 0 disables the
-        gate. See SpeedResult.monotonicity."""
-        return float(self.state.get("min_monotonicity") or 0)
-
-    @property
-    def max_accel_mps2(self) -> float:
-        """Max plausible frame-to-frame acceleration magnitude (m/s^2). A real
-        vehicle changes speed smoothly; a phantom teleporting between noise blobs
-        spikes it. Above this the track is auto-rejected. 0 disables the gate.
-        See SpeedResult.max_accel_mps2."""
-        return float(self.state.get("max_accel_mps2") or 0)
 
     @property
     def dedupe_seconds(self) -> float:
@@ -325,45 +230,21 @@ class SpeedCamera:
         the same vehicle (a fragmented track) and rejected. 0 disables it."""
         return float(self.state.get("dedupe_seconds") or 0)
 
-    def set_reject_thresholds(self, max_distance_m=None, min_span_m=None,
-                              min_aspect=None, dedupe_seconds=None,
-                              min_on_road_frac=None, min_straightness=None,
-                              max_area_cv=None, min_monotonicity=None,
-                              max_accel_mps2=None) -> dict:
-        """Live-tune the auto-reject envelope; persists across restarts."""
-        if max_distance_m is not None:
-            self.state.set("max_track_distance_m", max(0.0, float(max_distance_m)))
-        if min_span_m is not None:
-            self.state.set("min_vehicle_span_m", max(0.0, float(min_span_m)))
+    def set_reject_thresholds(self, min_aspect=None, min_car_width_px=None,
+                              max_area_cv=None, dedupe_seconds=None) -> dict:
+        """Live-tune the pixel-only auto-reject envelope; persists across restarts."""
         if min_aspect is not None:
             self.state.set("min_vehicle_aspect", max(0.0, float(min_aspect)))
-        if dedupe_seconds is not None:
-            self.state.set("dedupe_seconds", max(0.0, float(dedupe_seconds)))
-        if min_on_road_frac is not None:
-            # A fraction, so clamp to [0, 1].
-            self.state.set("min_on_road_frac",
-                           min(1.0, max(0.0, float(min_on_road_frac))))
-        if min_straightness is not None:
-            # Also a ratio in [0, 1].
-            self.state.set("min_straightness",
-                           min(1.0, max(0.0, float(min_straightness))))
+        if min_car_width_px is not None:
+            self.state.set("min_car_width_px", max(0.0, float(min_car_width_px)))
         if max_area_cv is not None:
             self.state.set("max_area_cv", max(0.0, float(max_area_cv)))
-        if min_monotonicity is not None:
-            # A fraction, so clamp to [0, 1].
-            self.state.set("min_monotonicity",
-                           min(1.0, max(0.0, float(min_monotonicity))))
-        if max_accel_mps2 is not None:
-            self.state.set("max_accel_mps2", max(0.0, float(max_accel_mps2)))
-        return {"max_track_distance_m": self.max_track_distance_m,
-                "min_vehicle_span_m": self.min_vehicle_span_m,
-                "min_vehicle_aspect": self.min_vehicle_aspect,
-                "dedupe_seconds": self.dedupe_seconds,
-                "min_on_road_frac": self.min_on_road_frac,
-                "min_straightness": self.min_straightness,
+        if dedupe_seconds is not None:
+            self.state.set("dedupe_seconds", max(0.0, float(dedupe_seconds)))
+        return {"min_vehicle_aspect": self.min_vehicle_aspect,
+                "min_car_width_px": self.min_car_width_px,
                 "max_area_cv": self.max_area_cv,
-                "min_monotonicity": self.min_monotonicity,
-                "max_accel_mps2": self.max_accel_mps2}
+                "dedupe_seconds": self.dedupe_seconds}
 
     @staticmethod
     def _aspect_ratio(track):
@@ -379,10 +260,10 @@ class SpeedCamera:
     @staticmethod
     def _vehicle_width_px(track):
         """Median bbox WIDTH in pixels across the track. A car is a big object
-        even in the far lane; a dog, bicycle or pedestrian is small. Pixel-only
-        (no homography), so it's the size half of the car filter -- paired with
-        the aspect (shape) check, it cleanly rejects everything that isn't a car.
-        The median shrugs off the odd merged/split frame."""
+        even in the far lane; a dog, bicycle or pedestrian is small. Pixel-only,
+        so it's the size half of the car filter -- paired with the aspect (shape)
+        check, it cleanly rejects everything that isn't a car. The median shrugs
+        off the odd merged/split frame."""
         widths = [s.bbox[2] for s in track.samples
                   if len(s.bbox) == 4 and s.bbox[2] > 0]
         return float(np.median(widths)) if widths else None
@@ -395,8 +276,8 @@ class SpeedCamera:
         A real vehicle's silhouette grows and shrinks smoothly as it crosses the
         scene, so its area has a low CV. Wind-blown foliage and sensor noise
         stitched into a track flicker wildly in size, so their CV is high. Pixel-
-        only (no homography), so a foreground phantom can't hide from it. Needs a
-        few samples to be meaningful."""
+        only, so a foreground phantom can't hide from it. Needs a few samples to
+        be meaningful."""
         areas = [s.bbox[2] * s.bbox[3]
                  for s in track.samples
                  if len(s.bbox) == 4 and s.bbox[2] > 0 and s.bbox[3] > 0]
@@ -425,124 +306,32 @@ class SpeedCamera:
                     f"{gap:.1f}s ago (one drive-by)")
         return None
 
-    def _vehicle_span_m(self, track):
-        """Approx real-world ground footprint of the tracked object (meters).
-
-        Maps each sample's bbox bottom edge (its ground-contact line) through the
-        homography and takes a robust high percentile (75th) of the per-frame
-        widths. A car spans well over a metre; a cyclist or pedestrian well under
-        one -- so this cleanly separates real vehicles from the bike/pedestrian
-        passes that would otherwise be timed as speeders. The 75th percentile (not
-        the max) ignores a single bad frame where two blobs merged. Returns None
-        when uncalibrated or the track is too short to judge."""
-        with self._calib_lock:
-            calib = self.calibration
-        if calib is None or len(track.samples) < 2:
-            return None
-        lefts, rights = [], []
-        for s in track.samples:
-            x, y, w, h = s.bbox
-            if w <= 0 or h <= 0:
-                continue
-            lefts.append((x, y + h))
-            rights.append((x + w, y + h))
-        if len(lefts) < 2:
-            return None
-        try:
-            wl = np.asarray(calib.image_to_world(lefts), dtype=np.float64)
-            wr = np.asarray(calib.image_to_world(rights), dtype=np.float64)
-        except Exception:  # noqa: BLE001 - a bad homography must not break the loop
-            return None
-        spans = np.linalg.norm(wl - wr, axis=1)
-        spans = spans[np.isfinite(spans)]
-        if spans.size == 0:
-            return None
-        return float(np.percentile(spans, 75))
-
-    def _on_road_fraction(self, track):
-        """Fraction of the track's ground points that sit on the calibrated road
-        surface (see Calibration.on_road_side), or None when uncalibrated / the
-        track has no samples -- in which case the road gate is skipped.
-
-        This is the strongest 'is it a road vehicle?' signal we have without a
-        neural classifier: a real car crosses the road, so nearly all of its
-        ground points land on the road plane; a pedestrian standing in the
-        foreground (or on the far sidewalk) spends the whole pass off it."""
-        with self._calib_lock:
-            calib = self.calibration
-        if calib is None or not track.samples:
-            return None
-        pts = [s.ground_px for s in track.samples]
-        try:
-            margin = float(self.cfg["speed"].get("road_margin_frac", 0.03))
-            mask = calib.on_road_side(pts, self.frame_wh, margin_frac=margin)
-        except Exception:  # noqa: BLE001 - a bad calibration must not break the loop
-            return None
-        return float(np.mean(mask)) if len(mask) else None
-
-    def _classify_reading(self, result, span_m, aspect, on_road_frac=None,
-                          area_cv=None, width_px=None):
+    def _classify_reading(self, result, aspect, area_cv=None, width_px=None):
         """Auto-reject anything that isn't a car so junk never pollutes the stats.
-        The car filter is two cheap PIXEL checks -- a car is WIDE (aspect) and BIG
-        (width); a person is tall, a dog/bike/tree is small -- plus the two-line
+        The car filter is cheap PIXEL-ONLY checks -- a car is WIDE (aspect) and
+        BIG (width) and its silhouette changes size smoothly (area CV); a person
+        is tall, a dog/bike/tree is small or flickery -- plus the two-line
         crossing requirement (foliage that never traverses the road is never even
         timed). Returns (status, reason): "ok" for a real vehicle, else "rejected"
         with a human explanation (shown in the dashboards' bin)."""
-        # Road-region FIRST -- the most reliable check and the one that catches
-        # what the shape/size proxies miss. Is the object actually ON the road,
-        # or in the camera-side foreground (kerb/grass/sidewalk) / off to the
-        # side? A foreground pedestrian's ground point maps through the road
-        # homography to garbage and invents phantom speeds -- the exact failure
-        # that logged two kids on the lawn as a 69 mph car. Majority vote over
-        # the whole track, so a transient off-road sample or blob merge can't
-        # flip it, and it doesn't care what shape the blob is.
-        min_on_road = self.min_on_road_frac
-        if (min_on_road > 0 and on_road_frac is not None
-                and on_road_frac < min_on_road):
+        # Shape: a car is wider than it is tall on a side-on camera; a
+        # pedestrian/dog-walker/cyclist is not. Pixel-only, so a person close to
+        # the lens is still caught.
+        min_aspect = self.min_vehicle_aspect
+        if min_aspect > 0 and aspect is not None and aspect < min_aspect:
+            kind = ("a person/pedestrian" if aspect < 0.8
+                    else "a cyclist or pedestrian")
             return ("rejected",
-                    f"off the calibrated road — only {on_road_frac * 100:.0f}% "
-                    f"of the track was on the road surface (foreground/sidewalk, "
-                    f"not a road vehicle)")
-        # Straightness next: the strongest motion-physics check. A real vehicle
-        # tracks in a near-straight line along the road, so its net displacement
-        # is nearly the whole path it traversed (ratio ~1). Foliage swaying in the
-        # wind, a bug crawling the lens, or a noise blob stitched into a "track"
-        # wanders back and forth -- net displacement collapses to a fraction of
-        # the path length. Invariant to blob shape, so it catches the wind-in-the-
-        # trees phantom the aspect/size proxies can't. (0 or an undefined
-        # straightness -> skipped.)
-        min_straight = self.min_straightness
-        straightness = getattr(result, "straightness", None)
-        if (min_straight > 0 and straightness is not None
-                and straightness < min_straight):
+                    f"shape {aspect:.1f}w:1h — taller than a car, likely {kind}")
+        # Size: a car is a big object even in the far lane; a bike, dog or
+        # pedestrian is small. Pixel width is the size half of the car filter --
+        # with the aspect (shape) check above, nothing that isn't a car survives
+        # both.
+        min_width = self.min_car_width_px
+        if min_width > 0 and width_px is not None and width_px < min_width:
             return ("rejected",
-                    f"path wandered — straight-line travel was only "
-                    f"{straightness * 100:.0f}% of the {result.distance_m:.0f} m "
-                    f"it tracked (a vehicle goes straight; likely foliage/noise)")
-        # Monotonic progress: a real vehicle only ever moves forward down the
-        # road, so nearly every step advances along its net direction of travel.
-        # Foliage swaying or a noise blob stitched into a track reverses often, so
-        # its forward fraction collapses toward ~0.5. Catches a path straight
-        # enough to beat the straightness gate that still oscillates along its
-        # axis. (0 or an undefined monotonicity -> skipped.)
-        min_mono = self.min_monotonicity
-        monotonicity = getattr(result, "monotonicity", None)
-        if (min_mono > 0 and monotonicity is not None
-                and monotonicity < min_mono):
-            return ("rejected",
-                    f"path reversed — only {monotonicity * 100:.0f}% of steps "
-                    f"moved forward (a vehicle never backs up; likely "
-                    f"foliage/noise)")
-        # Acceleration bound: a real vehicle changes speed smoothly (a few m/s^2
-        # even braking hard); a phantom teleporting between noise blobs implies an
-        # impossible frame-to-frame jump. (0 or an undefined accel -> skipped.)
-        max_acc = self.max_accel_mps2
-        accel = getattr(result, "max_accel_mps2", None)
-        if max_acc > 0 and accel is not None and accel > max_acc:
-            return ("rejected",
-                    f"impossible acceleration ({accel:.0f} m/s² frame-to-frame, "
-                    f"max plausible {max_acc:.0f}) — teleporting track, "
-                    f"not a vehicle")
+                    f"object only {width_px:.0f}px wide — smaller than a car "
+                    f"(likely a bike, dog, or pedestrian)")
         # Area coherence: a vehicle's silhouette changes size smoothly across the
         # scene; noise and wind-blown foliage flicker. A high coefficient of
         # variation in the bbox area is the flicker signature. Only fires on
@@ -553,60 +342,10 @@ class SpeedCamera:
             return ("rejected",
                     f"blob size flickered ({area_cv * 100:.0f}% variation) — "
                     f"a vehicle's outline changes smoothly (likely foliage/noise)")
-        # Shape next: a car is wider than it is tall on a side-on camera; a
-        # pedestrian/dog-walker/cyclist is not. Pixel-only, so a person close to
-        # the lens (which fools the world-size gate) is still caught.
-        min_aspect = self.min_vehicle_aspect
-        if min_aspect > 0 and aspect is not None and aspect < min_aspect:
-            kind = ("a person/pedestrian" if aspect < 0.8
-                    else "a cyclist or pedestrian")
-            return ("rejected",
-                    f"shape {aspect:.1f}w:1h — taller than a car, likely {kind}")
-        max_dist = self.max_track_distance_m
-        if max_dist > 0 and result.distance_m > max_dist:
-            return ("rejected",
-                    f"traveled {result.distance_m:.0f} m across the scene "
-                    f"(max plausible {max_dist:.0f} m) — phantom track")
-        # Size: a car is a big object even in the far lane; a bike, dog or
-        # pedestrian is small. Pixel width (no homography) is the size half of the
-        # car filter -- with the aspect (shape) check above, nothing that isn't a
-        # car survives both.
-        min_width = self.min_car_width_px
-        if min_width > 0 and width_px is not None and width_px < min_width:
-            return ("rejected",
-                    f"object only {width_px:.0f}px wide — smaller than a car "
-                    f"(likely a bike, dog, or pedestrian)")
         return ("ok", "")
-
-    # --------------------------------------------------------------- orientation
-    @property
-    def orientation(self) -> str:
-        """Active camera mounting: 'parallel' (side-on) or 'head_on' (receding)."""
-        return speed_mod.normalize_orientation(self.state.get("orientation"))
-
-    def set_orientation(self, value) -> str:
-        """Switch the active measure_band preset; persists across restarts."""
-        norm = speed_mod.normalize_orientation(value)
-        self.state.set("orientation", norm)
-        return norm
-
-    def _active_band(self):
-        """The measure_band resolved for the current orientation (for drawing)."""
-        return speed_mod.resolve_band(
-            self.cfg["speed"].get("measure_band"), self.orientation)
 
     def _display_speed(self, result) -> float:
         return result.speed_mph if self.units == "mph" else result.speed_kmh
-
-    def _world_points(self, detections):
-        with self._calib_lock:
-            calib = self.calibration
-        if calib is None:
-            return [None] * len(detections)
-        if not detections:
-            return []
-        pts = [d.ground_point for d in detections]
-        return [tuple(p) for p in calib.image_to_world(pts)]
 
     # ---------------------------------------------------------------------- run
     def run(self, frame_callback=None, stop_event=None):
@@ -736,8 +475,6 @@ class SpeedCamera:
         record every frame while this may see only the latest). Returns False
         only when the desktop window asked to quit ('q'); True otherwise.
         """
-        self.frame_wh = (frame.shape[1], frame.shape[0])
-
         # Low-light gate: measure scene brightness (cheap, on the tiny detection
         # frame) and, if it's too dark to work, skip detection/tracking entirely.
         # No detections => no tracks => no phantom night readings and no clips.
@@ -765,8 +502,7 @@ class SpeedCamera:
             detections, _ = self.detector.detect(detect_frame, upscale=upscale)
         else:
             detections, _ = self.detector.detect(frame)
-        world = self._world_points(detections)
-        active, finished = self.tracker.update(detections, world, t)
+        active, finished = self.tracker.update(detections, t)
 
         for tr in finished:
             self._finalize(tr)
@@ -802,10 +538,8 @@ class SpeedCamera:
         headless path -- so the capture/detect loop never pays the copy+draw."""
         view = raw.copy()
         # The crossing-time engine measures speed between two image columns
-        # (speed.estimate x_a/x_b) and ignores both the old center-band gate and
-        # the calibration image_points, so draw_zone/draw_measure_band would only
-        # paint a misleading strip onto an otherwise-raw feed. Just the live
-        # detection boxes (still real) plus the HUD status line.
+        # (speed.estimate x_a/x_b) from raw pixels, so the live view is the raw
+        # feed plus just the detection boxes (real) and the HUD status line.
         if overlay.get("draw_debug"):
             annotate.draw_track_boxes(view, overlay.get("tracks", ()))
         annotate.draw_hud(view, overlay.get("text", ""), overlay.get("over", False))
@@ -955,96 +689,23 @@ class SpeedCamera:
                 self.current_fps = (len(self._fps_times) - 1) / span
 
     # ----------------------------------------------------------------- finalize
-    def set_pass_thumbs(self, enabled):
-        """Toggle per-pass thumbnail capture (see _pass_thumbs)."""
-        if enabled:
-            self._pass_thumbs.set()
-        else:
-            self._pass_thumbs.clear()
-
-    def _make_thumb(self, track):
-        """A small JPEG crop of the vehicle near mid-pass, or None.
-
-        Lets the drive-by UI show what each pass was, so the operator can tell
-        their own truck from a neighbour's car. Best-effort: needs the recorder's
-        frame buffer, and never raises into the pipeline loop.
-        """
-        if self.recorder is None or not track.samples:
-            return None
-        try:
-            s = track.samples[len(track.samples) // 2]
-            frame = self.recorder.frame_at(s.t)
-            if frame is None:
-                return None
-            h, w = frame.shape[:2]
-            x, y, bw, bh = (int(v) for v in s.bbox)
-            pad = int(0.15 * max(bw, bh))
-            x0, y0 = max(0, x - pad), max(0, y - pad)
-            x1, y1 = min(w, x + bw + pad), min(h, y + bh + pad)
-            crop = frame[y0:y1, x0:x1]
-            if crop.size == 0:
-                crop = frame
-            tw = 200
-            scale = tw / max(1, crop.shape[1])
-            small = cv2.resize(crop, (tw, max(1, int(crop.shape[0] * scale))))
-            ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 72])
-            return buf.tobytes() if ok else None
-        except Exception:  # noqa: BLE001 - a thumbnail must never break the loop
-            return None
-
-    def _record_pass(self, track):
-        """Snapshot a finished track's ground-point pixel trail for drive-by
-        calibration. Cheap; runs for every confirmed track regardless of
-        calibration state. Adds a thumbnail only while a drive-by session asked
-        for them."""
-        trail = [(s.t, float(s.ground_px[0]), float(s.ground_px[1]))
-                 for s in track.samples]
-        if len(trail) < 2:
-            return
-        thumb = self._make_thumb(track) if self._pass_thumbs.is_set() else None
-        with self._passes_lock:
-            self._recent_passes.append({
-                "finish_t": time.monotonic(),
-                "wall": datetime.now().strftime("%H:%M:%S"),
-                "id": track.id,
-                "trail": trail,
-                "thumb": thumb,
-            })
-
-    def passes_since(self, after_t):
-        """All recorded passes that finished strictly after `after_t`, oldest
-        first. The caller advances `after_t` past what it has consumed."""
-        with self._passes_lock:
-            fresh = [p for p in self._recent_passes if p["finish_t"] > after_t]
-        fresh.sort(key=lambda p: p["finish_t"])
-        return fresh
-
     def _finalize(self, track):
-        # Record the raw pixel trail first -- the drive-by calibrator needs it
-        # even for tracks that yield no speed (e.g. still uncalibrated).
-        self._record_pass(track)
-        result = None
-        with self._calib_lock:
-            calibrated = self.calibration is not None
-        if calibrated:
-            result = speed_mod.estimate(track, self.cfg["speed"], self.frame_wh,
-                                        orientation=self.orientation)
-
+        result = speed_mod.estimate(track, self.cfg["speed"])
         if result is None:
-            # No speed (uncalibrated / too-short track): nothing to count.
+            # No speed (uncalibrated direction / too-short track / didn't cross
+            # the measured stretch): nothing to count.
             self._last_result_text = f"#{track.id}: (no speed)"
             self._last_over = False
             return
 
-        # Geometry signals for the false-positive gates. Computed here (on the
-        # detect thread, while the track object is fresh) and carried in the job.
+        # Pixel-only geometry signals for the false-positive gates. Computed here
+        # (on the detect thread, while the track object is fresh) and carried in
+        # the job.
         job = {
             "track": track,
             "result": result,
-            "span_m": self._vehicle_span_m(track),
             "aspect": self._aspect_ratio(track),
             "width_px": self._vehicle_width_px(track),
-            "on_road_frac": self._on_road_fraction(track),
             "area_cv": self._area_cv(track),
             "brightness": self.scene_brightness,
             # Finalize time, so the recognition worker's dedupe/last-count timing
@@ -1212,22 +873,19 @@ class SpeedCamera:
         verdict). Everything after speed estimation lives here."""
         track = job["track"]
         result = job["result"]
-        span_m = job["span_m"]
         aspect = job["aspect"]
-        on_road_frac = job["on_road_frac"]
         area_cv = job.get("area_cv")
         width_px = job.get("width_px")
 
         over = result.speed_kmh > self.limit_kmh
         display_speed = self._display_speed(result)
 
-        # False-positive gates. Geometry runs first (location + speed sanity); it
-        # can REJECT. Then the YOLO gate is the decider for car-vs-not: it can
+        # False-positive gates. Geometry (pixel shape/size/coherence) runs first;
+        # it can REJECT. Then the YOLO gate is the decider for car-vs-not: it can
         # reject a geometrically-plausible phantom/pedestrian that geometry kept,
         # and it confirms real cars (filling vehicle_type). A geometry reject
         # stands regardless -- an object must clear BOTH to be counted.
-        status, reason = self._classify_reading(result, span_m, aspect,
-                                                on_road_frac, area_cv, width_px)
+        status, reason = self._classify_reading(result, aspect, area_cv, width_px)
         yolo_type = None
         if status == "ok" and verdict is not None:
             decision, info = self._yolo_gate(verdict, job.get("brightness"))
@@ -1247,9 +905,9 @@ class SpeedCamera:
         # only when we'd have kept one anyway, so the bin has something to show.
         capture = (not rejected) and self._should_capture(display_speed)
 
-        # Best-effort attributes (type/make/model/year/color) -- run for EVERY
-        # counted pass, even ones below the SpeedKapture threshold. When the YOLO
-        # vote already ran, reuse its vehicle_type instead of a second inference.
+        # Best-effort attributes (type/color) -- run for EVERY counted pass, even
+        # ones below the SpeedKapture threshold. When the YOLO vote already ran,
+        # reuse its vehicle_type instead of a second inference.
         attrs = self._recognize(track, yolo_type=yolo_type)
 
         self._last_result_text = (
@@ -1261,25 +919,16 @@ class SpeedCamera:
         self._last_over = over and not rejected
         tag = "XX" if rejected else ("!!" if over else "  ")
         extra = self._attr_label(attrs)
-        span_txt = f", span={span_m:.1f}m" if span_m is not None else ""
         aspect_txt = f", aspect={aspect:.2f}" if aspect is not None else ""
-        road_txt = (f", on_road={on_road_frac * 100:.0f}%"
-                    if on_road_frac is not None else "")
-        straight = getattr(result, "straightness", None)
-        straight_txt = f", straight={straight * 100:.0f}%" if straight is not None else ""
-        mono = getattr(result, "monotonicity", None)
-        mono_txt = f", fwd={mono * 100:.0f}%" if mono is not None else ""
-        accel = getattr(result, "max_accel_mps2", None)
-        accel_txt = f", accel={accel:.0f}" if accel else ""
+        width_txt = f", width={width_px:.0f}px" if width_px is not None else ""
         area_txt = f", area_cv={area_cv:.2f}" if area_cv is not None else ""
         vote_txt = ""
         if verdict is not None:
             vote_txt = (f", yolo={verdict.get('vehicle_frames', 0)}/"
                         f"{verdict.get('frames', 0)}veh")
         print(f"[SpeedKam] {tag} vehicle #{track.id}: {result.display(self.units)} "
-              f"({result.direction}, {result.distance_m:.1f} m{span_txt}"
-              f"{aspect_txt}{road_txt}{straight_txt}{mono_txt}{accel_txt}"
-              f"{area_txt}{vote_txt}, "
+              f"({result.direction}, {result.distance_m:.1f} m{aspect_txt}"
+              f"{width_txt}{area_txt}{vote_txt}, "
               f"conf={result.confidence}){extra}"
               + (f"  [REJECTED: {reason}]" if rejected
                  else ("" if capture else "  [not captured]")))

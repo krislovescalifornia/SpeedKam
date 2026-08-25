@@ -1,203 +1,121 @@
 # SPDX-FileCopyrightText: 2026 Kris Kling
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Speed estimation: a synthetic constant-velocity track must read back the
-speed we put in, and the plausibility gates must reject bad tracks."""
+"""Two-line crossing-time speed. A synthetic pass crossing the calibrated
+columns at a known rate must read back the speed we put in, and the plausibility
+gates must reject bad tracks."""
 import pytest
 
-from speedkam.speed import (
-    KMH_PER_MS,
-    MPH_PER_MS,
-    estimate,
-    normalize_orientation,
-    resolve_band,
-    _in_band,
-    _theil_sen_slope,
-)
+from speedkam.speed import KMH_PER_MS, MPH_PER_MS, estimate, _crossing_seconds
 from speedkam.tracker import Sample, Track
 
-# Minimal `speed` config section, matching config.DEFAULTS["speed"] keys that
-# estimate() reads. No measure_band -> gating is a no-op.
+XA, XB = 1000, 450
+
+# Minimal `speed` config, matching the config.DEFAULTS["speed"] keys estimate()
+# reads. d_east_m / d_west_m are the calibrated distances of the x1000<->x450
+# stretch for each direction.
 BASE_CFG = {
-    "min_track_distance_m": 3.0,
     "min_samples": 6,
     "min_speed_kmh": 3,
     "max_speed_kmh": 200,
-    "direction_positive": "outbound",
-    "direction_negative": "inbound",
+    "x_a": XA,
+    "x_b": XB,
+    "d_east_m": 5.0,
+    "d_west_m": 4.0,
+    "direction_positive": "Westbound",
+    "direction_negative": "Eastbound",
 }
 
 
-def make_track(velocity_mps, n=12, dt=0.1, axis="x", sign=1):
-    """A car moving in a straight line at a constant speed along one world axis.
+def make_pass(direction="east", v_px=1100.0, n=16, dt=0.05):
+    """A car crossing both calibrated columns at a constant pixel velocity.
 
-    Ground pixels advance too (kept central so any band gate would keep them).
+    east  -> x decreasing (right-to-left): starts at 1100, crosses x_a=1000 then
+             x_b=450. west -> x increasing: starts at 350, crosses x_b then x_a.
+    With v_px=1100 the crossing time between the columns is exactly 550/1100 =
+    0.5s, so speed = distance / 0.5.
     """
+    if direction == "east":
+        start, sign = 1100.0, -1.0
+    else:
+        start, sign = 350.0, 1.0
     samples = []
     for i in range(n):
         t = i * dt
-        d = sign * velocity_mps * t          # metres travelled along the axis
-        world = (d, 0.0) if axis == "x" else (0.0, d)
-        px = (500 + i, 500 + i)              # near frame centre, monotonic
-        samples.append(Sample(t=t, ground_px=px, world=world, bbox=(0, 0, 10, 10)))
+        x = start + sign * v_px * t
+        samples.append(Sample(t=t, ground_px=(x, 500), bbox=(0, 0, 20, 10)))
     return Track(id=1, samples=samples)
 
 
-def test_constant_velocity_reads_back_exact_speed():
-    # 10 m/s == 36.0 km/h == 22.369 mph
-    r = estimate(make_track(10.0), BASE_CFG)
+def test_eastbound_reads_back_exact_speed():
+    # d_east_m=5.0 over a 0.5s crossing -> 10 m/s == 36 km/h.
+    r = estimate(make_pass("east"), BASE_CFG)
     assert r is not None
     assert r.speed_kmh == pytest.approx(36.0, abs=1e-6)
     assert r.speed_mph == pytest.approx(10.0 * MPH_PER_MS, abs=1e-6)
+    assert r.direction == "Eastbound"
+    assert r.distance_m == pytest.approx(5.0, abs=1e-9)
+    assert r.duration_s == pytest.approx(0.5, abs=1e-9)
     assert r.confidence == "ok"
-    assert r.direction == "outbound"
-    assert r.n_samples == 12
-    assert r.distance_m == pytest.approx(10.0 * 1.1, abs=1e-6)  # v * duration
 
 
-def test_straight_track_has_unit_straightness():
-    # A constant-velocity straight-line pass: net displacement == path length.
-    r = estimate(make_track(10.0), BASE_CFG)
-    assert r.straightness == pytest.approx(1.0, abs=1e-6)
-
-
-def test_wandering_track_has_low_straightness():
-    # World x oscillates back and forth (foliage / noise): the cumulative path
-    # still yields a plausible speed, but net displacement is tiny -> the
-    # straightness signal collapses, which is what the gate keys on.
-    xs = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1]
-    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(float(x), 0.0),
-                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
-    r = estimate(Track(id=1, samples=samples), BASE_CFG)
-    assert r is not None                 # a phantom speed is produced...
-    assert r.straightness < 0.2          # ...but the wander is unmistakable
-
-
-# --------------------------------------------------------------- Theil-Sen
-def test_theil_sen_matches_clean_line():
-    import numpy as np
-    t = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
-    s = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 50.0])
-    assert _theil_sen_slope(t, s) == pytest.approx(10.0, abs=1e-9)
-
-
-def test_theil_sen_ignores_single_outlier_both_ways():
-    import numpy as np
-    t = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
-    # One badly corrupted sample. Least-squares would be dragged toward it;
-    # Theil-Sen's median of pairwise slopes shrugs it off -- and does so
-    # symmetrically, so there is no systematic bias (unlike the old min() rule,
-    # which could only ever pull the speed DOWN).
-    s_hi = np.array([0.0, 10.0, 20.0, 999.0, 40.0, 50.0])   # outlier high
-    s_lo = np.array([0.0, 10.0, 20.0, -999.0, 40.0, 50.0])  # outlier low
-    assert _theil_sen_slope(t, s_hi) == pytest.approx(10.0, abs=1e-9)
-    assert _theil_sen_slope(t, s_lo) == pytest.approx(10.0, abs=1e-9)
-
-
-def test_theil_sen_degenerate_returns_zero():
-    import numpy as np
-    assert _theil_sen_slope(np.array([1.0]), np.array([1.0])) == 0.0
-
-
-# ---------------------------------------------------- monotonicity + accel
-def test_straight_track_is_fully_monotonic_and_smooth():
-    r = estimate(make_track(10.0), BASE_CFG)
-    assert r.monotonicity == pytest.approx(1.0, abs=1e-9)
-    # Constant velocity -> essentially zero frame-to-frame acceleration.
-    assert r.max_accel_mps2 < 1e-6
-
-
-def test_oscillating_track_has_low_monotonicity():
-    # World x reverses repeatedly (foliage / branch swaying): well under half the
-    # steps advance along the net direction.
-    xs = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1]
-    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(float(x), 0.0),
-                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
-    r = estimate(Track(id=1, samples=samples), BASE_CFG)
+def test_westbound_reads_back_and_picks_its_own_distance():
+    # d_west_m=4.0 over 0.5s -> 8 m/s == 28.8 km/h.
+    r = estimate(make_pass("west"), BASE_CFG)
     assert r is not None
-    assert r.monotonicity < 0.7
-
-
-def test_teleporting_track_spikes_acceleration():
-    # A track that jumps far in a single frame then settles: a huge instantaneous
-    # speed change -> a large peak acceleration the bound gate keys on.
-    xs = [0.0, 0.5, 1.0, 30.0, 30.5, 31.0, 31.5, 32.0]
-    samples = [Sample(t=i * 0.1, ground_px=(500 + i, 500), world=(x, 0.0),
-                      bbox=(0, 0, 10, 10)) for i, x in enumerate(xs)]
-    r = estimate(Track(id=1, samples=samples), BASE_CFG)
-    assert r is not None
-    assert r.max_accel_mps2 > 100.0   # ~0->fast->0 across two frames
+    assert r.speed_kmh == pytest.approx(28.8, abs=1e-6)
+    assert r.direction == "Westbound"
+    assert r.distance_m == pytest.approx(4.0, abs=1e-9)
 
 
 def test_kmh_mph_are_consistent():
-    r = estimate(make_track(15.0), BASE_CFG)
-    assert r.speed_mph / r.speed_kmh == pytest.approx(MPH_PER_MS / KMH_PER_MS, rel=1e-9)
+    r = estimate(make_pass("east"), BASE_CFG)
+    assert r.speed_mph / r.speed_kmh == pytest.approx(MPH_PER_MS / KMH_PER_MS,
+                                                      rel=1e-9)
 
 
-@pytest.mark.parametrize("sign,expected", [(1, "outbound"), (-1, "inbound")])
-def test_direction_follows_net_displacement(sign, expected):
-    r = estimate(make_track(12.0, sign=sign), BASE_CFG)
-    assert r is not None
-    assert r.direction == expected
-    assert r.speed_kmh == pytest.approx(12.0 * KMH_PER_MS, abs=1e-6)  # sign-independent
+def test_uncalibrated_direction_returns_none(capsys):
+    cfg = {**BASE_CFG, "d_east_m": None}
+    assert estimate(make_pass("east"), cfg) is None
+    # It should print the crossing time so a known-speed pass can be turned into
+    # the distance.
+    assert "CALIBRATE" in capsys.readouterr().out
 
 
 def test_too_few_samples_returns_none():
-    assert estimate(make_track(10.0, n=4), BASE_CFG) is None
+    assert estimate(make_pass("east", n=4), BASE_CFG) is None
 
 
-def test_too_short_distance_returns_none():
-    # 1 m/s over 1.1 s == 1.1 m travelled, below min_track_distance_m (3.0)
-    assert estimate(make_track(1.0), BASE_CFG) is None
+def test_pass_that_never_crosses_both_columns_returns_none():
+    # A track loitering between the columns crosses neither x_a nor x_b fully.
+    samples = [Sample(t=i * 0.1, ground_px=(700 + i, 500), bbox=(0, 0, 20, 10))
+               for i in range(12)]
+    assert estimate(Track(id=1, samples=samples), BASE_CFG) is None
 
 
 def test_implausibly_fast_is_rejected():
-    # 100 m/s == 360 km/h, above max_speed_kmh (200)
-    assert estimate(make_track(100.0), BASE_CFG) is None
+    # A blur that crosses both columns in a couple of frames -> absurd speed.
+    r = estimate(make_pass("east", v_px=100000.0, n=16, dt=0.05), BASE_CFG)
+    assert r is None
 
 
 def test_below_min_speed_is_rejected():
-    cfg = {**BASE_CFG, "min_track_distance_m": 0.0, "min_speed_kmh": 20}
-    # 2 m/s == 7.2 km/h, below the 20 km/h floor
-    assert estimate(make_track(2.0), cfg) is None
+    cfg = {**BASE_CFG, "min_speed_kmh": 50}   # 36 km/h pass is below the floor
+    assert estimate(make_pass("east"), cfg) is None
 
 
-# --------------------------------------------------------------- band gating
-def test_normalize_orientation():
-    for v in ("head_on", "head-on", "HEADON", "oncoming", " Head On "):
-        assert normalize_orientation(v) == "head_on"
-    for v in ("parallel", "side_on", "", None, "whatever"):
-        assert normalize_orientation(v) == "parallel"
+# --------------------------------------------------------------- crossing time
+def test_crossing_seconds_linear_interpolation():
+    import numpy as np
+    # x goes 1100 -> 300 at 1000 px/s over the samples; crosses 1000 at t=0.1,
+    # crosses 450 at t=0.65 -> dt = 0.55s.
+    ts = np.array([i * 0.05 for i in range(20)], dtype=float)
+    xs = 1100.0 - 1000.0 * ts
+    assert _crossing_seconds(ts, xs, XA, XB) == pytest.approx(0.55, abs=1e-9)
 
 
-def test_resolve_band_picks_preset_for_orientation():
-    nested = {
-        "enabled": True,
-        "orientation": "parallel",
-        "parallel": {"x_min": 0.3, "x_max": 0.7, "y_min": 0.0, "y_max": 1.0},
-        "head_on": {"x_min": 0.0, "x_max": 1.0, "y_min": 0.55, "y_max": 0.95},
-    }
-    p = resolve_band(nested, "parallel")
-    assert p["enabled"] and p["x_min"] == 0.3 and p["x_max"] == 0.7
-    h = resolve_band(nested, "head_on")
-    assert h["enabled"] and h["y_min"] == 0.55 and h["y_max"] == 0.95
-    # falls back to the config's own orientation when none is passed
-    assert resolve_band(nested)["x_min"] == 0.3
-
-
-def test_resolve_band_passes_flat_band_through():
-    flat = {"enabled": True, "x_min": 0.1, "x_max": 0.9, "y_min": 0.0, "y_max": 1.0}
-    assert resolve_band(flat) == flat
-
-
-def test_in_band_keeps_only_central_samples():
-    band = {"enabled": True, "x_min": 0.3, "x_max": 0.7, "y_min": 0.0, "y_max": 1.0}
-    samples = [Sample(0, (px, 500), None, (0, 0, 0, 0)) for px in (100, 400, 650, 900)]
-    kept = _in_band(samples, band, (1000, 1000))
-    assert [s.ground_px[0] for s in kept] == [400, 650]  # 100 & 900 trimmed
-
-
-def test_in_band_disabled_is_a_noop():
-    samples = [Sample(0, (px, 500), None, (0, 0, 0, 0)) for px in (0, 999)]
-    assert _in_band(samples, {"enabled": False}, (1000, 1000)) == samples
-    assert _in_band(samples, {"enabled": True}, None) == samples  # no frame size
+def test_crossing_seconds_none_when_one_column_never_reached():
+    import numpy as np
+    ts = np.array([i * 0.05 for i in range(10)], dtype=float)
+    xs = 1100.0 - 100.0 * ts          # only drops to ~1055, never reaches 1000
+    assert _crossing_seconds(ts, xs, XA, XB) is None

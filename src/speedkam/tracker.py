@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 class Sample:
     t: float                 # monotonic timestamp (s)
     ground_px: tuple         # (x, y) pixels
-    world: tuple | None      # (X, Y) meters, or None if uncalibrated
     bbox: tuple              # (x, y, w, h)
 
 
@@ -47,11 +46,10 @@ class Tracker:
         self._next_id = 1
         self.tracks: dict[int, Track] = {}
 
-    def update(self, detections, world_points, t):
+    def update(self, detections, t):
         """Advance the tracker one frame.
 
         detections   -- list[Detection]
-        world_points -- list[(X,Y) | None] aligned with detections
         Returns (active_tracks, finished_tracks). Finished tracks have left the
         scene and are ready for speed finalisation.
         """
@@ -69,9 +67,7 @@ class Tracker:
                     best_d, best_i = d, i
             if best_i is not None:
                 det = detections[best_i]
-                track.samples.append(
-                    Sample(t, det.ground_point, world_points[best_i], det.bbox)
-                )
+                track.samples.append(Sample(t, det.ground_point, det.bbox))
                 track.hits += 1
                 track.missed = 0
                 if track.hits >= self.min_hits:
@@ -87,7 +83,7 @@ class Tracker:
             self._next_id += 1
             self.tracks[tid] = Track(
                 id=tid,
-                samples=[Sample(t, det.ground_point, world_points[i], det.bbox)],
+                samples=[Sample(t, det.ground_point, det.bbox)],
                 hits=1,
             )
 

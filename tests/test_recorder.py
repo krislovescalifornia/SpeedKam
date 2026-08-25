@@ -14,7 +14,7 @@ from speedkam.speed import SpeedResult
 def _result(mph=30.0):
     return SpeedResult(speed_kmh=mph * 1.60934, speed_mph=mph,
                        direction="Eastbound", distance_m=6.0, duration_s=0.4,
-                       n_samples=12, confidence="ok", peak_index=6)
+                       n_samples=12, confidence="ok")
 
 
 def _rec(tmp_path, clip_seconds=8, max_buffer_mb=128, record_fps=0):
