@@ -801,11 +801,12 @@ class SpeedCamera:
         snapshot. Runs on the CALLER's thread -- the web encoder thread for the
         headless path -- so the capture/detect loop never pays the copy+draw."""
         view = raw.copy()
+        # The crossing-time engine measures speed between two image columns
+        # (speed.estimate x_a/x_b) and ignores both the old center-band gate and
+        # the calibration image_points, so draw_zone/draw_measure_band would only
+        # paint a misleading strip onto an otherwise-raw feed. Just the live
+        # detection boxes (still real) plus the HUD status line.
         if overlay.get("draw_debug"):
-            with self._calib_lock:
-                calib = self.calibration
-            annotate.draw_zone(view, calib)
-            annotate.draw_measure_band(view, self._active_band())
             annotate.draw_track_boxes(view, overlay.get("tracks", ()))
         annotate.draw_hud(view, overlay.get("text", ""), overlay.get("over", False))
         return view
