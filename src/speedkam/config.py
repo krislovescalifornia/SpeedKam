@@ -40,6 +40,22 @@ DEFAULTS = {
         "detect_shadows": False,
         "morph_kernel": 5,
         "min_hits": 3,
+        # Road-band detection ROI. Runs MOG2 on just the strip of road that
+        # matters instead of the whole frame -- a large FPS win on a Pi (detection
+        # cost is ~linear in pixels), because crossing-time speed only needs the
+        # ground-x to cross columns x_a/x_b, not the full ground plane. The crop
+        # offset is added back to every box, so full-res coordinates (tracking,
+        # speed) are IDENTICAL to full-frame detection. OFF by default: the
+        # rollout ships this dormant, audits real traffic to prove the band
+        # contains every counted car, THEN enables it. See docs/roi-rollout-log.md.
+        "roi": {
+            "enabled": False,   # OFF = full-frame detection, identical to before
+            "audit": False,     # log-only: record ROI coverage of real cars, no crop
+            # The band as FRACTIONS of the full frame (0..1), detect_scale-independent.
+            # Defaults span the whole frame (a no-op even if enabled); set a real
+            # band from the audit's observed vehicle envelope before enabling.
+            "x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0,
+        },
     },
     "tracker": {"max_match_distance": 120, "max_missed": 12},
     "light_gate": {

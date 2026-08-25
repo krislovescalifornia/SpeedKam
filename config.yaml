@@ -77,6 +77,30 @@ detection:
   # Filters out momentary noise.
   min_hits: 3
 
+  # --- Road-band detection ROI (FPS win) --------------------------------------
+  # Run MOG2 on just the strip of road that matters instead of the whole frame.
+  # Detection cost is ~linear in pixels, and on the Pi the detect loop competes
+  # with the capture thread -- so cropping detection to the road band recovered
+  # the pipeline from ~27fps to the sensor's ~57fps ceiling in a live harness.
+  # It's safe because crossing-time speed only needs the ground-x to cross the
+  # columns x_a/x_b (below), not the whole ground plane; the crop offset is added
+  # back so tracking/speed coordinates are IDENTICAL to full-frame detection.
+  #
+  # ROLLOUT (see docs/roi-rollout-log.md): ships OFF. Turn on `audit` first --
+  # it changes NOTHING about detection, just records whether every counted car
+  # stays inside a candidate band and writes the observed vehicle envelope to
+  # captures/roi_audit.json. Set x0..y1 from that envelope, confirm 100% coverage
+  # on real traffic, THEN set enabled: true. The node refuses any band that does
+  # not contain x_a/x_b, degrading to full-frame, so speed can never silently break.
+  roi:
+    enabled: false      # false = full-frame detection, identical to before
+    audit: false        # true = log-only coverage + envelope, no crop (do this first)
+    # The band as FRACTIONS of the full frame (0..1). Whole-frame defaults = no-op.
+    x0: 0.0
+    y0: 0.0
+    x1: 1.0
+    y1: 1.0
+
 tracker:
   # Max pixel distance between frames to associate a detection with a track.
   max_match_distance: 120

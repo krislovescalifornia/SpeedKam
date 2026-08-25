@@ -23,6 +23,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -168,6 +169,20 @@ class SpeedCamera:
         self.paused_low_light = False
         self.scene_brightness = None   # last measured mean luma (0-255) or None
         self._lg_since = None          # monotonic time the pending flip began
+
+        # --- road-band detection ROI + audit ------------------------------
+        # Restrict MOG2 to the strip of road that matters (big FPS win), OR just
+        # AUDIT: run full-frame detection unchanged while recording whether every
+        # counted car would have stayed inside a candidate ROI. Ships OFF; the
+        # rollout proves coverage before ever cropping. See docs/roi-rollout-log.md.
+        self._det_roi, self._roi_audit = self._configure_roi(cfg)
+        # Observed vehicle envelope (fractions of the full frame) accumulated over
+        # counted passes during audit, plus per-pass coverage stats. Persisted to
+        # roi_audit.json so the correct band can be derived from real traffic.
+        self._roi_env = None           # [x0,y0,x1,y1] fractions, min/max of ground pts
+        self._roi_audit_passes = 0
+        self._roi_audit_covered = 0    # passes with 100% of ground points inside cand.
+        self._roi_audit_min_cov = 1.0  # worst single-pass coverage fraction seen
 
     # --------------------------------------------------------------- SpeedKapture
     @property
@@ -347,6 +362,135 @@ class SpeedCamera:
     def _display_speed(self, result) -> float:
         return result.speed_mph if self.units == "mph" else result.speed_kmh
 
+    # ------------------------------------------------------ detection ROI
+    def _configure_roi(self, cfg):
+        """Resolve the road-band ROI + audit flags from config, fail-safe.
+
+        Returns ``(det_roi, audit)`` where ``det_roi`` is ``(x0,y0,x1,y1)``
+        fractions to crop detection to, or ``None`` for full-frame (the safe
+        default). Also stashes the candidate band + frame size on self for the
+        audit. NEVER raises and NEVER enables a band that fails validation -- a
+        bad config degrades to full-frame detection, never to blind detection.
+        """
+        self._cam_wh = (float(cfg["camera"]["width"]), float(cfg["camera"]["height"]))
+        self._roi_cand = None
+        det_roi = None
+        audit = False
+        try:
+            roi = (cfg.get("detection", {}) or {}).get("roi", {}) or {}
+            audit = bool(roi.get("audit"))
+            x0 = float(roi.get("x0", 0.0)); y0 = float(roi.get("y0", 0.0))
+            x1 = float(roi.get("x1", 1.0)); y1 = float(roi.get("y1", 1.0))
+            full = x0 <= 0.0 and y0 <= 0.0 and x1 >= 1.0 and y1 >= 1.0
+            if not full and x1 > x0 and y1 > y0:
+                self._roi_cand = (x0, y0, x1, y1)   # candidate for audit coverage
+            if roi.get("enabled"):
+                if full or not (x1 > x0 and y1 > y0):
+                    print("[SpeedKam] detection ROI enabled but spans the whole "
+                          "frame (or is empty) -- running full-frame (no-op).")
+                elif not self._roi_contains_crossing(x0, x1):
+                    W = self._cam_wh[0]
+                    xa = float(cfg["speed"].get("x_a", 0)); xb = float(cfg["speed"].get("x_b", 0))
+                    print("[SpeedKam] *** detection ROI REFUSED: band x "
+                          f"[{x0 * W:.0f},{x1 * W:.0f}]px does not contain the "
+                          f"crossing columns x_a={xa:.0f}/x_b={xb:.0f} -- speed "
+                          "would break. Running full-frame instead. ***")
+                else:
+                    det_roi = (x0, y0, x1, y1)
+                    W, H = self._cam_wh
+                    print(f"[SpeedKam] detection ROI ON: x[{x0 * W:.0f},{x1 * W:.0f}] "
+                          f"y[{y0 * H:.0f},{y1 * H:.0f}]px of {int(W)}x{int(H)} "
+                          f"(~{(x1 - x0) * (y1 - y0) * 100:.0f}% of pixels).")
+        except Exception as exc:  # noqa: BLE001 - never let ROI config crash a node
+            print(f"[SpeedKam] detection ROI config error ({exc}); full-frame.")
+            return None, False
+        if audit:
+            print("[SpeedKam] detection ROI AUDIT on: full-frame detection "
+                  "unchanged; recording counted-car coverage + envelope.")
+        return det_roi, audit
+
+    def _roi_contains_crossing(self, x0_frac, x1_frac):
+        """True when the band's x-span covers BOTH crossing columns x_a/x_b, so
+        the crossing-time speed can still be measured inside the ROI."""
+        W = self._cam_wh[0]
+        xa = float(self.cfg["speed"].get("x_a", 0))
+        xb = float(self.cfg["speed"].get("x_b", 0))
+        lo, hi = min(xa, xb), max(xa, xb)
+        return x0_frac * W <= lo and x1_frac * W >= hi
+
+    def _roi_audit_pass(self, track):
+        """Record a counted car against the ROI audit: grow the observed vehicle
+        envelope (min/max ground point, as frame fractions) and, if a candidate
+        band is configured, the fraction of this pass's ground points inside it.
+
+        This is how we PROVE, on real traffic, that a candidate band would not
+        have dropped any car before we ever enable the crop. Observational only;
+        it never touches detection. Best-effort -- a failure here must not affect
+        counting."""
+        try:
+            W, H = self._cam_wh
+            pts = [(s.ground_px[0] / W, s.ground_px[1] / H)
+                   for s in track.samples if len(s.ground_px) == 2]
+            if not pts:
+                return
+            xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+            box = [min(xs), min(ys), max(xs), max(ys)]
+            if self._roi_env is None:
+                self._roi_env = box
+            else:
+                e = self._roi_env
+                self._roi_env = [min(e[0], box[0]), min(e[1], box[1]),
+                                 max(e[2], box[2]), max(e[3], box[3])]
+            self._roi_audit_passes += 1
+            if self._roi_cand is not None:
+                cx0, cy0, cx1, cy1 = self._roi_cand
+                inside = sum(1 for (px, py) in pts
+                             if cx0 <= px <= cx1 and cy0 <= py <= cy1)
+                cov = inside / len(pts)
+                if cov >= 0.999:
+                    self._roi_audit_covered += 1
+                self._roi_audit_min_cov = min(self._roi_audit_min_cov, cov)
+                if cov < 0.999:
+                    print(f"[SpeedKam] ROI-AUDIT: car #{track.id} coverage "
+                          f"{cov * 100:.0f}% -- {len(pts) - inside}/{len(pts)} "
+                          "ground points OUTSIDE the candidate band.")
+            self._write_roi_audit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[SpeedKam] ROI audit error (ignored): {exc}")
+
+    def _write_roi_audit(self):
+        """Persist the audit envelope + coverage so the correct band can be read
+        off real traffic (and survives a restart)."""
+        import json
+        W, H = self._cam_wh
+        env = self._roi_env
+        # A safe recommended band = observed envelope padded, clamped to [0,1],
+        # and always widened to include the crossing columns x_a/x_b.
+        rec = None
+        if env is not None:
+            mx, my = 0.06, 0.10        # x pad 6%, y pad 10% (generous vertical)
+            xa = float(self.cfg["speed"].get("x_a", 0)) / W
+            xb = float(self.cfg["speed"].get("x_b", 0)) / W
+            rec = [max(0.0, min(env[0] - mx, min(xa, xb) - 0.02)),
+                   max(0.0, env[1] - my),
+                   min(1.0, max(env[2] + mx, max(xa, xb) + 0.02)),
+                   min(1.0, env[3] + my)]
+        out = {
+            "passes": self._roi_audit_passes,
+            "observed_envelope_frac": env,
+            "recommended_band_frac": rec,
+            "candidate_band_frac": list(self._roi_cand) if self._roi_cand else None,
+            "candidate_100pct_covered_passes": self._roi_audit_covered,
+            "candidate_worst_coverage": (None if self._roi_audit_passes == 0
+                                         else round(self._roi_audit_min_cov, 4)),
+            "frame_wh": [int(W), int(H)],
+        }
+        try:
+            path = Path(self.cfg["recording"]["output_dir"]) / "roi_audit.json"
+            path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - audit persistence is best-effort
+            pass
+
     # ---------------------------------------------------------------------- run
     def run(self, frame_callback=None, stop_event=None):
         """Process frames until the stream ends, 'q' is pressed, or stop is set.
@@ -499,9 +643,10 @@ class SpeedCamera:
         # software resize. Otherwise the detector downscales the full frame.
         if detect_frame is not None:
             upscale = frame.shape[1] / detect_frame.shape[1]
-            detections, _ = self.detector.detect(detect_frame, upscale=upscale)
+            detections, _ = self.detector.detect(detect_frame, upscale=upscale,
+                                                 roi=self._det_roi)
         else:
-            detections, _ = self.detector.detect(frame)
+            detections, _ = self.detector.detect(frame, roi=self._det_roi)
         active, finished = self.tracker.update(detections, t)
 
         for tr in finished:
@@ -966,6 +1111,11 @@ class SpeedCamera:
             self.total_count += 1
             if over:
                 self.speeder_count += 1
+            # ROI audit: record this real, counted car's ground-point envelope so
+            # we can prove a candidate band would not have dropped it. No effect
+            # on detection -- observational only.
+            if self._roi_audit:
+                self._roi_audit_pass(track)
             # Remember this counted pass so the next fragmented re-detection of
             # the same vehicle can be deduped (count-once-per-drive-by). Keyed to
             # the finalize time so dedupe spacing is independent of vote latency.

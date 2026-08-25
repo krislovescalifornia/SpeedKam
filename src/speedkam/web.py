@@ -215,6 +215,12 @@ class Runner:
             "x_b": self.cfg["speed"].get("x_b"),
             "d_east_m": self.cfg["speed"].get("d_east_m"),
             "d_west_m": self.cfg["speed"].get("d_west_m"),
+            # Detection ROI status: whether the crop is live, whether the audit is
+            # recording, and the audit tally so the rollout can be watched remotely.
+            "roi_enabled": bool(getattr(sc, "_det_roi", None) is not None),
+            "roi_audit": bool(getattr(sc, "_roi_audit", False)),
+            "roi_audit_passes": int(getattr(sc, "_roi_audit_passes", 0)),
+            "roi_observed_envelope": getattr(sc, "_roi_env", None),
             "rejected_count": sum(1 for r in self._all_rows()
                                   if self._is_rejected(r)),
         }

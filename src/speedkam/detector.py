@@ -47,7 +47,7 @@ class MotionDetector:
         scale = float(cfg.get("detect_scale", 1.0) or 1.0)
         self.scale = scale if 0.0 < scale <= 1.0 else 1.0
 
-    def detect(self, frame, upscale=None):
+    def detect(self, frame, upscale=None, roi=None):
         """Detect moving blobs and return (detections, mask).
 
         `frame` is what MOG2 runs on. Two ways to feed it a smaller frame (both
@@ -59,6 +59,19 @@ class MotionDetector:
             factor that maps its pixels back to full resolution. No software
             resize happens, which is the whole point on a weak CPU.
         Either way, all output coordinates/areas are in full-resolution pixels.
+
+        `roi` optionally restricts MOG2 to a rectangular sub-window of the frame
+        -- the road band -- as ``(x0, y0, x1, y1)`` FRACTIONS of the full frame
+        (each 0..1). Running detection on that strip instead of the whole frame
+        is a large CPU win (detection cost is ~linear in pixels), and on a
+        parallel node it stops the detect loop from starving the capture thread.
+        The crop offset is added back to every box BEFORE up-scaling, so output
+        coordinates are IDENTICAL to a full-frame detection of the same blob --
+        tracking and the crossing-time speed are completely unaware of the crop.
+        `roi=None` (the default) is byte-for-byte the original full-frame path.
+        Blobs whose ground point falls outside the band are simply not seen, so
+        the band must be calibrated to contain vehicle tyre-lines across the full
+        crossing span (validated by the pipeline before this is ever enabled).
         """
         if upscale is not None:
             small = frame                  # already at detection resolution
@@ -70,6 +83,21 @@ class MotionDetector:
         else:
             small = frame
             inv = 1.0
+
+        # Road-band crop. Fractions -> pixels in the SMALL (detection) frame, so
+        # it's independent of detect_scale. The offset (ox, oy) is carried into
+        # the box mapping below. A degenerate/empty crop falls back to no crop so
+        # a bad config can never blind detection outright.
+        ox = oy = 0
+        if roi is not None:
+            sh, sw = small.shape[:2]
+            x0 = max(0, min(sw - 1, int(roi[0] * sw)))
+            y0 = max(0, min(sh - 1, int(roi[1] * sh)))
+            x1 = max(x0 + 1, min(sw, int(roi[2] * sw)))
+            y1 = max(y0 + 1, min(sh, int(roi[3] * sh)))
+            if (x1 - x0) < sw or (y1 - y0) < sh:
+                small = small[y0:y1, x0:x1]
+                ox, oy = x0, y0
 
         mask = self.bg.apply(small)
         # Shadows are painted 127 by MOG2; drop them to keep only hard motion.
@@ -89,7 +117,10 @@ class MotionDetector:
             if area < self.cfg["min_area"] or area > self.cfg["max_area"]:
                 continue
             x, y, w, h = cv2.boundingRect(c)
-            x, y, w, h = x * inv, y * inv, w * inv, h * inv
+            # Add the crop offset back (in small-frame pixels) BEFORE up-scaling,
+            # so a blob reports the same full-res box whether or not an ROI was
+            # applied.
+            x, y, w, h = (x + ox) * inv, (y + oy) * inv, w * inv, h * inv
             detections.append(
                 Detection(
                     bbox=(x, y, w, h),
