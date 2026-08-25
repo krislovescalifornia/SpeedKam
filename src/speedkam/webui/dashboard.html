@@ -100,6 +100,21 @@
   .toplist .sp{font-weight:700;font-size:17px;min-width:74px;font-variant-numeric:tabular-nums}
   .toplist .sp.over{color:var(--bad)}
   .toplist .dt{color:var(--muted);font-size:12.5px;margin-left:auto;text-align:right}
+  /* last 10 cars (live verification) */
+  .lastcars{list-style:none;margin:0;padding:8px 10px 12px;display:flex;flex-direction:column;gap:2px}
+  .lastcars li{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:8px;font-size:13.5px}
+  .lastcars li:nth-child(odd){background:var(--panel2)}
+  .lastcars li.click{cursor:pointer}
+  .lastcars li.click:hover{outline:1px solid var(--accent)}
+  .lastcars .lc-t{color:var(--muted);font-variant-numeric:tabular-nums;min-width:68px}
+  .lastcars .lc-sp{font-weight:700;min-width:58px;font-variant-numeric:tabular-nums}
+  .lastcars .lc-sp.over{color:var(--bad)}
+  .lastcars .lc-col{display:flex;align-items:center;gap:6px;flex:1;text-transform:capitalize}
+  .lastcars .lc-col i{width:11px;height:11px;border-radius:50%;border:1px solid var(--line);flex:none}
+  .lastcars .lc-col .none{color:var(--muted);opacity:.6;text-transform:none}
+  .lastcars .lc-dir{color:var(--muted);margin-left:auto;text-align:right;font-size:12.5px}
+  .lastcars li.empty{justify-content:center}
+  .lc-note{color:var(--muted);font-size:12px;padding:0 18px 14px}
   .empty{color:var(--muted);padding:24px 16px;text-align:center}
   .skap{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
   .skap .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -270,6 +285,11 @@
           <div class="hint">Only vehicles this fast record a clip. Slower ones are still counted. 0 = capture all.</div>
         </div>
       </div>
+      <div class="card">
+        <h2>Last 10 cars</h2>
+        <ol class="lastcars" id="lastcars"><li class="empty">No cars recorded yet.</li></ol>
+        <div class="lc-note">Every recorded car, any speed — newest first. Watch one drive by, then confirm it lands here.</div>
+      </div>
     </div>
   </div>
 
@@ -400,6 +420,8 @@ function fmtSpeed(ev){const v=speedVal(ev);return (v==null?"—":Math.round(v))+
 function isOver(ev){return LIMIT_KMH!=null&&ev.speed_kmh!=null&&ev.speed_kmh>LIMIT_KMH;}
 function timeShort(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
 function dayShort(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleDateString([],{month:'short',day:'numeric'})+" "+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+function timeSec(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+const COLOR_HEX={black:'#111418',white:'#f4f4f5',gray:'#9ca3af',grey:'#9ca3af',silver:'#c8ccd2',red:'#ef4444',blue:'#3b82f6',navy:'#1e3a8a',green:'#22c55e',yellow:'#eab308',orange:'#f97316',brown:'#8b5a2b',beige:'#d9c9a3',gold:'#d4af37',tan:'#d2b48c',maroon:'#7f1d1d',purple:'#8b5cf6',pink:'#ec4899'};
 function qs(extra){const p=new URLSearchParams();if(FROM)p.set('from',FROM);if(TO)p.set('to',TO);for(const k in(extra||{}))p.set(k,extra[k]);const s=p.toString();return s?'?'+s:'';}
 function applyFilter(){FROM=q('#f-from').value;TO=q('#f-to').value;refreshAll();}
 function clearFilter(){FROM="";TO="";q('#f-from').value="";q('#f-to').value="";refreshAll();}
@@ -673,6 +695,29 @@ async function refreshTop(){
     box.appendChild(li);
   });
 }
+async function refreshLastCars(){
+  const box=q('#lastcars');
+  // Always the true last 10 recorded cars, any speed, ignoring the analytics
+  // date range. Rejected non-cars (people/dogs/phantoms) are already excluded
+  // server-side, so every row here is a real vehicle the system logged.
+  const evs=await fetch('/api/events?limit=10').then(r=>r.json()).catch(()=>[]);
+  if(!evs.length){box.innerHTML='<li class="empty">No cars recorded yet.</li>';return;}
+  box.innerHTML='';
+  for(const ev of evs){
+    const li=document.createElement('li');
+    const col=(ev.color||'').trim();
+    const hex=COLOR_HEX[col.toLowerCase()];
+    const swatch=col?'<i style="background:'+(hex||'var(--panel2)')+'"></i>':'';
+    const colHtml=col?(swatch+col):'<span class="none">no colour</span>';
+    li.innerHTML='<span class="lc-t">'+timeSec(ev.time)+'</span>'+
+      '<span class="lc-sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
+      '<span class="lc-col">'+colHtml+'</span>'+
+      '<span class="lc-dir">'+(ev.direction||'')+'</span>';
+    if(ev.clip){li.classList.add('click');li.title='Play clip';li.onclick=()=>openModal('/captures/'+ev.clip);}
+    else if(ev.snapshot){li.classList.add('click');li.title='View snapshot';li.onclick=()=>openImg('/captures/'+ev.snapshot);}
+    box.appendChild(li);
+  }
+}
 async function refreshRejects(){
   const rej=await fetch('/api/rejects?limit=60').then(r=>r.json()).catch(()=>[]);
   const box=q('#rejlist');q('#rej-cnt').textContent=rej.length;
@@ -733,7 +778,7 @@ q('#power').addEventListener('click',e=>{if(e.target.id==='power')powerCancel();
 async function refreshAll(){
   const s=await fetch('/api/status').then(r=>r.json()).catch(()=>({}));
   refreshStatus(s);
-  await Promise.all([refreshClips(),refreshTop(),refreshSummary(),refreshAnalytics(),refreshRejects()]);
+  await Promise.all([refreshLastCars(),refreshClips(),refreshTop(),refreshSummary(),refreshAnalytics(),refreshRejects()]);
 }
 refreshAll();
 setInterval(refreshAll,4000);
