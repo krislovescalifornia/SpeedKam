@@ -84,12 +84,6 @@ class RemoteControl:
             "scene_brightness": (round(cam.scene_brightness, 1)
                                  if getattr(cam, "scene_brightness", None)
                                  is not None else None),
-            # car-filter ("only count cars") thresholds, so the off-site
-            # dashboard can show current values + a pending/applied indicator.
-            "min_vehicle_aspect": getattr(cam, "min_vehicle_aspect", None),
-            "min_car_width_px": getattr(cam, "min_car_width_px", None),
-            "max_area_cv": getattr(cam, "max_area_cv", None),
-            "dedupe_seconds": getattr(cam, "dedupe_seconds", None),
             "last_event": cam.last_event,
         }
 
@@ -136,21 +130,8 @@ class RemoteControl:
                       f"{self.camera.units} (rev {rev}).")
             except (TypeError, ValueError):
                 pass
-        # car-filter thresholds (set together on the dashboard's "only count
-        # cars" panel; any subset may be present). All pixel-only.
-        reject_keys = ("min_vehicle_aspect", "min_car_width_px",
-                       "max_area_cv", "dedupe_seconds")
-        if any(settings.get(k) is not None for k in reject_keys):
-            try:
-                new = self.camera.set_reject_thresholds(
-                    min_aspect=settings.get("min_vehicle_aspect"),
-                    min_car_width_px=settings.get("min_car_width_px"),
-                    max_area_cv=settings.get("max_area_cv"),
-                    dedupe_seconds=settings.get("dedupe_seconds"))
-                print(f"[SpeedKam] Remote set car-filter thresholds -> {new} "
-                      f"(rev {rev}).")
-            except (TypeError, ValueError):
-                pass
+        # (The car-only false-positive filter is fixed policy in code and is
+        # deliberately NOT remotely tunable -- no reject-threshold apply here.)
         limit = settings.get("speed_limit_kmh")
         if limit is not None:
             try:

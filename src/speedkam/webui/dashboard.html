@@ -270,31 +270,6 @@
           <div class="hint">Only vehicles this fast record a clip. Slower ones are still counted. 0 = capture all.</div>
         </div>
       </div>
-      <div class="card">
-        <h2>Only count cars</h2>
-        <div class="skap">
-          <div class="row">
-            <span>Min car shape (w:h)</span>
-            <input type="number" id="rej-aspect" min="0" step="0.1" title="A car's box is wider than tall (~2-3); a person's is taller (~0.4). Below this = not a car.">
-            <span>Min car width</span>
-            <input type="number" id="rej-width" min="0" step="10" title="A car is a big object even in the far lane (well over 200px wide); a bike/dog/pedestrian is small.">
-            <span class="u">px</span>
-          </div>
-          <div class="row">
-            <span>Max size flicker</span>
-            <input type="number" id="rej-area" min="0" step="0.05" title="Coefficient of variation of the box area across the pass. A car's outline changes size smoothly (low); noise/foliage flicker (high). ~0.9 only catches egregious flicker.">
-            <span>Dedupe window</span>
-            <input type="number" id="rej-dedupe" min="0" step="0.5">
-            <span class="u">s</span>
-            <button class="btn sm" onclick="saveReject()">Save</button>
-            <span class="saved" id="rej-saved">saved ✓</span>
-          </div>
-          <div class="hint"><b>Car shape</b> &amp; <b>width</b> reject pedestrians, dog-walkers &amp; cyclists
-            (too tall or too small). <b>Size flicker</b> drops wind-blown foliage / noise blobs whose
-            outline jitters. <b>Dedupe</b> counts each drive-by once. All pixel-only, no calibration.
-            <b id="rej-count">0</b> readings auto-rejected so far — see the bin below.</div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -479,13 +454,7 @@ function refreshStatus(s){
   q('#limit-unit').textContent=uLbl();
   const limI=q('#limit-val');if(document.activeElement!==limI)limI.value=limitDisp;
 
-  // reject config
-  const ra=q('#rej-aspect'),rw=q('#rej-width'),rac=q('#rej-area'),rdd=q('#rej-dedupe');
-  if(document.activeElement!==ra)ra.value=s.min_vehicle_aspect??"";
-  if(document.activeElement!==rw)rw.value=s.min_car_width_px??"";
-  if(document.activeElement!==rac)rac.value=s.max_area_cv??"";
-  if(document.activeElement!==rdd)rdd.value=s.dedupe_seconds??"";
-  q('#rej-count').textContent=s.rejected_count||0;
+  // auto-rejected count (the car-only filter itself is fixed policy in code)
   q('#rej-cnt').textContent=s.rejected_count||0;
 
   const ev=s.last_event;
@@ -742,13 +711,6 @@ async function saveSkap(){const v=parseFloat(q('#skap-val').value);if(isNaN(v)||
 async function saveLimit(){const v=parseFloat(q('#limit-val').value);if(isNaN(v)||v<=0)return;
   const r=await fetch('/api/speedlimit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({limit:v,units:UNITS})}).then(r=>r.json()).catch(()=>null);
   if(r&&r.ok){LIMIT_KMH=r.speed_limit_kmh;flash('limit-saved');refreshAll();}}
-async function saveReject(){
-  const a=parseFloat(q('#rej-aspect').value),w=parseFloat(q('#rej-width').value),
-        ac=parseFloat(q('#rej-area').value),dd=parseFloat(q('#rej-dedupe').value);
-  const r=await fetch('/api/rejectconfig',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({min_vehicle_aspect:isNaN(a)?null:a,min_car_width_px:isNaN(w)?null:w,
-      max_area_cv:isNaN(ac)?null:ac,dedupe_seconds:isNaN(dd)?null:dd})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){flash('rej-saved');refreshAll();}}
 function flash(id){const sv=q('#'+id);sv.classList.add('show');setTimeout(()=>sv.classList.remove('show'),1500);}
 
 // power

@@ -213,19 +213,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_limit'])) {
     redirect_self($sel_node);
 }
 
-// --- "only count cars" car-filter thresholds (applied by the node on sync) ---
-// All PIXEL-ONLY gates (the homography span/road/orientation gates were retired
-// with the crossing-time speed engine).
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_reject'])) {
-    $changes = [];
-    foreach (['min_vehicle_aspect', 'min_car_width_px',
-              'max_area_cv', 'dedupe_seconds'] as $k) {
-        $v = $_POST[$k] ?? '';
-        if (is_numeric($v) && (float)$v >= 0) { $changes[$k] = (float)$v; }
-    }
-    if ($changes) { queue_desired($DATA_DIR, $changes); }
-    redirect_self($sel_node);
-}
+// NOTE: the "only count cars" car-filter is fixed policy in the node's code
+// (seeded from config on boot) and is deliberately NOT remotely tunable -- so
+// there is no set_reject handler here. Manual per-reading reject/restore below
+// is separate: it re-tags an individual event, it does not change the filter.
 
 // --- manual reject / restore (rewrites the mirrored events.csv status) -------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_status'])) {
@@ -1023,37 +1014,9 @@ function render_controls($d) {
     else echo 'Vehicles above ' . h($cam_limit_disp ?? '?') . ' ' . h($units) . ' are flagged as speeding.';
     echo '</div></form>';
 
-    // --- "only count cars" car-filter thresholds (all pixel-only) -----------
-    $rk = [
-        'min_vehicle_aspect'   => ['Min car shape (w:h)', '0.1'],
-        'min_car_width_px'     => ['Min car width (px)', '10'],
-        'max_area_cv'          => ['Max size flicker', '0.05'],
-        'dedupe_seconds'       => ['Dedupe window (s)', '0.5'],
-    ];
-    $rej_pending = false;
-    foreach (array_keys($rk) as $k) {
-        if (isset($desired[$k]) && (!isset($status[$k])
-            || round((float)$desired[$k], 3) != round((float)$status[$k], 3))) {
-            $rej_pending = true;
-        }
-    }
-    echo '<form method="post" class="ctl" style="flex-direction:column;align-items:stretch">'
-       . (!empty($sel_node) ? '<input type="hidden" name="node" value="' . h($sel_node) . '">' : '')
-       . '<label style="margin-bottom:.3rem">Only count cars &mdash; reject cyclists, pedestrians &amp; phantom tracks</label>'
-       . '<div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:end">';
-    foreach ($rk as $k => [$lbl, $step]) {
-        $val = $desired[$k] ?? ($status[$k] ?? null);
-        echo '<div><label style="font-size:.7rem">' . h($lbl) . '</label>'
-           . '<input type="number" step="' . $step . '" min="0" name="' . $k . '" value="'
-           . h($val !== null ? rtrim(rtrim(number_format((float)$val, 2, '.', ''), '0'), '.') : '')
-           . '" style="width:8rem"></div>';
-    }
-    echo '<button type="submit" name="set_reject" value="1">Set on camera</button></div>'
-       . '<div class="muted" style="font-size:.8rem;margin-top:.4rem">'
-       . ($rej_pending
-            ? 'Changes queued &middot; the camera applies them on its next check-in.'
-            : 'Car shape &amp; width reject people, bikes &amp; dogs (too tall or too small); size flicker drops wind-blown foliage/noise; dedupe counts each drive-by once. Auto-rejected readings land in the bin below.')
-       . '</div></form>';
+    // The "only count cars" car-filter is fixed policy in the node's code, not
+    // a setting -- intentionally no control here. Its results still show up in
+    // the auto-rejected bin below (transparency), which stays read-only.
 }
 
 // Shared event table. $with_reject adds a "reject" action column.

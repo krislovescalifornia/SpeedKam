@@ -203,10 +203,6 @@ class Runner:
             "recognition": bool(getattr(sc, "recognizer", None)
                                 and sc.recognizer.active),
             "speedkapture_threshold": sc.speedkapture_threshold,
-            "min_vehicle_aspect": sc.min_vehicle_aspect,
-            "min_car_width_px": sc.min_car_width_px,
-            "max_area_cv": sc.max_area_cv,
-            "dedupe_seconds": sc.dedupe_seconds,
             # Crossing-time calibration (read-only here; set in config.local.yaml).
             # The two image columns a car is timed between, and the per-direction
             # distances that turn a crossing time into a speed. A null distance =
@@ -224,12 +220,6 @@ class Runner:
             "rejected_count": sum(1 for r in self._all_rows()
                                   if self._is_rejected(r)),
         }
-
-    def set_reject_thresholds(self, min_aspect=None, min_car_width_px=None,
-                              max_area_cv=None, dedupe_seconds=None):
-        return self.speedcam.set_reject_thresholds(
-            min_aspect=min_aspect, min_car_width_px=min_car_width_px,
-            max_area_cv=max_area_cv, dedupe_seconds=dedupe_seconds)
 
     def set_speedkapture(self, value):
         return self.speedcam.set_speedkapture_threshold(value)
@@ -671,18 +661,8 @@ def create_app(runner: Runner) -> Flask:
         res = runner.set_row_status(key, "ok", "")
         return jsonify({"ok": res["updated"] > 0, **res})
 
-    @app.route("/api/rejectconfig", methods=["POST"])
-    def rejectconfig():
-        data = request.get_json(force=True, silent=True) or {}
-        try:
-            applied = runner.set_reject_thresholds(
-                min_aspect=data.get("min_vehicle_aspect"),
-                min_car_width_px=data.get("min_car_width_px"),
-                max_area_cv=data.get("max_area_cv"),
-                dedupe_seconds=data.get("dedupe_seconds"))
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "values must be numbers"}), 400
-        return jsonify({"ok": True, **applied})
+    # NOTE: no /api/rejectconfig endpoint -- the car-only false-positive filter
+    # is fixed policy seeded from config on boot, deliberately not tunable here.
 
     @app.route("/api/speedkapture", methods=["POST"])
     def speedkapture():

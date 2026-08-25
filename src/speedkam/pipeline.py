@@ -132,6 +132,15 @@ class SpeedCamera:
              "remote_rev": None},
         )
 
+        # The car-only false-positive gate is FIXED POLICY, not a live setting.
+        # Re-assert the code values from config on every boot so a stale or
+        # hand-edited runtime.json can never drift the filter, and so there is
+        # no dashboard / HTTP / fleet-sync path left that can change it. The
+        # numbers live in config.yaml (mirrored in config.py) -- edit them there.
+        for _k in ("min_vehicle_aspect", "min_car_width_px",
+                   "max_area_cv", "dedupe_seconds"):
+            self.state.set(_k, float(cfg["speed"].get(_k, 0) or 0))
+
         # Optional pull-based remote control: check in with the off-site host and
         # adopt any settings changed on its dashboard. Reuses the backup host.
         self.remote = None
@@ -245,21 +254,9 @@ class SpeedCamera:
         the same vehicle (a fragmented track) and rejected. 0 disables it."""
         return float(self.state.get("dedupe_seconds") or 0)
 
-    def set_reject_thresholds(self, min_aspect=None, min_car_width_px=None,
-                              max_area_cv=None, dedupe_seconds=None) -> dict:
-        """Live-tune the pixel-only auto-reject envelope; persists across restarts."""
-        if min_aspect is not None:
-            self.state.set("min_vehicle_aspect", max(0.0, float(min_aspect)))
-        if min_car_width_px is not None:
-            self.state.set("min_car_width_px", max(0.0, float(min_car_width_px)))
-        if max_area_cv is not None:
-            self.state.set("max_area_cv", max(0.0, float(max_area_cv)))
-        if dedupe_seconds is not None:
-            self.state.set("dedupe_seconds", max(0.0, float(dedupe_seconds)))
-        return {"min_vehicle_aspect": self.min_vehicle_aspect,
-                "min_car_width_px": self.min_car_width_px,
-                "max_area_cv": self.max_area_cv,
-                "dedupe_seconds": self.dedupe_seconds}
+    # NOTE: the car-filter thresholds above are read-only at runtime by design.
+    # They are fixed policy seeded from config on boot (see __init__); there is
+    # deliberately no setter, so no dashboard or remote path can retune them.
 
     @staticmethod
     def _aspect_ratio(track):
