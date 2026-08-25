@@ -489,7 +489,7 @@ $all_dirs = array_keys($dir['all']);
 
 render_dashboard(compact(
     'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp', 'dir',
-    'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges', 'top', 'view',
+    'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges', 'top', 'view', 'rows',
     'filter', 'desired', 'desired_thr', 'camera_thr', 'desired_limit_kmh',
     'sel_node', 'rejected', 'rep', 'all_colors', 'all_dirs',
     'recent_clips', 'latest_snap', 'latest_snap_time'
@@ -580,6 +580,17 @@ function page_head($title) {
        . 'ol.toplist li::before{content:counter(t);color:var(--muted);font-weight:700;width:1.4rem;text-align:right;font-variant-numeric:tabular-nums}'
        . 'ol.toplist .sp{font-weight:700;min-width:5.5rem;font-variant-numeric:tabular-nums}ol.toplist .sp.over{color:var(--bad)}'
        . 'ol.toplist .dt{margin-left:auto;font-size:.82rem}'
+       // last 10 cars (verification)
+       . 'ol.lastcars{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}'
+       . 'ol.lastcars li{display:flex;align-items:center;gap:.7rem;padding:.5rem .8rem;border-top:1px solid var(--line);font-size:.92rem}'
+       . 'ol.lastcars li:first-child{border-top:0}'
+       . 'ol.lastcars .lc-t{color:var(--muted);font-variant-numeric:tabular-nums;min-width:9.5rem}'
+       . 'ol.lastcars .lc-sp{font-weight:700;min-width:4.2rem;font-variant-numeric:tabular-nums}ol.lastcars .lc-sp.over{color:var(--bad)}'
+       . 'ol.lastcars .lc-col{display:flex;align-items:center;gap:.4rem;flex:1;text-transform:capitalize}'
+       . 'ol.lastcars .lc-col i{width:.7rem;height:.7rem;border-radius:50%;border:1px solid var(--line);flex:none}'
+       . 'ol.lastcars .lc-col .none{color:var(--muted);opacity:.6;text-transform:none}'
+       . 'ol.lastcars .lc-dir{margin-left:auto;color:var(--muted);font-size:.82rem;text-align:right}'
+       . '.lc-note{color:var(--muted);font-size:.8rem;margin:.4rem .2rem 0}'
        // analytics
        . '.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1rem 1.1rem;margin:1rem 0;box-shadow:0 6px 24px rgba(0,0,0,.35)}'
        . '.panel h3{margin:0 0 .8rem;font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}'
@@ -761,6 +772,9 @@ function render_dashboard($d) {
     stat_card('This month', $c['month'], $sp['month'] . ' over limit', dir_chips($dir['month']));
     stat_card('All time', $c['total'], $sp['total'] . ' over limit');
     echo '</div>';
+
+    // -------- LAST 10 CARS (verification) --------
+    render_last_cars($rows, $units, $limit_kmh);
 
     // -------- ANALYTICS --------
     render_analytics($d);
@@ -1047,6 +1061,45 @@ function render_table($view, $units, $limit_kmh, $nq, $with_reject) {
         echo '</tr>';
     }
     echo '</tbody></table>';
+}
+
+// A swatch colour for a named vehicle colour (mirrors the node dashboard).
+function sk_color_hex($name) {
+    static $map = [
+        'black' => '#111418', 'white' => '#f4f4f5', 'gray' => '#9ca3af',
+        'grey' => '#9ca3af', 'silver' => '#c8ccd2', 'red' => '#ef4444',
+        'blue' => '#3b82f6', 'navy' => '#1e3a8a', 'green' => '#22c55e',
+        'yellow' => '#eab308', 'orange' => '#f97316', 'brown' => '#8b5a2b',
+        'beige' => '#d9c9a3', 'gold' => '#d4af37', 'tan' => '#d2b48c',
+        'maroon' => '#7f1d1d', 'purple' => '#8b5cf6', 'pink' => '#ec4899',
+    ];
+    return $map[strtolower(trim($name))] ?? null;
+}
+
+// Last 10 recorded cars, any speed, newest first -- the off-site twin of the
+// node's live-verification card. $rows is already non-rejected (real vehicles).
+function render_last_cars($rows, $units, $limit_kmh) {
+    echo '<h2 class="sec">Last 10 cars</h2>';
+    $last = array_reverse(array_slice($rows, -10));   // newest first
+    if (!$last) { echo '<p class="muted" style="font-size:.85rem">No cars recorded yet.</p>'; return; }
+    echo '<ol class="lastcars">';
+    foreach ($last as $r) {
+        $over = is_over($r, $limit_kmh);
+        $time = str_replace('T', ' ', substr($r['wall_time'] ?? '', 0, 19));  // to the second
+        $col  = trim($r['color'] ?? '');
+        $hex  = $col ? sk_color_hex($col) : null;
+        $colHtml = $col
+            ? '<i style="background:' . h($hex ?: 'var(--line)') . '"></i>' . h($col)
+            : '<span class="none">no colour</span>';
+        echo '<li>'
+           . '<span class="lc-t">' . h($time) . '</span>'
+           . '<span class="lc-sp' . ($over ? ' over' : '') . '">' . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+           . '<span class="lc-col">' . $colHtml . '</span>'
+           . '<span class="lc-dir">' . h($r['direction'] ?? '') . '</span>'
+           . '</li>';
+    }
+    echo '</ol>';
+    echo '<div class="lc-note">Every recorded car, any speed &mdash; newest first. Rejected non-cars are excluded. Confirm a car you saw drive by landed here.</div>';
 }
 
 function render_reject_bin($rejected, $units, $nq) {
