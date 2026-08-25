@@ -611,7 +611,8 @@ function page_head($title) {
        . '.vb{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px;height:100%}'
        . '.vb .col{width:100%;border-radius:4px 4px 0 0;background:linear-gradient(180deg,var(--accent),var(--accent2));min-height:2px}'
        . '.vb .cap{font-size:9px;color:var(--muted)}'
-       . '.axis{display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted);margin-top:3px}'
+       . '.axis{display:flex;gap:3px;font-size:9px;color:var(--muted);margin-top:3px}'
+       . '.axis span{flex:1;text-align:center;overflow:hidden;white-space:nowrap}'
        . '.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:1px;background:var(--line);border-radius:10px;overflow:hidden;margin-bottom:1rem}'
        . '.metrics .m{background:var(--card);padding:.7rem .8rem}.metrics .m .k{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}'
        . '.metrics .m .v{font-size:1.4rem;font-weight:800;font-variant-numeric:tabular-nums}.metrics .m .s{font-size:.72rem;color:var(--muted)}'
@@ -916,7 +917,7 @@ function render_analytics($d) {
     $histItems = []; $ax = [];
     for ($i=0;$i<count($hist);$i++){
         $histItems[] = [$hist[$i], 0, (($edges[$i+1]>=999)?($edges[$i].'+'):($edges[$i].'–'.$edges[$i+1])) . ' mph: ' . $hist[$i]];
-        $ax[] = ($edges[$i]%10===0 || $edges[$i+1]>=999) ? ($edges[$i+1]>=999?$edges[$i].'+':$edges[$i]) : '';
+        $ax[] = ($edges[$i+1]>=999) ? ($edges[$i].'+') : $edges[$i];
     }
     echo '<div><div class="ct">Speed distribution (mph)</div>' . render_vbars($histItems, $ax) . '</div>';
     echo '</div>';
@@ -926,7 +927,7 @@ function render_analytics($d) {
     for ($i=0;$i<24;$i++){
         $a = $hod[$i]['count']?$hod[$i]['sum']/$hod[$i]['count']:null;
         $hodItems[] = [$hod[$i]['count'], 0, sprintf('%02d:00 — %d veh%s', $i, $hod[$i]['count'], $a!==null?(' · '.round(to_disp($a,$units)).ulbl($units)):'')];
-        $hax[] = ($i%6===0)? $i : '';
+        $hax[] = $i;
     }
     echo '<div style="margin-top:1rem"><div class="ct">Traffic by hour of day</div>' . render_vbars($hodItems, $hax) . '</div>';
     echo '</div>';

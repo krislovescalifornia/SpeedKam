@@ -158,7 +158,8 @@
   .vbars .vb .col{width:100%;border-radius:4px 4px 0 0;
     background:linear-gradient(180deg,var(--grad1),var(--grad2));min-height:2px;transition:height .3s}
   .vbars .vb .cap{font-size:9px;color:var(--muted);white-space:nowrap}
-  .axis{display:flex;justify-content:space-between;padding:2px 10px 8px;font-size:9.5px;color:var(--muted)}
+  .axis{display:flex;gap:3px;padding:2px 10px 8px;font-size:9px;color:var(--muted)}
+  .axis span{flex:1;text-align:center;overflow:hidden;white-space:nowrap}
   /* report builder */
   .rb{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
   .rb .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
@@ -572,12 +573,12 @@ async function refreshAnalytics(){
     label:dowNames[i],value:d.count,
     sub:d.count+" · "+(d.avg_kmh!=null?Math.round(toDisp(d.avg_kmh))+uLbl():'—')})));
   renderVBars('hour-hist','hour-axis',a.hourly.map(h=>({
-    count:h.count,avg:toDisp(h.avg_kmh),axis:(h.hour%6===0)?h.hour:'' })),i=>i.axis!==''?i.axis+":00":'hour');
+    count:h.count,avg:toDisp(h.avg_kmh),axis:h.hour })),i=>i.axis+":00");
   // speed hist
   const hist=a.speed_hist.map(b=>({count:b.count,avg:null,
     axis:(b.hi>=999)?b.lo+"+":b.lo, lo:b.lo,hi:b.hi}));
   renderVBars('speed-hist','speed-axis',hist.map(b=>({count:b.count,avg:null,axis:''})),b=>b.lo+"–"+(b.hi>=999?'+':b.hi)+" "+uLbl());
-  q('#speed-axis').innerHTML=hist.map(b=>`<span>${(b.lo%10===0||b.hi>=999)?(b.hi>=999?b.lo+"+":b.lo):''}</span>`).join('');
+  q('#speed-axis').innerHTML=hist.map(b=>`<span>${b.hi>=999?b.lo+"+":b.lo}</span>`).join('');
   // populate report dropdowns from all-time colours/dirs (once we have data)
   populateReportOptions(a.colors);
 }
