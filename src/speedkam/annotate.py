@@ -5,40 +5,11 @@
 from __future__ import annotations
 
 import cv2
-import numpy as np
 
 GREEN = (0, 200, 0)
 RED = (0, 0, 255)
 YELLOW = (0, 220, 220)
 WHITE = (255, 255, 255)
-BLUE = (255, 160, 0)
-
-
-def draw_zone(frame, calibration):
-    """Outline the calibration points so you can see the measured road region."""
-    if calibration is None:
-        return
-    pts = calibration.image_points.astype(int)
-    for (x, y) in pts:
-        cv2.circle(frame, (int(x), int(y)), 5, BLUE, -1)
-
-
-def draw_measure_band(frame, band):
-    """Dim the region OUTSIDE the center-band gate so you can see where speed
-    is (and isn't) measured. No-op when the gate is disabled."""
-    if not band or not band.get("enabled"):
-        return
-    h, w = frame.shape[:2]
-    x_lo = int(band.get("x_min", 0.0) * w)
-    x_hi = int(band.get("x_max", 1.0) * w)
-    y_lo = int(band.get("y_min", 0.0) * h)
-    y_hi = int(band.get("y_max", 1.0) * h)
-    # Blend a dark overlay everywhere, then restore the in-band rectangle so the
-    # measured strip stays bright and the excluded margins read as shaded.
-    dimmed = cv2.addWeighted(frame, 0.55, np.zeros_like(frame), 0.45, 0)
-    dimmed[y_lo:y_hi, x_lo:x_hi] = frame[y_lo:y_hi, x_lo:x_hi]
-    frame[:] = dimmed
-    cv2.rectangle(frame, (x_lo, y_lo), (x_hi, y_hi), YELLOW, 1)
 
 
 def draw_tracks(frame, tracks, units):
