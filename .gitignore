@@ -18,16 +18,10 @@ captures/
 captures_test/
 **/.sync_queue/
 speedkam_data/
+# Legacy homography calibration artifacts (ignored so a lingering copy from
+# before the crossing-time engine never gets committed).
 calibration.json
 calibration.ref.jpg
-test_calibration.json
-test_road.mp4
-test_sideon.mp4
-test_sideon_calibration.json
-test_sideon.meta.json
-test_headon.mp4
-test_headon_calibration.json
-test_headon.meta.json
 # YOLO weights (downloaded on demand by ultralytics)
 *.pt
 tools/simple_speed.json

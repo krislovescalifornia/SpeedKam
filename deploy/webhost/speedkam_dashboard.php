@@ -213,17 +213,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_limit'])) {
     redirect_self($sel_node);
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_orientation'])) {
-    $o = (($_POST['orientation'] ?? '') === 'head_on') ? 'head_on' : 'parallel';
-    queue_desired($DATA_DIR, ['orientation' => $o]);
-    redirect_self($sel_node);
-}
-
 // --- "only count cars" car-filter thresholds (applied by the node on sync) ---
+// All PIXEL-ONLY gates (the homography span/road/orientation gates were retired
+// with the crossing-time speed engine).
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['set_reject'])) {
     $changes = [];
-    foreach (['max_track_distance_m', 'min_vehicle_span_m',
-              'min_vehicle_aspect', 'dedupe_seconds'] as $k) {
+    foreach (['min_vehicle_aspect', 'min_car_width_px',
+              'max_area_cv', 'dedupe_seconds'] as $k) {
         $v = $_POST[$k] ?? '';
         if (is_numeric($v) && (float)$v >= 0) { $changes[$k] = (float)$v; }
     }
@@ -733,16 +729,9 @@ function render_dashboard($d) {
     $limit_disp = ($limit_kmh !== null)
         ? (($units === 'mph') ? round($limit_kmh / 1.609) . ' mph' : round($limit_kmh) . ' km/h')
         : 'not set';
-    $orient = (($status['orientation'] ?? '') === 'head_on') ? 'head-on' : 'parallel';
-    $calib_txt = !empty($status['calibrated'])
-        ? ('calibrated ' . h($status['calibration_points'] ?? '?') . 'pts'
-            . (isset($status['reprojection_error_m']) && $status['reprojection_error_m'] !== null
-                ? ' ±' . h($status['reprojection_error_m']) . 'm' : ''))
-        : 'not calibrated';
     echo '<div class="muted" style="font-size:.9rem;margin-top:-.5rem">'
        . 'Speed limit ' . h($limit_disp) . ' &middot; live FPS ' . h($status['fps'] ?? '?')
-       . ' &middot; capturing above ' . h($camera_thr ?? '?') . ' ' . h($units)
-       . ' &middot; mount ' . h($orient) . ' &middot; ' . $calib_txt . '</div>';
+       . ' &middot; capturing above ' . h($camera_thr ?? '?') . ' ' . h($units) . '</div>';
 
     $mnq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
 
@@ -1034,31 +1023,12 @@ function render_controls($d) {
     else echo 'Vehicles above ' . h($cam_limit_disp ?? '?') . ' ' . h($units) . ' are flagged as speeding.';
     echo '</div></form>';
 
-    // --- camera orientation -------------------------------------------------
-    $cam_orient = (($status['orientation'] ?? '') === 'head_on') ? 'head_on' : 'parallel';
-    $des_orient = $desired['orientation'] ?? null;
-    $eff_orient = $des_orient ?? $cam_orient;
-    $orient_pending = ($des_orient !== null) && ($des_orient !== $cam_orient);
-    $oname = fn($o) => ($o === 'head_on') ? 'head-on' : 'parallel';
-    echo '<form method="post" class="ctl">'
-       . (!empty($sel_node) ? '<input type="hidden" name="node" value="' . h($sel_node) . '">' : '')
-       . '<div><label for="ori">Camera orientation</label>'
-       . '<select id="ori" name="orientation">'
-       . '<option value="parallel"' . ($eff_orient === 'parallel' ? ' selected' : '') . '>Parallel (beside road)</option>'
-       . '<option value="head_on"' . ($eff_orient === 'head_on' ? ' selected' : '') . '>Head-on (facing traffic)</option>'
-       . '</select></div>'
-       . '<button type="submit" name="set_orientation" value="1">Set on camera</button>'
-       . '<div class="muted" style="font-size:.85rem">';
-    if ($orient_pending) echo 'Queued ' . h($oname($des_orient)) . ' &middot; camera still ' . h($oname($cam_orient)) . ' &middot; applies on next check-in.';
-    else echo 'Mounted ' . h($oname($cam_orient)) . '. Parallel: beside the road. Head-on: facing traffic.';
-    echo '</div></form>';
-
-    // --- "only count cars" car-filter thresholds ----------------------------
+    // --- "only count cars" car-filter thresholds (all pixel-only) -----------
     $rk = [
         'min_vehicle_aspect'   => ['Min car shape (w:h)', '0.1'],
+        'min_car_width_px'     => ['Min car width (px)', '10'],
+        'max_area_cv'          => ['Max size flicker', '0.05'],
         'dedupe_seconds'       => ['Dedupe window (s)', '0.5'],
-        'max_track_distance_m' => ['Max travel (m)', '1'],
-        'min_vehicle_span_m'   => ['Min size (m)', '0.1'],
     ];
     $rej_pending = false;
     foreach (array_keys($rk) as $k) {
@@ -1082,7 +1052,7 @@ function render_controls($d) {
        . '<div class="muted" style="font-size:.8rem;margin-top:.4rem">'
        . ($rej_pending
             ? 'Changes queued &middot; the camera applies them on its next check-in.'
-            : 'Car shape rejects taller-than-wide boxes (people &amp; bikes); dedupe counts each drive-by once; max travel kills phantom tracks; min size drops tiny objects. Auto-rejected readings land in the bin below.')
+            : 'Car shape &amp; width reject people, bikes &amp; dogs (too tall or too small); size flicker drops wind-blown foliage/noise; dedupe counts each drive-by once. Auto-rejected readings land in the bin below.')
        . '</div></form>';
 }
 

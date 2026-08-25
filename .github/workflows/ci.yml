@@ -25,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # opencv-python (imported via speedkam.calibration) needs these shared libs
+      # opencv-python (imported via speedkam.capture) needs these shared libs
       # at import time; they are not present on a bare Ubuntu runner.
       - name: Install OpenCV runtime libraries
         run: |

@@ -257,47 +257,33 @@ automated.
   You should see your sensor (e.g. `imx296` for the Global Shutter camera). If
   it's not listed, reseat the ribbon and check `/boot/firmware/config.txt`.
 
-### Sanity-check the pipeline (optional but reassuring)
-
-Proves the speed math works before you touch a real road, using a synthetic
-drive-by — no camera needed:
-
-```bash
-python3 tools/make_test_video.py
-python3 run.py --config config.test.yaml --source test_road.mp4 --no-display
-#   -> should report ~30 mph for the synthetic car
-```
-
 ### Mount the camera — then calibrate (order matters)
 
 **Mount first, rigidly, in the final position.** Any wobble after calibration
-invalidates the speed math. Aim it at a flat stretch of road where you can both
-*see* features and *tape-measure* between them. Keep the timed zone in the nearer
-part of the frame (the far field has poor metric resolution).
+invalidates the speed math. Aim it side-on at a flat stretch of road so cars
+cross the frame left↔right. Keep the timed zone in the nearer part of the frame.
 
-### Calibrate from your phone (headless — recommended)
+### Calibrate from your phone (no tape measure)
 
-> **No tape measure? Use drive-by auto-calibration** instead of the manual
-> points below — drive past a few times at a known steady speed and SpeedKam
-> derives the homography itself. Full runbook:
-> [`docs/drive-by-calibration.md`](../docs/drive-by-calibration.md). The manual
-> 4-point method here stays the most metrically precise option.
+Speed is timed as a car crosses between two image columns (`speed.x_a` /
+`speed.x_b`); calibration just fixes the real-world distance of that stretch, per
+direction, from one known-speed pass each way.
 
-The desktop `tools/calibrate.py` opens an OpenCV window that needs a monitor, so
-on a headless Pi use the **dashboard's browser calibration** instead:
+1. Open the dashboard at `http://<pi-ip>:8080` → **Calibration**. It shows the
+   two crossing columns over a live snapshot; confirm cars will cross both (nudge
+   `x_a`/`x_b` in `config.local.yaml` if not).
+2. Pick a **known, steady speed** you can hold (phone GPS speedo). Drive past
+   **once each direction** at that speed while the node is running.
+3. Read the crossing time the node printed for each pass:
+   `journalctl -u speedkam | grep CALIBRATE`.
+4. Use the Calibration page's calculator (or `distance = speed_m/s ×
+   crossing_seconds`) and set the two results in `config.local.yaml`:
 
-1. Open the dashboard at `http://<pi-ip>:8080` → **Calibrate**. (On the manual
-   path before the service is installed, start it by hand with `python3 serve.py`
-   and stop it with `Ctrl+C` when done.)
-2. Physically tape-measure **4+ points** on the road you can also see in the
-   image (lane cracks, chalk crosses, cones, driveway corners). Define an origin
-   `(0,0)` and axes in meters — e.g. **X = along the road, Y = across it**. A
-   `20 m × 4 m` rectangle is a good default: `(0,0) (20,0) (20,4) (0,4)`.
-3. Click each point on the snapshot **in the same order** and type its measured
-   `X Y` in meters. Save.
-4. It writes `calibration.json` and reports a **reprojection error**. Aim for
-   **under ~0.3 m**; if it's large, re-measure and redo. (Prefer the desktop
-   tool? On a Desktop-OS Pi or over VNC: `python3 tools/calibrate.py`.)
+   ```yaml
+   speed:
+     d_east_m: <east result>
+     d_west_m: <west result>
+   ```
 5. `sudo systemctl restart speedkam`, then watch a few real cars on the live view
    and confirm the reported speeds look sane.
 
@@ -400,9 +386,10 @@ calibration. For **offline** fleets, build one golden image and clone it
 ## Minimum system requirements — how cheap can you go?
 
 **Short answer: you don't need a Pi 5.** The core pipeline is classical computer
-vision (MOG2 background subtraction + a homography + a lightweight tracker), not
-a neural net. The *only* thing that demands a Pi 5 / lots of RAM is the **YOLO
-make/model recognition**, which is optional. Match the board to whether you want
+vision (MOG2 background subtraction + two-line crossing-time speed + a
+lightweight tracker), not a neural net. The *only* thing that demands a Pi 5 /
+lots of RAM is the **YOLO type recognition**, which is optional. Match the board
+to whether you want
 that.
 
 ### What actually costs compute

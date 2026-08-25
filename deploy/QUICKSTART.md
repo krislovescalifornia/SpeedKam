@@ -158,10 +158,14 @@ The dashboard works now, but it can't report a car's **speed** until you tell it
 how the camera is aimed at the road — every camera sees a different scene, so this
 can't be done ahead of time.
 
-Once the Pi and camera are mounted in their final spot:
+Once the Pi and camera are mounted in their final spot (side-on to the road, no
+tape measure needed):
 
-- In the dashboard, click **Calibrate**, click the measured points it asks for,
-  and **Save**. It restarts itself and you're done.
+- Pick a known, steady speed and drive past **once each direction** at it.
+- Read the crossing time the node printed: `journalctl -u speedkam | grep CALIBRATE`.
+- The dashboard's **Calibration** page has a calculator — enter your speed and
+  each crossing time, then put the two distances (`d_east_m` / `d_west_m`) in
+  `config.local.yaml` and `sudo systemctl restart speedkam`.
 
 That's the whole thing. From here the node counts, times, and records cars on its
 own.

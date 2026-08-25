@@ -99,13 +99,15 @@ if grep -Eq '^[[:space:]]*enabled:[[:space:]]*true' "${CONFIG}" 2>/dev/null && \
 fi
 
 # --- make sure the image ships BLANK, not with this Pi's local state --------
-# Calibration is per-physical-install; captures are per-node. Neither belongs
-# in a shared image. (They're gitignored, but a copied folder can carry them.)
+# Crossing-time calibration (speed.d_east_m / d_west_m in config.local.yaml) is
+# per-physical-install; captures + runtime state are per-node. None belongs in a
+# shared image. (They're gitignored, but a copied folder can carry them.)
 echo
 echo ">> Clearing per-node state so the image starts blank..."
+# calibration.json / .ref.jpg are legacy homography artifacts -- removed if a
+# copied folder still carries one from before the crossing-time engine.
 rm -f  "${PROJECT_DIR}/calibration.json" \
-       "${PROJECT_DIR}/calibration.ref.jpg" \
-       "${PROJECT_DIR}/test_calibration.json"
+       "${PROJECT_DIR}/calibration.ref.jpg"
 rm -rf "${PROJECT_DIR}/captures" "${PROJECT_DIR}/captures_test" \
        "${PROJECT_DIR}/speedkam_data"
 find "${PROJECT_DIR}" -type d -name '.sync_queue' -exec rm -rf {} + 2>/dev/null || true
@@ -164,6 +166,8 @@ echo "   - regenerate SSH host keys + machine-id (no fleet collisions)"
 echo "   - set a unique hostname from the Pi serial (speedkam-XXXXXX)"
 echo " then start SpeedKam and serve the dashboard on port 8080."
 echo
-echo " On each deployed node you still calibrate on-site once:"
-echo "   python3 tools/calibrate.py   (or the dashboard Calibrate button)"
+echo " On each deployed node you still calibrate on-site once: drive past each"
+echo " way at a known speed, read the crossing time from the log, and set"
+echo " speed.d_east_m / speed.d_west_m in config.local.yaml (the dashboard's"
+echo " Calibration page has a distance calculator). Then restart speedkam."
 echo "=============================================================="

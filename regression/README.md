@@ -1,10 +1,17 @@
-# Regression clip set — real-world gate validation
+# Regression clip set — real-world car/junk labels
 
-A labelled set of **real field clips** used to grade the deterministic geometry/physics
-gate (`tools/measure_residual.py --clips`). Seeded with the exact adversaries that
-poisoned the data on the Pi 3 (the two blank-road 90+ mph phantoms, the two-kids blob,
-the scooter kid, night headlight phantoms, pedestrians, cyclists) plus confirmed real
-cars — the discipline described in the gate-of-record plan.
+A labelled set of **real field clips** — the ground truth for "is this a car?".
+Seeded with the exact adversaries that poisoned the data on the Pi 3 (the two
+blank-road 90+ mph phantoms, the two-kids blob, the scooter kid, night headlight
+phantoms, pedestrians, cyclists) plus confirmed real cars.
+
+> **History:** these were originally graded by `tools/measure_residual.py`, which
+> scored the homography-era world-space gates (straightness / acceleration /
+> road-region). That tool and those gates were **removed with the crossing-time
+> purge** — the surviving false-positive gates are all pixel-only (aspect, car
+> width, area-CV). The `car`/`junk` **labels below remain valid ground truth**
+> and are kept for whenever a pixel-gate grader is written; there is no grading
+> tool in the tree right now.
 
 ## Privacy — why the clips are NOT in git
 
@@ -35,11 +42,7 @@ against the Pi-4's own calibration.
 ## Usage
 
 ```bash
-# 1. pull the clips (needs the speedkam-web SFTP alias)
+# Pull the clips (needs the speedkam-web SFTP alias) to re-review them by eye or
+# to grade against a future pixel-gate tool.
 bash regression/fetch.sh
-
-# 2. grade on the DEV BOX (never the live node — it shares the Pi's battery/CPU)
-PYTHONPATH=src python tools/measure_residual.py \
-    --clips regression --calibration <matching-calibration.json> \
-    --labels regression/labels.txt --enforce proposed
 ```

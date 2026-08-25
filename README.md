@@ -28,20 +28,22 @@ to a Raspberry Pi** later — you only edit `config.yaml`.
 
 ## How it estimates speed
 
-A fixed camera looking at a flat road is a solved geometry problem. You measure
-a few real points on the road once (with a tape measure) and click them in the
-image. SpeedKam computes a **homography** that maps image pixels → real-world
-meters on the road surface. Then for each vehicle it:
+SpeedKam times each vehicle across a fixed stretch of road — the **two-line
+crossing-time** method. You pick two image columns `x_a` and `x_b`; the
+real-world distance between them, per travel direction, is fixed once by driving
+past at a known speed. Then for each vehicle it:
 
 1. **Detects** motion (background subtraction) → bounding box.
 2. Takes the box's **bottom-centre** as the tire/ground contact point.
-3. Maps that point to **meters** via the homography, every frame.
-4. **Tracks** the vehicle across frames using **real capture timestamps**.
-5. Fits distance-vs-time to get **speed = metres / second**, converted to mph/kmh.
-   A robust regression + a median cross-check reject per-frame noise.
+3. **Tracks** the vehicle across frames using **real capture timestamps**.
+4. Times when its centre-x crosses `x_a` and `x_b` (linear-interpolated).
+5. **speed = calibrated distance / crossing time**, converted to mph/kmh.
 
-Accuracy is bounded by your calibration: measure carefully, spread the markers
-along the whole measurement zone, and keep the camera rigidly mounted.
+It uses raw pixel x + timestamps only — no homography, no lens undistortion.
+False positives (cyclists, pedestrians, dogs, wind-blown foliage, noise blobs)
+are thrown out by cheap **pixel-only** gates: car-shape aspect ratio, bounding-
+box width, area coherence, and a count-once drive-by dedupe. Accuracy is bounded
+by the known-speed calibration pass and a rigid camera mount.
 
 ---
 
@@ -58,13 +60,8 @@ python -m venv .venv
 # 2. Find your webcam index and put it in config.yaml (camera.source)
 .venv\Scripts\python tools\camera_check.py
 
-# 3. Prove the whole chain works with a synthetic drive-by (no camera needed)
-.venv\Scripts\python tools\make_test_video.py
-.venv\Scripts\python run.py --config config.test.yaml --source test_road.mp4 --no-display
-#   -> should report ~30 mph for the synthetic car
-
-# 4. Calibrate against YOUR road (see below), then run live
-.venv\Scripts\python tools\calibrate.py
+# 3. Run live. Uncalibrated, it detects + records but reports no speed until you
+#    set the per-direction distances (see Calibration below).
 .venv\Scripts\python run.py
 ```
 
@@ -83,7 +80,7 @@ Press `q` in the preview window (or `Ctrl+C`) to stop. Captures land in
 
 Instead of the desktop preview window, run the dashboard — a browser UI with a
 **live view**, the **most recent clips** (click to play), **stats**, and a
-**click-to-calibrate** page. This is the best way to use the Pi: no monitor
+**calibration guide** page. This is the best way to use the Pi: no monitor
 needed, just browse to it from your phone or laptop.
 
 ```bash
@@ -273,23 +270,29 @@ setup, the worker's flags, and how off-site enrichment stays idempotent.
 
 ## Calibrating your road
 
-This is the one step that makes speed accurate. Do it once, with the camera in
-its final mounted position.
+This is the one step that makes speed accurate — and it needs **no tape
+measure**. Do it once, with the camera in its final mounted position.
 
-1. Pick **4 or more** points you can both **see in the image** and
-   **tape-measure between** on the road surface: lane markings, cracks, chalk
-   crosses, cones, driveway corners, fence posts. Spread them out to cover the
-   stretch where cars will be timed.
-2. Define an origin `(0,0)` and axes in meters, e.g. **X = along the road**,
-   **Y = across it**. Write down each point's `(X, Y)`.
-   Example rectangle: `(0,0) (20,0) (20,4) (0,4)`.
-3. Run `python tools/calibrate.py`, press **SPACE** to freeze a frame, click the
-   points **in the same order** as your measured list, press **ENTER**, and type
-   each `X Y` in the terminal.
-4. It saves `calibration.json` and reports a **reprojection error** in meters.
-   Under ~0.3 m is good; if it's large, re-measure.
+1. Pick a **known, steady speed** you can hold past the camera — a phone GPS
+   speedo works. Note it (mph or km/h).
+2. Drive past **once each direction** at that speed while the node is running.
+3. Read the crossing time the node prints for each pass:
+   `journalctl -u speedkam | grep CALIBRATE` →
+   `CALIBRATE Eastbound: crossed x1000->450 in 0.512s`.
+4. Turn each into a distance — `distance = speed_in_m/s × crossing_seconds` — and
+   set the two numbers in `config.local.yaml`, then restart:
 
-Tip: you can also calibrate from a saved photo: `python tools/calibrate.py --image road.jpg`.
+   ```yaml
+   speed:
+     d_east_m: <east result>
+     d_west_m: <west result>
+   ```
+
+The dashboard's **Calibration** page shows the two crossing columns over a live
+snapshot and has a distance calculator that does the arithmetic for you. The
+columns themselves (`speed.x_a` / `speed.x_b`) default to sensible values; move
+them only if cars don't cross both. Until a direction is calibrated the node
+records and counts it but reports no speed for it.
 
 ---
 
@@ -351,8 +354,9 @@ mounting. Mount the camera **rigidly** — any wobble invalidates the calibratio
 sudo apt update && sudo apt install -y python3-opencv python3-picamera2 python3-yaml
 git clone <this project>  # or copy the folder
 ```
-Then in `config.yaml` set `display.show_window: false` and re-run `calibrate.py`
-in the final mounted position. Leave `camera.backend: auto` (the default) and it
+Then in `config.yaml` set `display.show_window: false` and calibrate in the final
+mounted position (drive past each way at a known speed; see **Calibrating your
+road** above). Leave `camera.backend: auto` (the default) and it
 picks the CSI camera or a USB webcam automatically at boot — or pin it to
 `picamera2` / `opencv` if you want to force one.
 
@@ -388,9 +392,10 @@ sudo systemctl stop speedkam       # stop for now
 sudo bash deploy/uninstall-service.sh   # remove it entirely
 ```
 
-Do calibrate (`python tools/calibrate.py`) and set the right `camera.source`
-**before** relying on it — the service reads the same `config.yaml` and
-`calibration.json`. After recalibrating, `sudo systemctl restart speedkam`.
+Do calibrate (drive past each way at a known speed and set `speed.d_east_m` /
+`speed.d_west_m` in `config.local.yaml`) and set the right `camera.source`
+**before** relying on it — the service reads the same config. After
+recalibrating, `sudo systemctl restart speedkam`.
 
 ### Deploy a fleet — clone one SD card to many
 
@@ -420,13 +425,11 @@ one-time on-site calibration; nothing else is manual.
 config.yaml            Main configuration (commented; secret-free, tracked)
 config.local.example.yaml  Template for the untracked secrets overlay
 config.local.yaml      Your real secrets/overrides (gitignored; merged over config.yaml)
-config.test.yaml       Config for the synthetic self-test
 run.py                 Entry point (desktop preview window)
 serve.py               Entry point (web dashboard) -- recommended
 tools/
   camera_check.py      Find your webcam index
-  calibrate.py         Interactive ground-plane calibration
-  make_test_video.py   Generate a synthetic drive-by to validate speed math
+  simple_speed.py      Standalone two-line crossing-time speed cam (reference)
   backfill_sync.py     Push all existing local records to the off-site backup
   recognize_worker.py  Run YOLO off-box to fill deferred type/make/model attributes
 deploy/
@@ -449,18 +452,17 @@ src/speedkam/
   capture.py           Camera abstraction (webcam / file / RTSP / picamera2)
   detector.py          MOG2 motion detection
   tracker.py           Multi-object tracker
-  calibration.py       Homography (pixels -> meters)
-  speed.py             Robust speed estimation
+  speed.py             Two-line crossing-time speed estimation
   recorder.py          Ring-buffer clip + snapshot + CSV logging
-  recognition.py       Optional vehicle type/make/model/year/colour (YOLO)
+  recognition.py       Optional vehicle type/colour (YOLO)
   retention.py         Local + remote media rotation (SD card / off-site)
-  state.py             Dashboard-adjustable settings (SpeedKapture), persisted
+  state.py             Dashboard-adjustable settings (SpeedKapture + gates), persisted
   annotate.py          Overlays
   pipeline.py          Ties it all together
   web.py               Flask dashboard + pipeline runner thread
   sync.py              Off-site backup uploader (disk-queued, retrying)
   remotecontrol.py     Pull-based remote control + heartbeat to the off-site host
-  webui/               dashboard.html, calibrate.html
+  webui/               dashboard.html, calibrate.html (crossing-time guide)
 ```
 
 ---

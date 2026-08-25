@@ -47,7 +47,7 @@ Commit only the intended file(s), not the whole dirty working tree.
 
 The node serves settings APIs on port 8080, e.g.
 `curl -X POST http://speedkam-47790c.local:8080/api/speedlimit -d '{"limit":25}'`
-(also `/api/speedkapture`, `/api/orientation`). Handy for quick setting changes/verification.
+(also `/api/speedkapture`, `/api/speedlimit`, `/api/rejectconfig`). Handy for quick setting changes/verification.
 
 ## The off-site webhost (speedkam.com) — you CAN deploy to it now
 
