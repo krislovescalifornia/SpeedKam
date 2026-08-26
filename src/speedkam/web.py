@@ -24,8 +24,56 @@ from datetime import date, datetime as _dt, timedelta
 from flask import (Flask, Response, jsonify, request, send_file,
                    send_from_directory)
 
+from .config import resolve_config
 from .pipeline import SpeedCamera
 from .recorder import CSV_COLUMNS, row_key as recorder_row_key
+
+# The keys that captures/runtime.json can shadow at RUNTIME, mapped to the
+# dotted config path they override. This is the third settings layer (after
+# defaults and the two YAML files) and the one that has burned the most time --
+# editing these in config.local.yaml does nothing once runtime.json exists. The
+# effective-config endpoint overlays these so the TRUE live value is reported.
+# (The 4 car-filter keys are re-seeded from config on every boot -- see
+# pipeline.__init__ -- so for them runtime.json and config always agree.)
+_RUNTIME_SHADOWS = {
+    "speedkapture_threshold": "recording.speedkapture_threshold",
+    "speed_limit_kmh": "speed.speed_limit_kmh",
+    "min_vehicle_aspect": "speed.min_vehicle_aspect",
+    "min_car_width_px": "speed.min_car_width_px",
+    "max_area_cv": "speed.max_area_cv",
+    "dedupe_seconds": "speed.dedupe_seconds",
+}
+
+
+def _is_secret_path(dotted: str) -> bool:
+    low = dotted.lower()
+    return "secret" in low or "password" in low
+
+
+def _redact_tree(subtree, prefix=""):
+    """Deep-copy a config subtree, masking secret/password leaves. Keeps the
+    KEY (so its source is still shown) but never emits the value itself -- the
+    endpoint is reachable on the LAN."""
+    out = {}
+    for key, val in subtree.items():
+        path = f"{prefix}{key}"
+        if isinstance(val, dict):
+            out[key] = _redact_tree(val, path + ".")
+        elif _is_secret_path(path):
+            out[key] = "<set>" if val not in (None, "", 0) else "<empty>"
+        else:
+            out[key] = val
+    return out
+
+
+def _dig(tree, dotted):
+    """Fetch a value at a dotted path, or None if any segment is missing."""
+    cur = tree
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
 
 KMH_PER_MS = 3.6
 MPH_PER_MS = 2.2369362920544
@@ -37,8 +85,12 @@ WEBUI_DIR = Path(__file__).parent / "webui"
 class Runner:
     """Owns the pipeline thread and the latest frames for the web layer."""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, config_path=None):
         self.cfg = cfg
+        # Path the config was loaded from (e.g. "config.yaml"), so the effective
+        # -config endpoint can re-trace defaults -> config.yaml -> config.local.yaml
+        # and report where each live value actually came from. None = defaults only.
+        self.config_path = config_path
         self.speedcam = SpeedCamera(cfg)
         self.captures_dir = Path(cfg["recording"]["output_dir"]).resolve()
         self.csv_path = Path(cfg["logging"]["csv_file"]).resolve()
@@ -219,6 +271,63 @@ class Runner:
             "roi_observed_envelope": getattr(sc, "_roi_env", None),
             "rejected_count": sum(1 for r in self._all_rows()
                                   if self._is_rejected(r)),
+        }
+
+    def effective_config(self):
+        """The node's TRUE effective settings and where each value came from.
+
+        Answers "what is this node actually running?" in one call, without
+        SSH-ing in to diff config.yaml / config.local.yaml / runtime.json by
+        hand -- the exact confusion this endpoint exists to end. It reports:
+
+          * ``layers``     -- the config files in application order + whether
+                              each exists (a missing config.local.yaml is a
+                              common surprise, so it's named explicitly)
+          * ``effective``  -- the merged YAML config (secrets masked)
+          * ``source_of``  -- per leaf, the layer that set it (defaults /
+                              config.yaml / config.local.yaml)
+          * ``runtime_json`` -- the live shadow layer (captures/runtime.json):
+                              its raw values plus, for each key, the config
+                              value it overrides and whether they differ.
+
+        So a value marked source ``config.local.yaml`` in ``source_of`` but
+        also listed under ``runtime_json.shadows`` with ``differs: true`` is
+        being overridden AGAIN at runtime -- the two-step trap, made visible.
+        """
+        section, source_of, layers = resolve_config(self.config_path)
+        state_path = self.cfg["recording"].get("state_file", "captures/runtime.json")
+        try:
+            live = self.speedcam.state.as_dict()
+        except Exception:
+            live = {}
+
+        shadows = []
+        for rk, cfg_path in _RUNTIME_SHADOWS.items():
+            if rk not in live:
+                continue
+            cfg_val = _dig(section, cfg_path)
+            live_val = live.get(rk)
+            shadows.append({
+                "key": rk,
+                "overrides": cfg_path,
+                "config_value": cfg_val,
+                "live_value": live_val,
+                "differs": cfg_val != live_val,
+            })
+
+        return {
+            "config_path": self.config_path,
+            "layers": [{"name": n, "exists": e} for n, e in layers],
+            "precedence": "later layers win: "
+                          "defaults < config.yaml < config.local.yaml "
+                          "< captures/runtime.json (live, for the shadowed keys)",
+            "source_of": source_of,
+            "effective": _redact_tree(dict(section)),
+            "runtime_json": {
+                "path": str(Path(state_path)),
+                "values": live,
+                "shadows": shadows,
+            },
         }
 
     def set_speedkapture(self, value):
@@ -611,6 +720,13 @@ def create_app(runner: Runner) -> Flask:
     @app.route("/api/summary")
     def summary():
         return jsonify(runner.summary())
+
+    @app.route("/api/config/effective")
+    def config_effective():
+        # The node's TRUE running settings + where each value came from, so
+        # "what is this node actually running?" never needs an SSH + three-file
+        # diff again. Secrets are masked. See Runner.effective_config.
+        return jsonify(runner.effective_config())
 
     @app.route("/api/analytics")
     def analytics():

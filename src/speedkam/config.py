@@ -286,16 +286,6 @@ class Section(dict):
     __getattr__ = dict.__getitem__
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    out = copy.deepcopy(base)
-    for key, val in (override or {}).items():
-        if isinstance(val, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], val)
-        else:
-            out[key] = val
-    return out
-
-
 def _wrap(d):
     if isinstance(d, dict):
         return Section({k: _wrap(v) for k, v in d.items()})
@@ -308,6 +298,69 @@ def _load_yaml(p: Path) -> dict:
     return {}
 
 
+def _record_leaves(subtree: dict, origin: str, source_of: dict, prefix: str):
+    """Stamp ``origin`` on every leaf dotted-path inside a just-inserted dict."""
+    for key, val in subtree.items():
+        path = f"{prefix}{key}"
+        if isinstance(val, dict):
+            _record_leaves(val, origin, source_of, path + ".")
+        else:
+            source_of[path] = origin
+
+
+def _merge_traced(dst: dict, src: dict, origin: str, source_of: dict, prefix=""):
+    """Deep-merge ``src`` into ``dst`` in place (dict-over-dict recurses, any
+    other value replaces) while recording, for every leaf it sets, which layer (``origin``) supplied
+    it. This is the single merge implementation; ``load_config`` and
+    ``resolve_config`` both go through it so the effective values and their
+    reported origin can never drift apart."""
+    for key, val in (src or {}).items():
+        path = f"{prefix}{key}"
+        if isinstance(val, dict) and isinstance(dst.get(key), dict):
+            _merge_traced(dst[key], val, origin, source_of, path + ".")
+        elif isinstance(val, dict):
+            dst[key] = copy.deepcopy(val)
+            _record_leaves(dst[key], origin, source_of, path + ".")
+        else:
+            dst[key] = val
+            source_of[path] = origin
+
+
+def resolve_config(path: str | Path | None):
+    """Merge config exactly like :func:`load_config`, but also report WHERE
+    each value came from -- so "what is this node actually running?" is
+    answerable without SSH-ing in to eyeball three files.
+
+    Returns ``(section, source_of, layers)``:
+      * ``section``   -- the merged config (identical to ``load_config(path)``)
+      * ``source_of`` -- ``{dotted.key: layer}`` for every leaf, naming the LAST
+                         layer that set it (``defaults`` / ``config.yaml`` /
+                         ``config.local.yaml``)
+      * ``layers``    -- ``[(name, exists_bool), ...]`` in application order,
+                         so a missing overlay is reported rather than silent.
+
+    NOTE: this covers the two YAML layers only. ``captures/runtime.json`` is a
+    separate live-override layer that shadows a handful of keys at RUNTIME (see
+    ``state.py``); the web endpoint overlays it on top of this result.
+    """
+    merged: dict = {}
+    source_of: dict = {}
+    layers = [("defaults", True)]
+    _merge_traced(merged, DEFAULTS, "defaults", source_of)
+    if path:
+        p = Path(path)
+        overlays = [
+            (p.name, p),
+            (f"{p.stem}.local{p.suffix}", p.with_name(f"{p.stem}.local{p.suffix}")),
+        ]
+        for name, fp in overlays:
+            exists = fp.exists()
+            layers.append((name, exists))
+            if exists:
+                _merge_traced(merged, _load_yaml(fp), name, source_of)
+    return _wrap(merged), source_of, layers
+
+
 def load_config(path: str | Path | None) -> Section:
     """Load a YAML config file merged over built-in defaults.
 
@@ -318,11 +371,8 @@ def load_config(path: str | Path | None) -> Section:
     (``config.yaml`` -> ``config.local.yaml``), it is deep-merged on TOP of the
     main file. That overlay is untracked (gitignored) and is where real secrets
     and per-deployment overrides live, so the tracked config stays shareable.
+
+    To also see which layer supplied each value, use :func:`resolve_config`.
     """
-    merged = DEFAULTS
-    if path:
-        p = Path(path)
-        merged = _deep_merge(merged, _load_yaml(p))
-        local = p.with_name(f"{p.stem}.local{p.suffix}")
-        merged = _deep_merge(merged, _load_yaml(local))
-    return _wrap(merged)
+    section, _source_of, _layers = resolve_config(path)
+    return section

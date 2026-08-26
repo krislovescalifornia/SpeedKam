@@ -76,7 +76,7 @@ def serve_main(argv=None):
     host = args.host or cfg["web"]["host"]
     port = args.port or cfg["web"]["port"]
 
-    runner = Runner(cfg)
+    runner = Runner(cfg, config_path=args.config)
     runner.start()
     app = create_app(runner)
 
