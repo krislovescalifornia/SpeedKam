@@ -130,15 +130,44 @@ the MOG2 detection frame; colour reads the full-res frame + full-res background
 plate at the car's bbox, and the bbox/ground point are provably identical to
 full-frame for any car inside the band. Let it accumulate uninterrupted.
 
-### NEXT (do not skip)
-1. Let real traffic accumulate (aim for a day / dozens of counted cars across
-   BOTH directions, ideally including edge cases — far lane, fast, dusk).
-2. Read `captures/roi_audit.json`: `observed_envelope_frac` and the padded
-   `recommended_band_frac` (already widened to include x_a/x_b).
-3. Sanity-check the recommended band covers every counted car (envelope) with
-   margin and contains the crossing columns.
-4. Set `detection.roi.x0..y1` to the recommended band and `enabled: true` (keep
-   `audit: true` a while longer to keep watching coverage), restart.
-5. Confirm live fps climbs (expect ~27 → ~45-55) AND counts/speeds unchanged vs
-   the audit period. If any counted car would be clipped, widen the band. Rollback
-   = `enabled: false`.
+### 2026-08-25 — validated on today's clips (offline) + ENABLED
+Instead of waiting for live audit to re-accumulate (it had been reset by restarts),
+replayed **today's 52 saved clips** through the same MotionDetector+Tracker offline
+(`tools/roi_replay.py`, on the dev-box venv — clips are the real trajectories;
+speed doesn't move a car sideways, so where tyre-lines fall is the same at any
+speed). Two passes per clip: full-frame baseline, then ROI applied.
+
+Results (MOG2 warmed per clip to mimic the node's steady-state model):
+- 52 clips → **39 cleanly reconstructed** timeable cars (rest: MOG2 cold-start on
+  4-sec clips + 1 corrupt file; those were counted live with a mature model).
+- Full-frame envelope (frac): x[0.008,0.990] y[0.693,0.884].
+- **Converged**: first 19 cars set y-min 0.693; the next 20 did not lower it.
+- **ROI regression test (band actually applied): 39/39 cars still detected &
+  timeable, 0 lost, sample counts IDENTICAL (+0.0)** → identical tracks → identical
+  speeds. This is the offset-correctness guarantee, confirmed on real cars.
+
+Decision: enabled with a slightly conservative band (extra margin above the
+farthest observed car), full width:
+`detection.roi: enabled: true, x0:0.0 y0:0.55 x1:1.0 y1:1.0` (px x[0,1456]
+y[598,1088], ~45% of pixels) — in node `config.local.yaml` (backed up first).
+
+Live result after restart: **fps ~27 → ~48-50** (roi_enabled=true). Startup log:
+`detection ROI ON: x[0,1456] y[598,1088]px ... (~45% of pixels)`.
+
+CAVEAT (important): with the crop ON, the live audit is a weak tripwire — it only
+sees cars it still detects, so it cannot catch a car it never saw (one falling
+outside the band). The real assurance is the offline 39/39 proof + margin. To keep
+watching for misses going forward: re-run `tools/roi_replay.py` on a later day's
+clips and compare daily counts to prior days. Rollback anytime = set
+`detection.roi.enabled: false` and restart.
+
+Colour + speed unaffected by construction and confirmed: speed reads the ground-x
+(identical), colour reads the FULL-RES frame + full-res background plate at the
+car's bbox (ROI never touches the full-res frame).
+
+### NEXT
+- Daylight tomorrow: confirm real cars count under the ROI with sane speeds +
+  colours; spot-check a couple of clips. Re-run tools/roi_replay.py on tomorrow's
+  clips to reconfirm the band still covers every car.
+- Optional further FPS: the band is full-width; if the far lane is unused, a
+  tighter x-span or lower detect_scale buys more, re-validated the same way.
