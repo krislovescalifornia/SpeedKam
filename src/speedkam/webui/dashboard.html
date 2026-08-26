@@ -51,6 +51,20 @@
   main{max-width:1280px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:20px}
   .row2{display:grid;gap:20px;grid-template-columns:1.7fr 1fr}
   @media(max-width:960px){.row2{grid-template-columns:1fr}}
+  .row3{display:grid;gap:20px;grid-template-columns:repeat(3,1fr);align-items:start}
+  @media(max-width:960px){.row3{grid-template-columns:1fr}}
+  .row2b{display:grid;gap:20px;grid-template-columns:1fr 1fr;align-items:start}
+  @media(max-width:820px){.row2b{grid-template-columns:1fr}}
+  .section-heading{font-size:12.5px;text-transform:uppercase;letter-spacing:.9px;
+    color:var(--muted);font-weight:700;margin:6px 2px -8px}
+  .live-wrap{position:relative;background:#000}
+  .live-latest{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;gap:12px;
+    padding:30px 18px 14px;background:linear-gradient(180deg,transparent,rgba(6,8,12,.9))}
+  .live-latest .num{font-size:46px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;
+    background:linear-gradient(180deg,#fff,#b9c6d6);-webkit-background-clip:text;
+    background-clip:text;-webkit-text-fill-color:transparent}
+  .live-latest .unit{color:#c5cfda;font-size:15px;padding-bottom:5px}
+  .live-latest .dir{margin-left:auto;color:#dbe3ec;font-size:13.5px;text-align:right;padding-bottom:2px}
   .col{display:grid;gap:20px;align-content:start}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
     overflow:hidden;box-shadow:var(--shadow)}
@@ -100,6 +114,11 @@
   .toplist .sp{font-weight:700;font-size:17px;min-width:74px;font-variant-numeric:tabular-nums}
   .toplist .sp.over{color:var(--bad)}
   .toplist .dt{color:var(--muted);font-size:12.5px;margin-left:auto;text-align:right}
+  .toplist .tc-thumb{width:58px;height:34px;border-radius:6px;object-fit:cover;background:#000;flex:none;cursor:pointer}
+  .toplist .tc-col{display:flex;align-items:center;gap:6px;text-transform:capitalize;
+    color:var(--muted);font-size:13px;flex:1;min-width:0}
+  .toplist .tc-col .none{opacity:.55;text-transform:none}
+  .toplist .tc-sw{width:11px;height:11px;border-radius:50%;border:1px solid var(--line);flex:none}
   /* last 10 cars (live verification) */
   .lastcars{list-style:none;margin:0;padding:8px 10px 12px;display:flex;flex-direction:column;gap:2px}
   .lastcars li{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:8px;font-size:13.5px}
@@ -236,61 +255,32 @@
 </header>
 
 <main>
-  <!-- ROW: live + latest + controls -->
-  <div class="row2">
-    <div class="col">
-      <div class="card live">
-        <h2>Live view <span class="fresh" id="p-fresh2" style="margin-left:auto"></span></h2>
-        <img src="/stream.mjpg" alt="live view">
-      </div>
-      <div class="card">
-        <h2>Latest reading</h2>
-        <div class="big" id="latest">
-          <div class="num" id="l-num">—</div><div class="unit" id="l-unit"></div>
-          <div class="dir" id="l-dir"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="stats">
-          <div class="stat"><div class="k">Vehicles (session)</div><div class="v" id="s-total">0</div></div>
-          <div class="stat"><div class="k">Over limit</div><div class="v" id="s-speeders">0</div></div>
-          <div class="stat"><div class="k">Speed limit</div><div class="v small" id="s-limit">—</div></div>
-        </div>
+  <!-- LIVE VIEW (full width) with the latest reading overlaid on the bottom -->
+  <div class="card live">
+    <h2>Live view <span class="fresh" id="p-fresh2" style="margin-left:auto"></span></h2>
+    <div class="live-wrap">
+      <img src="/stream.mjpg" alt="live view">
+      <div class="live-latest" id="latest" style="display:none">
+        <div class="num" id="l-num">—</div><div class="unit" id="l-unit"></div>
+        <div class="dir" id="l-dir"></div>
       </div>
     </div>
+  </div>
 
-    <div class="col">
-      <div class="card">
-        <h2>My Road Speed Limit</h2>
-        <div class="skap">
-          <div class="row">
-            <span>Limit on this road</span>
-            <input type="number" id="limit-val" min="1" step="1">
-            <span class="u" id="limit-unit">mph</span>
-            <button class="btn sm" onclick="saveLimit()">Save</button>
-            <span class="saved" id="limit-saved">saved ✓</span>
-          </div>
-          <div class="hint">Vehicles above this are flagged <b>SPEEDING</b>. Stored on the node, survives restarts.</div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>SpeedKapture</h2>
-        <div class="skap">
-          <div class="row">
-            <span>Capture clips above</span>
-            <input type="number" id="skap-val" min="0" step="1">
-            <span class="u" id="skap-unit">mph</span>
-            <button class="btn sm" onclick="saveSkap()">Save</button>
-            <span class="saved" id="skap-saved">saved ✓</span>
-          </div>
-          <div class="hint">Only vehicles this fast record a clip. Slower ones are still counted. 0 = capture all.</div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Last 10 cars</h2>
-        <ol class="lastcars" id="lastcars"><li class="empty">No cars recorded yet.</li></ol>
-        <div class="lc-note">Every recorded car, any speed — newest first. Watch one drive by, then confirm it lands here.</div>
-      </div>
+  <!-- THREE CARDS: Last 10 cars · Recent speeders · Top 10 speeders -->
+  <div class="row3">
+    <div class="card">
+      <h2>Last 10 cars</h2>
+      <ol class="lastcars" id="lastcars"><li class="empty">No cars recorded yet.</li></ol>
+      <div class="lc-note">Every recorded car, any speed — newest first. Watch one drive by, then confirm it lands here.</div>
+    </div>
+    <div class="card">
+      <h2>Recent speeders <span class="tools"><a class="btn ghost sm" id="exp-events">Export CSV</a></span></h2>
+      <div class="clips" id="clips"><div class="empty">No captures yet.</div></div>
+    </div>
+    <div class="card">
+      <h2>Top 10 speeders <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span></h2>
+      <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
     </div>
   </div>
 
@@ -322,57 +312,75 @@
     </div>
   </div>
 
-  <!-- REPORT BUILDER -->
-  <div class="card">
-    <h2>Report builder <span class="tools"><a class="btn ghost sm" id="rb-export">Export CSV</a></span></h2>
-    <div class="rb">
-      <div class="grid">
-        <div class="fld"><label>From</label><input type="date" id="rb-from"></div>
-        <div class="fld"><label>To</label><input type="date" id="rb-to"></div>
-        <div class="fld"><label>Colour</label><select id="rb-color"><option value="">any</option></select></div>
-        <div class="fld"><label>Direction</label><select id="rb-dir"><option value="">any</option></select></div>
-        <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rb-min" min="0" placeholder="any"></div>
-        <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rb-max" min="0" placeholder="any"></div>
-        <div class="fld"><label>From hour</label><input type="number" id="rb-hf" min="0" max="23" placeholder="0"></div>
-        <div class="fld"><label>To hour</label><input type="number" id="rb-ht" min="0" max="23" placeholder="23"></div>
+  <!-- RECORD + REPORT BUILDERS (both under Analytics) -->
+  <div class="row2b">
+    <div class="card">
+      <h2>Record builder</h2>
+      <div class="filter">
+        <label>From <input type="date" id="f-from"></label>
+        <label>To <input type="date" id="f-to"></label>
+        <button class="btn ghost sm" onclick="applyFilter()">Apply</button>
+        <button class="btn ghost sm" onclick="clearFilter()">Clear</button>
       </div>
-      <div class="fld"><label>Days of week</label>
-        <div class="dow" id="rb-dow">
-          <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
-          <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
-          <button data-d="6">Sun</button>
+      <div class="lc-note">Sets the date range for the Recent speeders &amp; Top 10 cards and their CSV exports.</div>
+    </div>
+    <div class="card">
+      <h2>Report builder <span class="tools"><a class="btn ghost sm" id="rb-export">Export CSV</a></span></h2>
+      <div class="rb">
+        <div class="grid">
+          <div class="fld"><label>From</label><input type="date" id="rb-from"></div>
+          <div class="fld"><label>To</label><input type="date" id="rb-to"></div>
+          <div class="fld"><label>Colour</label><select id="rb-color"><option value="">any</option></select></div>
+          <div class="fld"><label>Direction</label><select id="rb-dir"><option value="">any</option></select></div>
+          <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rb-min" min="0" placeholder="any"></div>
+          <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rb-max" min="0" placeholder="any"></div>
+          <div class="fld"><label>From hour</label><input type="number" id="rb-hf" min="0" max="23" placeholder="0"></div>
+          <div class="fld"><label>To hour</label><input type="number" id="rb-ht" min="0" max="23" placeholder="23"></div>
         </div>
+        <div class="fld"><label>Days of week</label>
+          <div class="dow" id="rb-dow">
+            <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
+            <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
+            <button data-d="6">Sun</button>
+          </div>
+        </div>
+        <div class="go">
+          <button class="btn" onclick="runReport()">Run report</button>
+          <button class="btn ghost sm" onclick="resetReport()">Reset</button>
+          <span class="q" id="rb-q">e.g. red · westbound · Thursdays → your query in plain English shows here</span>
+        </div>
+        <div class="rb-res" id="rb-res"></div>
       </div>
-      <div class="go">
-        <button class="btn" onclick="runReport()">Run report</button>
-        <button class="btn ghost sm" onclick="resetReport()">Reset</button>
-        <span class="q" id="rb-q">e.g. red · westbound · Thursdays → your query in plain English shows here</span>
-      </div>
-      <div class="rb-res" id="rb-res"></div>
     </div>
   </div>
 
-  <!-- TOP + CLIPS -->
-  <div class="row2">
-    <div class="col">
-      <div class="card">
-        <h2>Top 10 speeders <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span></h2>
-        <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
+  <!-- OPTIONS -->
+  <h2 class="section-heading">Options</h2>
+  <div class="row2b">
+    <div class="card">
+      <h2>SpeedKapture</h2>
+      <div class="skap">
+        <div class="row">
+          <span>Capture clips above</span>
+          <input type="number" id="skap-val" min="0" step="1">
+          <span class="u" id="skap-unit">mph</span>
+          <button class="btn sm" onclick="saveSkap()">Save</button>
+          <span class="saved" id="skap-saved">saved ✓</span>
+        </div>
+        <div class="hint">Only vehicles this fast record a clip. Slower ones are still counted. 0 = capture all.</div>
       </div>
     </div>
-    <div class="col">
-      <div class="card">
-        <h2>Records filter</h2>
-        <div class="filter">
-          <label>From <input type="date" id="f-from"></label>
-          <label>To <input type="date" id="f-to"></label>
-          <button class="btn ghost sm" onclick="applyFilter()">Apply</button>
-          <button class="btn ghost sm" onclick="clearFilter()">Clear</button>
+    <div class="card">
+      <h2>My Road Speed Limit</h2>
+      <div class="skap">
+        <div class="row">
+          <span>Limit on this road</span>
+          <input type="number" id="limit-val" min="1" step="1">
+          <span class="u" id="limit-unit">mph</span>
+          <button class="btn sm" onclick="saveLimit()">Save</button>
+          <span class="saved" id="limit-saved">saved ✓</span>
         </div>
-      </div>
-      <div class="card">
-        <h2>Recent clips <span class="tools"><a class="btn ghost sm" id="exp-events">Export CSV</a></span></h2>
-        <div class="clips" id="clips"><div class="empty">No captures yet.</div></div>
+        <div class="hint">Vehicles above this are flagged <b>SPEEDING</b>. Stored on the node, survives restarts.</div>
       </div>
     </div>
   </div>
@@ -470,10 +478,7 @@ function refreshStatus(s){
   else if(bk.pending>0){b.className='pill';b.innerHTML='backup <b>'+bk.pending+' queued</b>';}
   else{b.className='pill ok';b.innerHTML='backup <b>synced</b>';}
 
-  q('#s-total').textContent=s.total_count;
-  q('#s-speeders').textContent=s.speeder_count;
   const limitDisp=Math.round(toDisp(s.speed_limit_kmh));
-  q('#s-limit').textContent=limitDisp+" "+uLbl();
   q('#limit-unit').textContent=uLbl();
   const limI=q('#limit-val');if(document.activeElement!==limI)limI.value=limitDisp;
 
@@ -482,6 +487,7 @@ function refreshStatus(s){
 
   const ev=s.last_event;
   if(ev){
+    q('#latest').style.display='';
     q('#l-num').textContent=Math.round(speedVal(ev));
     q('#l-num').style.webkitTextFillColor=ev.over_limit?'var(--bad)':'';
     q('#l-num').style.background=ev.over_limit?'none':'';
@@ -489,6 +495,8 @@ function refreshStatus(s){
     q('#l-dir').innerHTML=(ev.over_limit?'<span class="badge">SPEEDING</span> ':'')
       +(ev.captured===false?'<span class="chip">not captured</span> ':'')
       +ev.direction+'<br><small>'+timeShort(ev.time)+'</small>'+attrsHtml(ev);
+  }else{
+    q('#latest').style.display='none';
   }
 }
 
@@ -690,9 +698,19 @@ async function refreshTop(){
   box.innerHTML='';
   evs.forEach((ev,i)=>{
     const li=document.createElement('li');
-    li.innerHTML='<span class="rank">'+(i+1)+'</span><span class="sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
-      '<span class="dir">'+(ev.direction||'')+'</span><span class="dt">'+dayShort(ev.time)+'</span>';
+    const col=(ev.color||'').trim();
+    const hex=COLOR_HEX[col.toLowerCase()];
+    const sw=col?'<i class="tc-sw" style="background:'+(hex||'var(--panel2)')+'"></i>':'';
+    const colHtml=col?(sw+col):'<span class="none">no colour</span>';
+    const thumb=ev.snapshot
+      ?'<img class="tc-thumb" src="/captures/'+ev.snapshot+'" loading="lazy" alt="">'
+      :'<span class="tc-thumb"></span>';
+    li.innerHTML='<span class="rank">'+(i+1)+'</span>'+thumb+
+      '<span class="sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
+      '<span class="tc-col">'+colHtml+'</span>'+
+      '<span class="dt">'+dayShort(ev.time)+'</span>';
     if(ev.clip)li.onclick=()=>openModal('/captures/'+ev.clip);
+    else if(ev.snapshot)li.onclick=()=>openImg('/captures/'+ev.snapshot);
     box.appendChild(li);
   });
 }

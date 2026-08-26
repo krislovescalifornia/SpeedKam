@@ -643,6 +643,23 @@ function page_head($title) {
        . '#vidModal.show{display:flex}'
        . '#vidModal video{max-width:100%;max-height:85vh;border-radius:10px;background:#000}'
        . '#vidModal .x{position:absolute;top:1rem;right:1.2rem;font-size:2rem;line-height:1;color:#fff;cursor:pointer;background:none;border:0}'
+       // three-card row (last cars / recent speeders / top 10) under the live view
+       . '.tri{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;align-items:start;margin:1rem 0}'
+       . '@media(max-width:900px){.tri{grid-template-columns:1fr}}'
+       . '.tri>div{min-width:0}.tri h2.sec{margin-top:0}'
+       // latest reading overlaid on the bottom of the live-view snapshot
+       . '.snap{position:relative}'
+       . '.snap .ov{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;gap:.8rem;'
+       . 'padding:1.9rem 1rem .7rem;background:linear-gradient(180deg,transparent,rgba(6,8,12,.9));pointer-events:none}'
+       . '.snap .ov .big{font-size:2.3rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;color:#fff;display:flex;align-items:baseline;gap:.3rem}'
+       . '.snap .ov .big.over{color:var(--bad)}.snap .ov .big .u{font-size:.85rem;font-weight:500;color:#c5cfda}'
+       . '.snap .ov .meta{color:#dbe3ec;font-size:.9rem}.snap .ov .meta .badge{pointer-events:auto}'
+       // top-10 thumbnails + colour swatch
+       . 'ol.toplist .tc-thumb{width:52px;height:32px;border-radius:5px;object-fit:cover;background:#000;flex:none}'
+       . 'ol.toplist .tc-col{display:inline-flex;align-items:center;gap:.3rem;text-transform:capitalize;color:var(--muted);font-size:.8rem}'
+       . 'ol.toplist .tc-col i{width:.65rem;height:.65rem;border-radius:50%;border:1px solid var(--line);flex:none}'
+       . 'ol.toplist .tc-col .none{opacity:.55;text-transform:none}'
+       . 'ol.toplist li .dt{margin-left:auto}'
        . '</style></head><body><div class="wrap">';
 }
 function page_foot() { echo '</div></body></html>'; }
@@ -738,32 +755,38 @@ function render_dashboard($d) {
 
     $mnq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
 
-    // latest snapshot -- the off-site stand-in for the on-Pi live MJPEG view,
-    // which can't cross home NAT. Shows the newest capture; refreshes on reload.
-    if (!empty($latest_snap)) {
-        $ssrc = '?media=' . rawurlencode($latest_snap) . $mnq;
-        echo '<div class="snap"><a href="' . h($ssrc) . '" target="_blank">'
-           . '<img src="' . h($ssrc) . '" alt="latest snapshot" loading="lazy"></a>'
-           . '<div class="cap">Latest snapshot'
-           . ($latest_snap_time ? ' &middot; ' . h(str_replace('T', ' ', substr($latest_snap_time, 0, 16))) : '')
-           . ' &middot; <span>live video isn\'t available off-site &mdash; newest capture shown</span></div></div>';
-    }
-
-    // latest reading
+    // latest reading -- built first so it can be overlaid on the live view below.
     $ev = $status['last_event'] ?? null;
+    $latest_ov = '';
     if (is_array($ev)) {
         $ev_sp = ($units === 'mph') ? ($ev['speed_mph'] ?? null) : ($ev['speed_kmh'] ?? null);
         $ev_over = !empty($ev['over_limit']);
         $chips = trim(implode(' ', array_filter([
             $ev['color'] ?? '', $ev['vehicle_type'] ?? '', $ev['make'] ?? '',
             $ev['model'] ?? '', $ev['year'] ?? ''])));
-        echo '<div class="latest"><div class="big' . ($ev_over ? ' over' : '') . '">'
+        $latest_ov = '<div class="big' . ($ev_over ? ' over' : '') . '">'
            . h($ev_sp !== null ? round((float)$ev_sp) : '—') . '<span class="u">' . h($units) . '</span></div>'
            . '<div class="meta">' . ($ev_over ? '<span class="badge">SPEEDING</span> ' : '')
            . (isset($ev['captured']) && !$ev['captured'] ? '<span class="chip">not captured</span> ' : '')
            . h($ev['direction'] ?? '')
            . '<div class="muted" style="font-size:.8rem">' . h(str_replace('T', ' ', substr($ev['time'] ?? '', 0, 16))) . '</div>'
-           . ($chips ? '<div class="chips">' . h($chips) . '</div>' : '') . '</div></div>';
+           . ($chips ? '<div class="chips">' . h($chips) . '</div>' : '') . '</div>';
+    }
+
+    // LIVE VIEW (full width) -- the off-site stand-in for the on-Pi live MJPEG
+    // view, which can't cross home NAT. Shows the newest capture with the latest
+    // reading overlaid on the bottom; refreshes on reload.
+    if (!empty($latest_snap)) {
+        $ssrc = '?media=' . rawurlencode($latest_snap) . $mnq;
+        echo '<div class="snap"><a href="' . h($ssrc) . '" target="_blank">'
+           . '<img src="' . h($ssrc) . '" alt="latest snapshot" loading="lazy"></a>'
+           . ($latest_ov ? '<div class="ov">' . $latest_ov . '</div>' : '')
+           . '<div class="cap">Latest snapshot'
+           . ($latest_snap_time ? ' &middot; ' . h(str_replace('T', ' ', substr($latest_snap_time, 0, 16))) : '')
+           . ' &middot; <span>live video isn\'t available off-site &mdash; newest capture shown</span></div></div>';
+    } elseif ($latest_ov) {
+        // no snapshot yet -- still surface the latest reading on its own
+        echo '<div class="latest">' . $latest_ov . '</div>';
     }
 
     // stat cards
@@ -774,24 +797,21 @@ function render_dashboard($d) {
     stat_card('All time', $c['total'], $sp['total'] . ' over limit');
     echo '</div>';
 
-    // -------- LAST 10 CARS (verification) --------
-    render_last_cars($rows, $units, $limit_kmh);
-
-    // -------- ANALYTICS --------
-    render_analytics($d);
-
-    // -------- REPORT BUILDER --------
-    render_report_builder($d);
-
     $nq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
 
-    // control panels
-    render_controls($d);
+    // -------- THREE CARDS: Last 10 cars · Recent speeders · Top 10 speeders --
+    echo '<div class="tri">';
 
-    // recent clips grid (inline player)
+    // Last 10 cars
+    echo '<div><h2 class="sec">Last 10 cars</h2>';
+    render_last_cars($rows, $units, $limit_kmh, false);
+    echo '</div>';
+
+    // Recent speeders (captured clips, most-recent first)
+    echo '<div><h2 class="sec">Recent Speeders</h2>';
     if (!empty($recent_clips)) {
-        echo '<h2 class="sec">Recent clips</h2><div class="clipgrid">';
-        foreach ($recent_clips as $r) {
+        echo '<div class="clipgrid">';
+        foreach (array_slice($recent_clips, 0, 6) as $r) {
             $over  = is_over($r, $limit_kmh);
             $snap  = trim($r['snapshot'] ?? '');
             $clip  = trim($r['clip'] ?? '');
@@ -807,27 +827,57 @@ function render_dashboard($d) {
                . '</div></div>';
         }
         echo '</div>';
+    } else {
+        echo '<p class="muted" style="font-size:.85rem">No captures yet.</p>';
     }
+    echo '</div>';
 
-    // top 10
+    // Top 10 speeders -- with colour swatch + a static snapshot of each car
+    echo '<div><h2 class="sec">Top 10 speeders</h2>';
     if ($top) {
-        echo '<h2 class="sec">Top 10 speeders</h2><ol class="toplist">';
+        echo '<ol class="toplist">';
         foreach ($top as $r) {
             $over = is_over($r, $limit_kmh);
             $clip = trim($r['clip'] ?? '');
-            echo '<li><span class="sp' . ($over ? ' over' : '') . '">' . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
-               . '<span class="muted">' . h($r['direction'] ?? '') . '</span>'
+            $snap = trim($r['snapshot'] ?? '');
+            $col  = trim($r['color'] ?? '');
+            $hex  = $col ? sk_color_hex($col) : null;
+            $thumb = $snap
+                ? '<img class="tc-thumb" src="?media=' . h(rawurlencode($snap)) . $nq . '" loading="lazy" alt="">'
+                : '';
+            $colHtml = $col
+                ? '<span class="tc-col"><i style="background:' . h($hex ?: 'var(--line)') . '"></i>' . h($col) . '</span>'
+                : '<span class="tc-col none">no colour</span>';
+            echo '<li>' . $thumb
+               . '<span class="sp' . ($over ? ' over' : '') . '">' . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+               . $colHtml
                . '<span class="dt muted">' . h(str_replace('T', ' ', substr($r['wall_time'] ?? '', 0, 16))) . '</span>'
-               . ($clip ? '<a href="?media=' . h(rawurlencode($clip)) . $nq . '" target="_blank">video</a>' : '') . '</li>';
+               . ($clip ? ' <a href="?media=' . h(rawurlencode($clip)) . $nq . '" target="_blank">video</a>' : '') . '</li>';
         }
         echo '</ol>';
+    } else {
+        echo '<p class="muted" style="font-size:.85rem">No records yet.</p>';
     }
+    echo '</div>';
 
-    // filter tabs + table
+    echo '</div>'; // .tri
+
+    // -------- ANALYTICS --------
+    render_analytics($d);
+
+    // -------- REPORT BUILDER + RECORD BUILDER (both under Analytics) --------
+    render_report_builder($d);
+
+    echo '<div class="panel"><h3>Record builder</h3>';
     echo '<div class="tabs">'
        . '<a href="?filter=all' . $nq . '" class="' . ($filter === 'all' ? 'on' : '') . '">All passes</a>'
        . '<a href="?filter=speeders' . $nq . '" class="' . ($filter === 'speeders' ? 'on' : '') . '">Over limit</a></div>';
     render_table($view, $units, $limit_kmh, $nq, true);
+    echo '</div>';
+
+    // -------- OPTIONS (SpeedKapture + speed limit, at the bottom) --------
+    echo '<h2 class="sec">Options</h2>';
+    render_controls($d);
 
     // -------- REJECTED BIN --------
     render_reject_bin($rejected, $units, $nq);
@@ -1079,8 +1129,8 @@ function sk_color_hex($name) {
 
 // Last 10 recorded cars, any speed, newest first -- the off-site twin of the
 // node's live-verification card. $rows is already non-rejected (real vehicles).
-function render_last_cars($rows, $units, $limit_kmh) {
-    echo '<h2 class="sec">Last 10 cars</h2>';
+function render_last_cars($rows, $units, $limit_kmh, $heading = true) {
+    if ($heading) echo '<h2 class="sec">Last 10 cars</h2>';
     $last = array_reverse(array_slice($rows, -10));   // newest first
     if (!$last) { echo '<p class="muted" style="font-size:.85rem">No cars recorded yet.</p>'; return; }
     echo '<ol class="lastcars">';
