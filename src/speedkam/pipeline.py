@@ -196,6 +196,11 @@ class SpeedCamera:
         self._roi_audit_passes = 0
         self._roi_audit_covered = 0    # passes with 100% of ground points inside cand.
         self._roi_audit_min_cov = 1.0  # worst single-pass coverage fraction seen
+        # Restore the accumulated envelope from disk so the audit SURVIVES a
+        # restart (the node is restarted often for unrelated deploys). Without
+        # this, a day of traffic collapses to "cars since the last restart".
+        if self._roi_audit:
+            self._load_roi_audit()
 
     # --------------------------------------------------------------- SpeedKapture
     @property
@@ -458,6 +463,29 @@ class SpeedCamera:
             self._write_roi_audit()
         except Exception as exc:  # noqa: BLE001
             print(f"[SpeedKam] ROI audit error (ignored): {exc}")
+
+    def _load_roi_audit(self):
+        """Restore the accumulated observed envelope + pass count from a previous
+        run so the audit is cumulative across restarts. Best-effort: a missing or
+        unreadable file just starts fresh. Coverage counters are NOT restored --
+        they're only meaningful against a fixed candidate band, which is set later
+        in the rollout; the envelope (candidate-independent) is what we protect."""
+        import json
+        try:
+            path = Path(self.cfg["recording"]["output_dir"]) / "roi_audit.json"
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            env = data.get("observed_envelope_frac")
+            if (isinstance(env, list) and len(env) == 4
+                    and all(isinstance(v, (int, float)) for v in env)):
+                self._roi_env = [float(v) for v in env]
+                self._roi_audit_passes = int(data.get("passes", 0) or 0)
+                print(f"[SpeedKam] ROI audit: resumed {self._roi_audit_passes} "
+                      f"prior passes; envelope x[{env[0]:.3f},{env[2]:.3f}] "
+                      f"y[{env[1]:.3f},{env[3]:.3f}].")
+        except Exception as exc:  # noqa: BLE001 - resume is best-effort
+            print(f"[SpeedKam] ROI audit resume skipped ({exc}); starting fresh.")
 
     def _write_roi_audit(self):
         """Persist the audit envelope + coverage so the correct band can be read

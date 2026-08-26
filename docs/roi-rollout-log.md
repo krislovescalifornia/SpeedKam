@@ -102,6 +102,34 @@ enables (degrades to full-frame).
 recording every counted car's ground-point envelope to `captures/roi_audit.json`
 and exposing `roi_observed_envelope` in `/api/status`.
 
+### 2026-08-25 — first envelope read + restart-persistence fix
+Read `captures/roi_audit.json` after ~100+ cars drove by. **Only 6 passes
+recorded** — the in-memory envelope resets to empty on every service restart, and
+the node had been restarted several times today by the concurrent colour-engine
+deploys (node HEAD moved to `0eb3317`). So the audit had collapsed to "cars since
+the last restart", not the day.
+
+Findings from those 6 counted cars (still informative):
+- Observed envelope (frac): x [0.010, 0.981], y [0.756, 0.869].
+- The tyre-line band is VERTICALLY THIN — ~11% of frame height — while cars span
+  nearly the full width (crossing columns are at x=450/1000, cars travel further).
+- Recommended band (padded): x [0.0, 1.0], y [0.656, 0.969] ≈ **31% of pixels,
+  full width** → matches the harness's ~30%-pixels → ~57 fps point. Direction
+  strongly confirmed; exact bounds need more cars (esp. far-lane / both directions).
+
+Fix: `_load_roi_audit()` restores the envelope + pass count from roi_audit.json on
+startup (audit mode) so the audit is now CUMULATIVE across restarts. Colour
+counters are not restored (only meaningful vs a fixed candidate). Test added
+(`test_audit_resumes_envelope_across_restart`). Full suite: **131 passed**.
+Deployed; the existing 6-pass envelope is carried forward, not lost.
+
+Assessment for the operator: **promising but NOT yet enough data** — 6 cars can't
+prove a band catches every future car (a higher far-lane tyre-line could sit above
+the current y-min). Colour + speed are unaffected regardless: the ROI only crops
+the MOG2 detection frame; colour reads the full-res frame + full-res background
+plate at the car's bbox, and the bbox/ground point are provably identical to
+full-frame for any car inside the band. Let it accumulate uninterrupted.
+
 ### NEXT (do not skip)
 1. Let real traffic accumulate (aim for a day / dozens of counted cars across
    BOTH directions, ideally including edge cases — far lane, fast, dusk).

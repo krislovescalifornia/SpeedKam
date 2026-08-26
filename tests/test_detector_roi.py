@@ -141,6 +141,33 @@ def test_audit_grows_observed_envelope():
     assert abs(e[1] - 600 / 1088) < 1e-6 and abs(e[3] - 650 / 1088) < 1e-6
 
 
+def test_audit_resumes_envelope_across_restart(tmp_path):
+    """The envelope must survive a restart (nodes are restarted often), so a day
+    of traffic isn't collapsed to 'cars since the last restart'."""
+    import json
+    (tmp_path / "roi_audit.json").write_text(json.dumps({
+        "passes": 42,
+        "observed_envelope_frac": [0.02, 0.70, 0.98, 0.86],
+    }), encoding="utf-8")
+    cam = SpeedCamera.__new__(SpeedCamera)
+    cam.cfg = {"camera": {"width": 1456, "height": 1088},
+               "speed": {"x_a": 1000, "x_b": 450},
+               "recording": {"output_dir": str(tmp_path)}}
+    cam._cam_wh = (1456.0, 1088.0)
+    cam._roi_env = None
+    cam._roi_audit_passes = 0
+    cam._load_roi_audit()
+    assert cam._roi_audit_passes == 42
+    assert cam._roi_env == [0.02, 0.70, 0.98, 0.86]
+    # a new car then EXTENDS the restored envelope, not replaces it.
+    cam._roi_cand = None
+    cam._roi_audit_covered = 0
+    cam._roi_audit_min_cov = 1.0
+    cam._roi_audit_pass(_track([(0, 1080), (1455, 500)]))  # corners -> widens
+    assert cam._roi_audit_passes == 43
+    assert cam._roi_env[0] < 0.02 and cam._roi_env[3] > 0.86
+
+
 def test_audit_coverage_flags_points_outside_candidate():
     cam = _audit_cam({"enabled": False, "audit": True,
                       "x0": 0.2, "y0": 0.4, "x1": 0.85, "y1": 0.85})
