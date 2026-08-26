@@ -80,13 +80,15 @@ class SpeedCamera:
 
         # Optional best-effort vehicle attribute recognition (type/color/...).
         self.recognizer = VehicleRecognizer(cfg.get("recognition", {}))
-        # YOLO gate worker (Phase 14): when the recognizer is a real on-node
-        # classifier, the per-pass car-vs-not vote runs on this thread instead of
-        # the detection loop, so a burst of traffic can't stall detection while
-        # ~vote_frames inferences run. Created in run() only when the gate is
-        # active; None means "decide inline" (geometry-only nodes).
-        self._recog_q = None
-        self._recog_thread = None
+        # Commit/encode worker (unlock C): everything after speed estimation --
+        # the H.264 clip encode (~seconds on a Pi), snapshot, colour, CSV, and
+        # off-site enqueue -- runs on THIS thread instead of the detection loop,
+        # so back-to-back traffic isn't missed while a speeder's clip encodes.
+        # When the on-node YOLO gate is also active, the per-pass car-vs-not vote
+        # runs here too (Phase 14). Created in run() whenever there's a recorder;
+        # None means "commit inline" (recording disabled -- nothing slow to defer).
+        self._commit_q = None
+        self._commit_thread = None
 
         # Local + remote media rotation so storage doesn't fill up.
         self.retention = RetentionManager(
@@ -538,18 +540,24 @@ class SpeedCamera:
         if self.remote is not None:
             self.remote.start()
         self.retention.start()
-        if self._gate_active():
-            # Bounded queue: under a rare burst of back-to-back traffic that
-            # outruns inference, _finalize commits the overflow inline
-            # (geometry-only) rather than blocking detection -- see _finalize.
-            self._recog_q = queue.Queue(maxsize=8)
-            self._recog_thread = threading.Thread(
-                target=self._recog_worker, name="speedkam-recog", daemon=True)
-            self._recog_thread.start()
-            print(f"[SpeedKam] YOLO gate ON (imgsz={self.recognizer.imgsz}, "
-                  f"vote {self.recognizer.min_vehicle_frames}/"
-                  f"{self.recognizer.vote_frames} frames) -- car-vs-not runs on "
-                  f"a worker thread.")
+        if self.recorder is not None:
+            # Commit/encode worker (unlock C). Bounded queue: under a rare burst
+            # of back-to-back traffic that outruns the encode, _finalize commits
+            # the overflow inline rather than blocking detection -- see _finalize.
+            self._commit_q = queue.Queue(maxsize=8)
+            self._commit_thread = threading.Thread(
+                target=self._commit_worker, name="speedkam-commit", daemon=True)
+            self._commit_thread.start()
+            if self._gate_active():
+                print(f"[SpeedKam] commit worker ON + YOLO gate "
+                      f"(imgsz={self.recognizer.imgsz}, vote "
+                      f"{self.recognizer.min_vehicle_frames}/"
+                      f"{self.recognizer.vote_frames} frames) -- clip encode AND "
+                      f"car-vs-not run off the detection core.")
+            else:
+                print("[SpeedKam] commit worker ON -- clip encode + logging run "
+                      "off the detection core, so back-to-back cars aren't missed "
+                      "while a clip saves.")
         where = "window" if show else "web/headless"
         mode = "parallel capture+process" if frame_callback is not None else "single-thread"
         print(f"[SpeedKam] Running ({where}, {mode}). Ctrl+C to stop.")
@@ -573,15 +581,17 @@ class SpeedCamera:
             if self.remote is not None:
                 self.remote.stop()
             self.retention.stop()
-            if self._recog_thread is not None:
-                # Drain: let queued passes finish classifying so their rows land.
+            if self._commit_thread is not None:
+                # Drain: let the in-flight pass finish encoding + logging so its
+                # row/clip land. A restart shouldn't wait on a deep backlog, so
+                # the join is bounded (one long encode ~ a dozen seconds).
                 try:
-                    self._recog_q.put(None, timeout=1.0)
+                    self._commit_q.put(None, timeout=1.0)
                 except queue.Full:
                     pass
-                self._recog_thread.join(timeout=10.0)
-                self._recog_thread = None
-                self._recog_q = None
+                self._commit_thread.join(timeout=15.0)
+                self._commit_thread = None
+                self._commit_q = None
             self.camera.release()
             if show:
                 cv2.destroyAllWindows()
@@ -910,21 +920,23 @@ class SpeedCamera:
             job["center_t"] = None
             job["clip_frames"] = None
 
-        # When the YOLO gate is active, hand the pass to the worker thread so the
-        # ~vote_frames inferences never stall the detection loop. The buffered
-        # clip frames the vote reads live for ~1.5x clip_seconds, so a verdict a
-        # second or two later still sees them. Under a burst that fills the queue,
-        # commit inline (geometry-only) rather than block detection or drop it.
-        if self._recog_q is not None:
+        # Hand the pass to the commit worker so the slow clip encode (and, when
+        # the YOLO gate is on, the ~vote_frames inferences) never stall the
+        # detection loop -- this is what keeps back-to-back cars from being missed
+        # while a clip saves. The clip frames were grabbed above and held by
+        # reference, so an encode a dozen seconds later still shows the car. Under
+        # a burst that fills the queue, commit inline rather than block detection
+        # or drop the pass (the encode then briefly pauses detection, as before).
+        if self._commit_q is not None:
             try:
-                self._recog_q.put_nowait(job)
+                self._commit_q.put_nowait(job)
                 return
             except queue.Full:
-                print("[SpeedKam] recognition queue full -- committing "
-                      f"#{track.id} on geometry alone (traffic burst).")
+                print("[SpeedKam] commit queue full -- committing "
+                      f"#{track.id} inline (traffic burst).")
         self._commit_reading(job, verdict=None)
 
-    # ------------------------------------------------------------ gate worker
+    # -------------------------------------------------------- commit/gate worker
     def _gate_active(self):
         """True when the on-node YOLO car-vs-not gate should run (real detector
         loaded, gate enabled, and a recorder to read pass frames from)."""
@@ -934,27 +946,30 @@ class SpeedCamera:
                     and getattr(r, "can_classify", False)
                     and self.recorder is not None)
 
-    def _recog_worker(self):
-        """Pop finished passes, run the pass-level vote, then commit the reading.
-        Runs off the detection loop so classification latency never throttles
-        capture/detect. FIFO, so dedupe/counter ordering matches arrival order."""
+    def _commit_worker(self):
+        """Pop finished passes and commit them (clip encode, snapshot, colour,
+        CSV, off-site enqueue) off the detection loop, so the slow encode never
+        throttles capture/detect. When the YOLO gate is active, run the pass-level
+        car-vs-not vote here first. FIFO, so dedupe/counter ordering matches
+        arrival order."""
         while True:
-            job = self._recog_q.get()
+            job = self._commit_q.get()
             try:
                 if job is None:
                     break
                 verdict = None
-                try:
-                    verdict = self._yolo_pass(job["track"])
-                except Exception as exc:  # noqa: BLE001 - never kill the worker
-                    print(f"[SpeedKam] recognition vote failed: {exc}")
+                if self._gate_active():
+                    try:
+                        verdict = self._yolo_pass(job["track"])
+                    except Exception as exc:  # noqa: BLE001 - never kill the worker
+                        print(f"[SpeedKam] recognition vote failed: {exc}")
                 try:
                     self._commit_reading(job, verdict)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[SpeedKam] commit failed for "
                           f"#{job['track'].id}: {exc}")
             finally:
-                self._recog_q.task_done()
+                self._commit_q.task_done()
 
     def _yolo_pass(self, track):
         """Sample up to ``vote_frames`` frames spanning the finished track and
@@ -1254,8 +1269,10 @@ class SpeedCamera:
                 color = self._car_color(frame, sample.bbox)
             except Exception:  # noqa: BLE001 - colour is best-effort
                 pass
-        # Gate path: YOLO already ran in the vote. Reuse its type; add colour.
-        if yolo_type is not None or self._recog_q is not None:
+        # Gate path: YOLO already ran the pass vote. Reuse its type; add colour.
+        # (Keyed to the gate itself, not the commit queue -- the commit worker now
+        # runs on geometry-only nodes too, which must still use their recognizer.)
+        if yolo_type is not None or self._gate_active():
             out = dict(EMPTY)
             out["vehicle_type"] = yolo_type
             out["color"] = color
