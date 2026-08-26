@@ -138,6 +138,11 @@ DEFAULTS = {
         # ~1 in 4 frames and you get only ~22fps clips. Set a value BELOW the
         # sensor rate only to stretch the pre-roll within max_buffer_mb.
         "record_fps": 0,
+        # Encode the saved clip at this fraction of the capture resolution (the
+        # snapshot stays full-res). avc1 is slow on a Pi and the encode runs on
+        # the commit worker, so a big clip still drags detection down; 0.5 is ~4x
+        # faster + 4x smaller and still watchable. 1.0 = full-res. See recorder.
+        "clip_scale": 0.5,
         "save_only_with_speed": True,
         "save_snapshot": True,
         "burn_overlay": True,

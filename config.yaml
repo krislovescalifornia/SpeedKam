@@ -210,6 +210,13 @@ recording:
   # WELL below the sensor rate (e.g. 15, ~3.1s pre-roll in only 128MB) to trade
   # smoothness for a longer pre-roll / less RAM on a starved node.
   record_fps: 0
+  # Encode the saved CLIP at this fraction of the capture resolution (the snapshot
+  # stays full-res). avc1/H.264 is slow on a Pi (~0.9s/frame at 1456x1088), and the
+  # encode runs on the commit worker, so a big clip still drags detection down via
+  # CPU contention. 0.5 = quarter the pixels ~= 4x faster encode and 4x smaller
+  # files, still perfectly watchable -- the clip is only for viewing; speed comes
+  # from detection, never the clip. 1.0 = full-res (no downscale).
+  clip_scale: 0.5
   # Only save a clip when a valid speed was measured. If false, saves for every
   # tracked vehicle (useful while still calibrating).
   save_only_with_speed: true

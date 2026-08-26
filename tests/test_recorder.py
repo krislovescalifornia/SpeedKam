@@ -113,3 +113,41 @@ def test_snapshot_frames_on_the_car_not_empty_road(tmp_path):
     path2 = rec.save_snapshot_only(2, _result(), "mph", 40.0, frames=frames)
     img2 = cv2.imread(str(path2))
     assert img2[:20, :, :].mean() < 40               # buffer-middle = empty road
+
+
+def test_clip_scale_downscales_the_video_but_keeps_a_full_res_snapshot(tmp_path):
+    # clip_scale shrinks the (slow-to-encode) clip; the evidence JPEG stays full.
+    import cv2
+    cfg = {
+        "output_dir": str(tmp_path / "caps"),
+        "clip_seconds": 8, "max_buffer_mb": 128, "record_fps": 0,
+        "save_snapshot": True, "clip_scale": 0.5,
+    }
+    log = {"csv_file": str(tmp_path / "events.csv")}
+    rec = Recorder(cfg, log, fps_hint=15)
+    W, H = 200, 120
+    frames = [(float(i) * 0.1, np.full((H, W, 3), 60 + i, np.uint8))
+              for i in range(1, 7)]
+    clip, snap = rec.save_media(1, _result(), "mph", 40.0, burn_overlay=False,
+                                frames=frames, center_t=0.3)
+    cap = cv2.VideoCapture(str(clip))
+    vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    assert (vw, vh) == (W // 2, H // 2)              # clip encoded at half size
+    assert cv2.imread(str(snap)).shape[:2] == (H, W)  # snapshot full-res
+
+
+def test_clip_scale_default_is_full_resolution(tmp_path):
+    import cv2
+    rec = _rec(tmp_path)                              # no clip_scale key -> 1.0
+    W, H = 160, 120
+    frames = [(float(i) * 0.1, np.full((H, W, 3), 50 + i, np.uint8))
+              for i in range(1, 7)]
+    clip, _ = rec.save_media(1, _result(), "mph", 40.0, burn_overlay=False,
+                             frames=frames, center_t=0.3)
+    cap = cv2.VideoCapture(str(clip))
+    vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    assert (vw, vh) == (W, H)

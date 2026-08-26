@@ -342,6 +342,18 @@ class Recorder:
         fps = self._measured_fps(frames)
 
         h, w = frames[0][1].shape[:2]
+        # Encode the clip at clip_scale of the capture size (default 1.0 = full).
+        # avc1 (libx264) is slow on a Pi -- ~0.9 s/frame at 1456x1088 -- and the
+        # encode runs on the commit worker, so a big clip still drags detection
+        # down through CPU contention. Halving each side is ~4x fewer pixels and
+        # cuts the encode roughly 4x (and the file 4x), which is plenty since the
+        # clip is only for *viewing* -- speed is measured from detection, never
+        # the clip. The evidence SNAPSHOT below stays full-res for plate/detail.
+        cw, ch = w, h
+        scale = float(self.cfg.get("clip_scale", 1.0) or 1.0)
+        if 0 < scale < 1.0:
+            cw = max(2, int(w * scale) & ~1)   # even dims: H.264 wants them
+            ch = max(2, int(h * scale) & ~1)
         clip_path = self.output_dir / f"{base}.mp4"
         # H.264 (avc1), NOT mp4v: mp4v is MPEG-4 Part 2, which desktop players
         # (VLC) handle but HTML5 <video> refuses ("No video with supported
@@ -350,19 +362,21 @@ class Recorder:
         # Fall back to mp4v if this build can't open an avc1 writer, so a clip
         # is still recorded (playable in VLC) rather than silently empty.
         writer = cv2.VideoWriter(
-            str(clip_path), cv2.VideoWriter_fourcc(*"avc1"), fps, (w, h))
+            str(clip_path), cv2.VideoWriter_fourcc(*"avc1"), fps, (cw, ch))
         if not writer.isOpened():
             writer = cv2.VideoWriter(
-                str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+                str(clip_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (cw, ch))
         snapshot_path = None
         snap_idx = self._center_index(frames, center_t)
         for i, (_, fr) in enumerate(frames):
             out = fr.copy()
             if burn_overlay:
                 annotate.draw_speed_banner(out, result, limit_kmh, units)
+            if (cw, ch) != (w, h):
+                out = cv2.resize(out, (cw, ch))
             writer.write(out)
             if self.cfg["save_snapshot"] and i == snap_idx:
-                snap = fr.copy()
+                snap = fr.copy()     # snapshot: full-res evidence, not downscaled
                 annotate.draw_speed_banner(snap, result, limit_kmh, units)
                 snapshot_path = self.output_dir / f"{base}.jpg"
                 cv2.imwrite(str(snapshot_path), snap)
