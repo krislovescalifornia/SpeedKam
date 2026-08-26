@@ -103,12 +103,54 @@ def test_picamera2_controls_caps_frame_duration():
 
 
 def test_picamera2_controls_fixed_exposure_and_gain():
+    # Legacy libcamera (no mode split -- _Stub has no _picam): pinning exposure
+    # turns the whole auto loop off (AeEnable False) and fixes gain too.
     s = _Stub()
     s.cfg = {"fps": 15, "exposure_us": 4000, "analogue_gain": 8.0}
     c = capture.Camera._picamera2_controls(s)
     assert c["FrameDurationLimits"] == (66666, 66666)
     assert c["ExposureTime"] == 4000 and c["AeEnable"] is False
     assert c["AnalogueGain"] == 8.0
+
+
+class _StubModern:
+    """Carrier whose fake camera advertises the Bookworm+ mode controls, so we
+    exercise the manual-exposure / auto-gain split."""
+    class _Picam:
+        camera_controls = {"ExposureTimeMode": (0, 1, 0),
+                           "AnalogueGainMode": (0, 1, 0),
+                           "ExposureTime": (1, 1000000, None),
+                           "AnalogueGain": (1.0, 16.0, None)}
+    _picam = _Picam()
+
+
+def test_pinned_exposure_keeps_gain_auto_on_modern_libcamera():
+    # The point of unlock D: pin a short exposure (frozen motion) but leave gain
+    # on auto so brightness still tracks the daylight.
+    s = _StubModern()
+    s.cfg = {"fps": 30, "exposure_us": 1500, "analogue_gain": 0}
+    c = capture.Camera._picamera2_controls(s)
+    assert c["ExposureTime"] == 1500
+    assert c["ExposureTimeMode"] == 1        # manual exposure
+    assert c["AnalogueGainMode"] == 0        # auto gain
+    assert "AnalogueGain" not in c           # gain left to the AGC
+    assert "AeEnable" not in c               # not the legacy master switch
+
+
+def test_pinned_exposure_and_gain_both_manual_on_modern_libcamera():
+    s = _StubModern()
+    s.cfg = {"fps": 30, "exposure_us": 1500, "analogue_gain": 4.0}
+    c = capture.Camera._picamera2_controls(s)
+    assert c["ExposureTimeMode"] == 1 and c["AnalogueGainMode"] == 1
+    assert c["AnalogueGain"] == 4.0
+
+
+def test_pinned_gain_only_leaves_exposure_auto_on_modern_libcamera():
+    s = _StubModern()
+    s.cfg = {"fps": 30, "exposure_us": 0, "analogue_gain": 4.0}
+    c = capture.Camera._picamera2_controls(s)
+    assert c["AnalogueGainMode"] == 1 and c["AnalogueGain"] == 4.0
+    assert "ExposureTime" not in c and "ExposureTimeMode" not in c
 
 
 def test_lores_size_from_detect_scale(monkeypatch):

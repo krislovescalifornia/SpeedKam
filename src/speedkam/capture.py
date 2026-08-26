@@ -223,20 +223,50 @@ class Camera:
         to avoid). Pinning the frame duration from `fps` caps the exposure so the
         rate stays up; auto-exposure then compensates with gain, not time.
 
-        Optionally pin a fixed short exposure (`exposure_us`) to freeze motion
-        outright, and/or a fixed `analogue_gain`. Both 0 = leave on auto (still
-        bounded by the frame-duration cap above).
+        Optionally PIN a fixed short exposure (`exposure_us`) to freeze fast cars.
+        On libcamera builds that expose ExposureTimeMode/AnalogueGainMode (Pi OS
+        Bookworm+) we pin ONLY the exposure and leave GAIN on auto, so brightness
+        still tracks the changing daylight -- a fixed exposure alone over-exposes
+        in bright sun and under-exposes at dusk. Auto-exposure already picks a
+        short exposure in bright light, so the win is holding that short exposure
+        (frozen motion) as the light DIMS, instead of auto lengthening it and
+        blurring. `analogue_gain` pins the gain too (fully manual). Older
+        libcamera has no mode split, so pinning exposure there turns auto-exposure
+        fully off. All 0 = auto (still bounded by the frame-duration cap above).
         """
         cfg = self.cfg
         fps = float(cfg.get("fps", 30) or 30)
         frame_us = int(1_000_000 / max(fps, 1.0))
         controls = {"FrameDurationLimits": (frame_us, frame_us)}
         exposure_us = int(cfg.get("exposure_us", 0) or 0)
+        gain = float(cfg.get("analogue_gain", 0) or 0)
+        # libcamera mode enums: 0 = Auto, 1 = Manual.
+        AUTO, MANUAL = 0, 1
+        try:
+            cam_ctrls = self._picam.camera_controls
+        except Exception:  # noqa: BLE001 - be conservative if unavailable
+            cam_ctrls = {}
+        has_modes = ("ExposureTimeMode" in cam_ctrls
+                     and "AnalogueGainMode" in cam_ctrls)
         if exposure_us > 0:
             controls["ExposureTime"] = exposure_us
-            controls["AeEnable"] = False
-        gain = float(cfg.get("analogue_gain", 0) or 0)
-        if gain > 0:
+            if has_modes:
+                controls["ExposureTimeMode"] = MANUAL
+                # Keep gain on auto so brightness adapts through the day, unless a
+                # fixed gain was also asked for.
+                controls["AnalogueGainMode"] = MANUAL if gain > 0 else AUTO
+                if gain > 0:
+                    controls["AnalogueGain"] = gain
+            else:
+                controls["AeEnable"] = False  # no split: exposure+gain both manual
+                if gain > 0:
+                    controls["AnalogueGain"] = gain
+        elif gain > 0:
+            # Pin gain only; leave exposure on auto.
+            if has_modes:
+                controls["AnalogueGainMode"] = MANUAL
+            else:
+                controls["AeEnable"] = False
             controls["AnalogueGain"] = gain
         return controls
 

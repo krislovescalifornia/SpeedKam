@@ -39,11 +39,18 @@ camera:
   # keeps brightness up with GAIN instead of time. This alone often takes a
   # dim-light node from ~2 fps to its real ceiling.
   #
-  # For the sharpest plates on fast traffic, pin a short fixed exposure too:
-  #   exposure_us: 4000     # 4 ms freezes motion; raise if the image is too dark
-  #   analogue_gain: 8.0    # compensate the shorter exposure (higher = noisier)
+  # For the sharpest edges on fast traffic, PIN a short fixed exposure. On
+  # Bookworm+ libcamera we pin only the exposure and leave GAIN on auto, so
+  # brightness still tracks the daylight (a fixed exposure alone over-exposes in
+  # sun and goes dark at dusk). Auto already picks ~1.5 ms in bright light, so
+  # this mainly holds that frozen exposure as the light DIMS instead of letting
+  # auto lengthen it and blur. Pin at/below the brightest-light value so gain
+  # never has to drop below 1.0 (which would over-expose). Measured on this node:
+  # auto ran 1466 us at gain 1.0 in bright morning sun, so 1500 matches today and
+  # only clips slightly at absolute peak sun.
+  #   analogue_gain: 8.0    # ALSO pin gain (fully manual) -- usually leave 0/auto
   # 0 = leave on auto (still bounded by the fps frame-duration cap).
-  exposure_us: 0
+  exposure_us: 1500
   analogue_gain: 0
 
 detection:

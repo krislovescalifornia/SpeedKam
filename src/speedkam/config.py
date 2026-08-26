@@ -18,10 +18,11 @@ DEFAULTS = {
         "fps": 30,
         "windows_use_dshow": True,
         "manual_exposure": -1,
-        # Raspberry Pi CSI (picamera2) sensor controls. exposure_us/analogue_gain
-        # of 0 = auto; `fps` (above) always caps the frame duration so auto-
-        # exposure can't strangle the frame rate in dim light.
-        "exposure_us": 0,
+        # Raspberry Pi CSI (picamera2) sensor controls. A short pinned exposure
+        # freezes fast cars; on Bookworm+ libcamera gain stays on auto so
+        # brightness still tracks the daylight (see capture._picamera2_controls).
+        # analogue_gain 0 = auto; `fps` (above) always caps the frame duration.
+        "exposure_us": 1500,
         "analogue_gain": 0,
         "loop": False,
     },
