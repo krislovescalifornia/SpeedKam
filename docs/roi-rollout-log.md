@@ -165,9 +165,41 @@ Colour + speed unaffected by construction and confirmed: speed reads the ground-
 (identical), colour reads the FULL-RES frame + full-res background plate at the
 car's bbox (ROI never touches the full-res frame).
 
-### NEXT
-- Daylight tomorrow: confirm real cars count under the ROI with sane speeds +
-  colours; spot-check a couple of clips. Re-run tools/roi_replay.py on tomorrow's
-  clips to reconfirm the band still covers every car.
-- Optional further FPS: the band is full-width; if the far lane is unused, a
-  tighter x-span or lower detect_scale buys more, re-validated the same way.
+### 2026-08-26 — full day under ROI: VALIDATED, no regression
+After a full day + into the evening running the enabled band, checked the data.
+
+Live/health:
+- Node temp **59.9°C** (was 80.8°C) — cooling + cheaper detection; not throttling.
+- Working fps ~47 daytime (60 shows at night only because detection is paused).
+
+Live audit (crop-on, 178 counted cars today): `candidate_worst_coverage: 1.0`,
+**zero "outside band" warnings all day**, observed tyre-line envelope y[0.623,0.952]
+— farthest car 79 px inside the band.
+
+Day-over-day from events.csv (counted / rejected / avg mph / dirs):
+- 08-24 full-frame:  54 / 56 / 23.9 / E29 W25
+- 08-25 mixed:      111 /123 / 22.7 / E58 W53
+- 08-26 ROI all-day:172 / 95 / 22.3 / **W86 E86**
+  -> counts did NOT collapse (highest of the 3); **direction perfectly balanced**
+  (no clipped lane); avg speed steady; **false positives DOWN** (36% of tracks
+  rejected vs 53% the day before) because the band excludes the off-road foreground
+  where phantoms formed. Colours healthy (gray/black/white/red distribution).
+
+Definitive miss-detection check (`tools/roi_check_band.py` on today's 75 clips,
+replayed FULL-FRAME so the complete trajectory is visible):
+- 73 timeable cars; full-frame envelope y[0.651,0.882].
+- **Farthest tyre-line of any car = y 0.651; band edge 0.55 -> +110 px margin.**
+- **0 cars with any point above the band.** Since clips are full-frame, a car
+  riding above the band WOULD show here — none did.
+- ROI applied: **73/73 still timeable, 0 lost.**
+
+Verdict: step forward, no regression. Speed steady, colours healthy, detection
+complete (~250 car-observations across the day all sit >=0.62, well inside the
+0.55 band), fps ~doubled, node runs 20°C cooler, and false positives fell. Band
+margin is healthy (79-110 px) — no change needed. Rollback remains
+`detection.roi.enabled: false`.
+
+### Ongoing check
+Re-run `tools/roi_check_band.py <clips_dir> [y0]` on a fresh day's clips to
+reconfirm the band still covers every car. Optional further FPS: band is
+full-width; if a lane is unused a tighter x-span buys more, re-validated the same way.
