@@ -4,12 +4,16 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 A camera-based vehicle **speed camera** for a fixed location on a private road.
-It watches a road, detects passing vehicles, estimates their speed from
-real-world ground markers, and saves an annotated video clip + snapshot + a CSV
-log for every pass.
+It watches a road, times passing vehicles across a calibrated stretch, and saves
+an annotated video clip + snapshot + a CSV log for every pass — with a live web
+dashboard, an off-site copy of every record, and automatic rejection of the junk
+(pedestrians, bikes, wind, night-time glare) that isn't a car.
 
-It runs **now on Windows with a USB webcam** for testing, and moves **unchanged
-to a Raspberry Pi** later — you only edit `config.yaml`.
+It runs **live on a Raspberry Pi node** (a Pi 4 8 GB with a global-shutter
+camera) and mirrors every pass to an off-site dashboard on your own domain, so
+the records survive even if the camera is stolen. The same code runs **unchanged
+on Windows with a USB webcam** for development and testing — you only edit
+`config.yaml` to move between them.
 
 ### Documentation
 
@@ -19,10 +23,10 @@ to a Raspberry Pi** later — you only edit `config.yaml`.
 - [Fleet imaging](deploy/image/README.md) — clone one SD card to many nodes.
 - [Deferred recognition](docs/deferred-recognition.md) — offload YOLO to another box.
 - [Privacy & legal](docs/PRIVACY.md) — what's stored and how to deploy responsibly.
-- [Pi tuning & accuracy journey](docs/pi3-performance-tuning.md) — fps/thermal tuning, the
-  low-light gate, and the road-region false-positive gate, with what was measured at each step.
-- [Pi 4 / Phase 14 plan](docs/pi4-yolo-classifier-phase14.md) — kickoff brief for on-node
-  car-vs-person classification (needs a 64-bit Pi 4).
+- [Pi tuning & accuracy journey](docs/pi3-performance-tuning.md) — fps/thermal tuning,
+  the low-light gate, and the false-positive gates, with what was measured at each step.
+- [Road-band ROI rollout log](docs/roi-rollout-log.md) — the audit-first process that
+  cropped detection to the road band and recovered the frame rate on the Pi.
 
 ---
 
@@ -39,11 +43,34 @@ past at a known speed. Then for each vehicle it:
 4. Times when its centre-x crosses `x_a` and `x_b` (linear-interpolated).
 5. **speed = calibrated distance / crossing time**, converted to mph/kmh.
 
-It uses raw pixel x + timestamps only — no homography, no lens undistortion.
-False positives (cyclists, pedestrians, dogs, wind-blown foliage, noise blobs)
-are thrown out by cheap **pixel-only** gates: car-shape aspect ratio, bounding-
-box width, area coherence, and a count-once drive-by dedupe. Accuracy is bounded
-by the known-speed calibration pass and a rigid camera mount.
+It uses raw pixel x + timestamps only — no homography, no lens undistortion, no
+learned model in the speed path. Accuracy is bounded by the known-speed
+calibration pass and a rigid camera mount.
+
+### Keeping the junk out
+
+Only real cars should reach the log. Everything else is rejected before it counts,
+with cheap gates that need no GPU:
+
+- **Pixel-only car gates** (fixed policy, always on): car-shape **aspect ratio**
+  (a side-on car's box is wide ~2–3; a walker's is tall, a cyclist's ~square),
+  minimum bounding-box **width**, **area coherence** (a real car's silhouette
+  grows/shrinks smoothly; noise and wind-blown foliage flicker), and a
+  count-once **drive-by dedupe** so one pass isn't logged twice.
+- **Low-light gate:** in the dark the detector locks onto headlight glare and
+  sensor noise and invents phantom 90–170 km/h "cars." The gate watches measured
+  frame brightness and **pauses detection when the scene goes dark, resuming
+  automatically at dawn** — no clock, sunset table, or GPS. The service stays up,
+  so the camera notices morning on its own; the live brightness reading shows on
+  both dashboards for tuning.
+- **Road-band ROI** (optional): run motion detection on just the strip of road
+  that matters. This is what recovered the Pi's frame rate (see the hardware
+  notes); it ships **off** and rolls out audit-first, refusing any band that
+  doesn't contain the crossing columns so speed can never silently break.
+
+Rejected passes are still **counted** and kept in the CSV (tagged with a reason),
+just excluded from the stats and given no clip — and they can be restored from the
+dashboard if a gate was wrong.
 
 ---
 
@@ -109,15 +136,22 @@ local checks; `serve.py` is what the boot service runs on the Pi.
 > reverse proxy) if you expose it beyond the LAN.
 
 The dashboard has:
-- **Live view** — the annotated camera stream (boxes, speeds, calibration zone).
-- **Latest reading** and **stats** — last speed, vehicle count, over-limit count.
-- **Recent clips** — thumbnails of recent captures; click to play the clip.
-- **Date filter** — narrow the clips and Top-10 to a From/To day range.
-- **Top 10 speeders** — the fastest speeds ever recorded (or within the filter),
+- **Full-width live view** — the annotated camera stream (boxes, speeds, the
+  crossing columns) with the latest reading overlaid and a **freshness badge**
+  (`live` / `stale · Ns`) so you know the feed is real-time.
+- **Stat row** — last speed, vehicle count, over-limit count, and the live
+  scene-brightness reading that drives the low-light gate.
+- **Last 10 cars** — the most recent passes for quick live verification.
+- **Top 10 speeders** — the fastest speeds recorded (or within the filter),
   click any to play its clip.
-- **CSV export** — download the filtered event log, or the Top-10, as CSV
-  (buttons on each section; exports respect the date filter).
-- **Backup pill** — shows off-site backup health (`synced` / `N queued`).
+- **Recent speeders** — a gallery of recent captures; click to play the clip.
+- **Record builder** — a full query over the log: filter by colour, direction,
+  day-of-week, hour, speed range, and date, then export the result as CSV.
+- **Analytics** — colour-breakdown donut, speed-distribution histogram, and
+  traffic + average-speed charts by day-of-week and hour.
+- **Backup pill** — off-site backup health (`synced` / `N queued`).
+- **Restart / Shutdown** buttons — reboot or power down the Pi from the browser
+  (sudoers-gated; a loose camera cable no longer needs a keyboard on the Pi).
 - **Calibrate** button — opens a page where you click points on a snapshot and
   type their measured meters, then Save. No monitor or mouse-on-the-Pi needed.
 
@@ -236,32 +270,37 @@ racing ahead of the delete.)
 
 ---
 
-## Vehicle recognition (type / make / model / year / colour)
+## Vehicle recognition (colour, optional type)
 
-Optional and best-effort. With `recognition.enabled: true` SpeedKam annotates
-each pass with what it can determine and logs it to the CSV + dashboard:
+Best-effort annotation of each pass, logged to the CSV + dashboard. Missing
+attributes never block the count or the speed.
 
-- **Colour** is estimated from the vehicle crop with a cheap OpenCV analysis —
-  no model needed, so it works even on a bare Pi.
-- **Type** (car/truck/bus/motorcycle) comes from a YOLO model (`recognition.model`,
-  auto-downloaded) when `ultralytics` is installed — `pip install -e ".[recognition]"`
-  (or `pip install ultralytics`). Note this pulls in **AGPL-3.0** code; see
-  [License](#license).
-- **Make / model / year** only appear if you point
-  `recognition.make_model_weights` at a fine-grained classifier — otherwise they
-  stay blank. That's the "when available" contract: missing attributes never
-  block the count or the speed.
+- **Colour** is the live, always-available attribute — estimated from the
+  vehicle's *own moving pixels* with a cheap OpenCV/HSV analysis, no model
+  needed, so it works on a bare Pi. It subtracts the static background (the car
+  is what moved), trims tree canopy out of the motion box, and takes the
+  **most-common** hue rather than an average (hue is circular — averaging a red
+  car, which sits at both ends of the wheel, yields a nonsense cyan). Blue needs
+  more evidence than real paint hues, so sky reflections aren't called blue.
+- **Type** (car/truck/bus/motorcycle) is optional: it comes from a YOLO model
+  (`recognition.model`, auto-downloaded) only when `ultralytics` is installed —
+  `pip install -e ".[recognition]"`. This pulls in **AGPL-3.0** code (see
+  [License](#license)) and is heavy on a Pi, so on the live node it's left off —
+  the deterministic pixel gates, not a model, decide what's a car.
+- **Make / model / year** were **retired** (low value for the cost of a torch
+  weight and per-model tuning). The CSV columns remain for compatibility but stay
+  blank; a fine-grained classifier could be re-added behind the same interface.
 
-Recognition is heavy on a Pi; leave it off until you've tested throughput. It
-runs on a buffered frame at finalize time, so it works for counted-but-not-
-captured (sub-SpeedKapture) passes too.
+Recognition runs on a buffered frame at finalize time, so it works for
+counted-but-not-captured (sub-SpeedKapture) passes too.
 
 ### Offloading recognition (defer the YOLO to another machine)
 
 On a **busy** road where per-pass inference can't keep up, you can let the Pi do
-only capture + speed + colour in real time and run the heavy YOLO later on a
-beefier box (`recognition.defer: true` + `tools/recognize_worker.py`). On a
-low-traffic drive you don't need this — inline recognition is plenty.
+only capture + speed + colour in real time and run the heavy YOLO **type**
+classification later on a beefier box (`recognition.defer: true` +
+`tools/recognize_worker.py`). On a low-traffic drive you don't need this — colour
+is inline and free, and the node runs fine with the type model off entirely.
 
 **See [docs/deferred-recognition.md](docs/deferred-recognition.md)** for the full
 setup, the worker's flags, and how off-site enrichment stays idempotent.
@@ -306,16 +345,19 @@ touch:
 | `camera.source` | Webcam index (0), or a video file / RTSP URL for testing |
 | `camera.backend` | `auto` (poll on boot: CSI camera if present, else USB webcam), or force `opencv` / `picamera2` |
 | `detection.min_area` | Blob size to count as a vehicle — tune to your framing |
+| `detection.roi` | Optional road-band ROI — crop detection to the road strip to recover frame rate (audit-first; ships off) |
 | `speed.speed_limit_kmh` | Flags/annotates speeders |
 | `speed.display_units` | `mph` or `kmh` |
+| `light_gate.enabled` | Pause detection at night, auto-resume at dawn (brightness-driven; on by default) |
 | `recording.clip_seconds` | Seconds of pre-trigger footage kept in the clip |
+| `recording.clip_scale` | Downscale saved clips (default `0.5`) so the encode is ~4× faster on the Pi |
 | `recording.speedkapture_threshold` | **SpeedKapture** — only record/post clips above this speed (also set live on the dashboard) |
 | `recording.always_snapshot` | Keep a JPEG for every pass (even sub-threshold) so deferred recognition can enrich them later |
 | `retention.local_days` | Auto-delete local clips older than N days (once backed up) |
 | `backup.mirror_all` | Mirror every counted pass off-site (row + snapshot), not just captured clips — full historical archive |
 | `backup.remote_retention_days` | Auto-delete off-site clips older than N days |
 | `control.enabled` | Camera checks in with the off-site host for liveness + settings you change on the dashboard |
-| `recognition.enabled` | Best-effort vehicle type/make/model/year/colour (needs `ultralytics`) |
+| `recognition.enabled` | Best-effort colour (always) + optional YOLO vehicle type (needs `ultralytics`) |
 | `recognition.defer` | Offload YOLO to another machine (busy roads only) — keep `false` for a low-traffic drive |
 | `display.show_window` | `false` for headless Pi deployment |
 
@@ -323,9 +365,17 @@ touch:
 
 ## Recommended hardware
 
-**Compute — Raspberry Pi 5 (4 GB or 8 GB).**
-An Arduino cannot do computer vision; this is a video-processing task. A Pi 5
-runs this OpenCV pipeline comfortably in real time. (A Pi 4 works but slower.)
+**Compute — Raspberry Pi 4 (8 GB) or Pi 5.**
+An Arduino cannot do computer vision; this is a video-processing task. The live
+reference node is a **Pi 4 8 GB** and runs the pipeline in real time — but only
+after tuning: on a Pi 4 the MOG2 detect loop competes with the capture thread and
+thermal throttling caps the sensor. Cropping detection to the **road-band ROI**,
+adding a **$5 cooler**, moving clip encode + logging onto a **commit worker**, and
+encoding clips at `clip_scale 0.5` together took it from ~27 fps (throttled) to
+~47 fps sustained with headroom to spare — the full journey, with numbers at each
+step, is in [docs/pi3-performance-tuning.md](docs/pi3-performance-tuning.md). A
+Pi 5 has more margin if you want it; a Pi 3 can run it at lower frame rates but
+can't run the optional YOLO type model (OOM).
 
 **Camera — Raspberry Pi Global Shutter Camera (Sony IMX296) + a 6 mm or 8 mm
 CS-mount lens.**
@@ -397,6 +447,24 @@ Do calibrate (drive past each way at a known speed and set `speed.d_east_m` /
 **before** relying on it — the service reads the same config. After
 recalibrating, `sudo systemctl restart speedkam`.
 
+### Stay up to date (auto-pull)
+
+A companion `speedkam-update.timer` runs a tested `git pull --ff-only` + restart
+at boot and once a day, so a node keeps itself current with `main` with no visits.
+To push a committed change **now** instead of waiting for the timer:
+
+```bash
+git push origin main                                   # on the dev box
+sudo systemctl start speedkam-update.service           # on the node
+```
+
+### Field Wi-Fi onboarding (no re-imaging)
+
+To move a node to a new network without a keyboard or another flash, it can bring
+up its **own AP-mode captive portal** (`src/speedkam/netcfg.py`): connect a phone
+to the node's Wi-Fi, pick the target network, enter the password, and it joins.
+This is how a golden-image clone gets onto site Wi-Fi the first time.
+
 ### Deploy a fleet — clone one SD card to many
 
 Setting up more than one camera? Build **one** fully-installed card and clone its
@@ -431,11 +499,18 @@ tools/
   camera_check.py      Find your webcam index
   simple_speed.py      Standalone two-line crossing-time speed cam (reference)
   backfill_sync.py     Push all existing local records to the off-site backup
-  recognize_worker.py  Run YOLO off-box to fill deferred type/make/model attributes
+  recognize_worker.py  Run YOLO off-box to fill deferred vehicle-type attributes
+  fps_profile.py       Measure the capture/detect pipeline's real frame rate
+  roi_check_band.py    Check a candidate road-band ROI against the audit envelope
+  roi_replay.py        Replay recorded clips through detection to validate an ROI
+  yolo_validate.py     Regression-check the optional YOLO type model
 deploy/
+  QUICKSTART.md        The shortest path from a fresh Pi to a running node
   speedkam.service     systemd unit template (autorun on boot)
   install-service.sh   One-command installer for the Pi
   uninstall-service.sh Remove the service
+  speedkam-update.{service,timer,sh}  Self-updating git pull --ff-only + restart
+  speedkam-netcfg.service             AP-mode Wi-Fi onboarding portal
   image/               Golden-image build: clone one SD card to a whole fleet
     provision.sh              Turn a fresh Pi OS card into a ready-to-clone master
     firstboot.sh              Per-clone identity reset (hostname/SSH keys/machine-id)
@@ -450,18 +525,22 @@ deploy/
     README.md                  Web-host setup guide
 src/speedkam/
   capture.py           Camera abstraction (webcam / file / RTSP / picamera2)
-  detector.py          MOG2 motion detection
+  detector.py          MOG2 motion detection (optionally cropped to the road-band ROI)
   tracker.py           Multi-object tracker
-  speed.py             Two-line crossing-time speed estimation
+  speed.py             Two-line crossing-time speed estimation (pixel x + timestamps)
   recorder.py          Ring-buffer clip + snapshot + CSV logging
-  recognition.py       Optional vehicle type/colour (YOLO)
+  recognition.py       Colour engine (always) + optional YOLO vehicle type
   retention.py         Local + remote media rotation (SD card / off-site)
-  state.py             Dashboard-adjustable settings (SpeedKapture + gates), persisted
+  state.py             Persisted runtime settings (SpeedKapture, speed limit)
+  config.py            Config loading + config.local.yaml overlay merge
   annotate.py          Overlays
-  pipeline.py          Ties it all together
+  pipeline.py          Ties it all together — tracking, gates, low-light gate, ROI audit
   web.py               Flask dashboard + pipeline runner thread
   sync.py              Off-site backup uploader (disk-queued, retrying)
   remotecontrol.py     Pull-based remote control + heartbeat to the off-site host
+  netcfg.py            AP-mode captive portal for field Wi-Fi onboarding
+  identity.py          Stable per-node id (CPU serial) for fleet backup/dashboards
+  cli.py               speedkam / speedkam-serve console entry points
   webui/               dashboard.html, calibrate.html (crossing-time guide)
 ```
 
