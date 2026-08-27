@@ -192,6 +192,12 @@
   .rb .go{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   .rb .q{color:var(--muted);font-size:13px;font-style:italic;flex:1;min-width:220px}
   .rb-res{border-top:1px solid var(--line);margin:0 -16px -14px;padding:0}
+  .rb-lead{color:var(--muted);font-size:12.5px;line-height:1.5;margin-bottom:2px}
+  .rb-lead em{color:var(--text);font-style:normal;background:var(--panel2);
+    border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+  .rec-sum{padding:11px 16px;font-size:13.5px;color:var(--muted)}
+  .rec-sum b{color:var(--text)}
+  .rec-list{max-height:360px;overflow:auto}
   .rb-head{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:1px;background:var(--line)}
   .rb-head .m{background:var(--panel);padding:13px 15px}
   .rb-head .m .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
@@ -267,20 +273,51 @@
     </div>
   </div>
 
-  <!-- THREE CARDS: Last 10 cars · Recent speeders · Top 10 speeders -->
+  <!-- THREE COLUMNS: (Last 10 cars + Top 10 speeders) · Recent speeders · Record builder -->
   <div class="row3">
-    <div class="card">
-      <h2>Last 10 cars</h2>
-      <ol class="lastcars" id="lastcars"><li class="empty">No cars recorded yet.</li></ol>
-      <div class="lc-note">Every recorded car, any speed — newest first. Watch one drive by, then confirm it lands here.</div>
+    <div class="col">
+      <div class="card">
+        <h2>Last 10 cars</h2>
+        <ol class="lastcars" id="lastcars"><li class="empty">No cars recorded yet.</li></ol>
+        <div class="lc-note">Every recorded car, any speed — newest first. Watch one drive by, then confirm it lands here.</div>
+      </div>
+      <div class="card">
+        <h2>Top 10 speeders <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span></h2>
+        <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
+      </div>
     </div>
     <div class="card">
       <h2>Recent speeders <span class="tools"><a class="btn ghost sm" id="exp-events">Export CSV</a></span></h2>
       <div class="clips" id="clips"><div class="empty">No captures yet.</div></div>
     </div>
     <div class="card">
-      <h2>Top 10 speeders <span class="tools"><a class="btn ghost sm" id="exp-top">Export CSV</a></span></h2>
-      <ul class="toplist" id="toplist"><li class="empty">No records yet.</li></ul>
+      <h2>Record builder</h2>
+      <div class="rb">
+        <div class="rb-lead">Build a question — e.g. <em>eastbound red cars over 31&nbsp;mph</em>, or <em>westbound on Tuesdays between 4–5&nbsp;pm</em>.</div>
+        <div class="grid">
+          <div class="fld"><label>Direction</label><select id="rec-dir"><option value="">any</option></select></div>
+          <div class="fld"><label>Colour</label><select id="rec-color"><option value="">any</option></select></div>
+          <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rec-min" min="0" placeholder="any"></div>
+          <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rec-max" min="0" placeholder="any"></div>
+          <div class="fld"><label>From hour</label><input type="number" id="rec-hf" min="0" max="23" placeholder="0"></div>
+          <div class="fld"><label>To hour</label><input type="number" id="rec-ht" min="0" max="23" placeholder="23"></div>
+          <div class="fld"><label>From date</label><input type="date" id="rec-from"></div>
+          <div class="fld"><label>To date</label><input type="date" id="rec-to"></div>
+        </div>
+        <div class="fld"><label>Days of week</label>
+          <div class="dow" id="rec-dow">
+            <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
+            <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
+            <button data-d="6">Sun</button>
+          </div>
+        </div>
+        <div class="go">
+          <button class="btn" onclick="runRecords()">Show records</button>
+          <button class="btn ghost sm" onclick="resetRecords()">Clear</button>
+        </div>
+        <div class="q" id="rec-q">Your question in plain English shows here.</div>
+        <div class="rb-res" id="rec-res"></div>
+      </div>
     </div>
   </div>
 
@@ -312,45 +349,33 @@
     </div>
   </div>
 
-  <!-- RECORD + REPORT BUILDERS (both under Analytics) -->
-  <div class="row2b">
-    <div class="card">
-      <h2>Record builder</h2>
-      <div class="filter">
-        <label>From <input type="date" id="f-from"></label>
-        <label>To <input type="date" id="f-to"></label>
-        <button class="btn ghost sm" onclick="applyFilter()">Apply</button>
-        <button class="btn ghost sm" onclick="clearFilter()">Clear</button>
+  <!-- REPORT BUILDER (under Analytics) -->
+  <div class="card">
+    <h2>Report builder <span class="tools"><a class="btn ghost sm" id="rb-export">Export CSV</a></span></h2>
+    <div class="rb">
+      <div class="grid">
+        <div class="fld"><label>From</label><input type="date" id="rb-from"></div>
+        <div class="fld"><label>To</label><input type="date" id="rb-to"></div>
+        <div class="fld"><label>Colour</label><select id="rb-color"><option value="">any</option></select></div>
+        <div class="fld"><label>Direction</label><select id="rb-dir"><option value="">any</option></select></div>
+        <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rb-min" min="0" placeholder="any"></div>
+        <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rb-max" min="0" placeholder="any"></div>
+        <div class="fld"><label>From hour</label><input type="number" id="rb-hf" min="0" max="23" placeholder="0"></div>
+        <div class="fld"><label>To hour</label><input type="number" id="rb-ht" min="0" max="23" placeholder="23"></div>
       </div>
-      <div class="lc-note">Sets the date range for the Recent speeders &amp; Top 10 cards and their CSV exports.</div>
-    </div>
-    <div class="card">
-      <h2>Report builder <span class="tools"><a class="btn ghost sm" id="rb-export">Export CSV</a></span></h2>
-      <div class="rb">
-        <div class="grid">
-          <div class="fld"><label>From</label><input type="date" id="rb-from"></div>
-          <div class="fld"><label>To</label><input type="date" id="rb-to"></div>
-          <div class="fld"><label>Colour</label><select id="rb-color"><option value="">any</option></select></div>
-          <div class="fld"><label>Direction</label><select id="rb-dir"><option value="">any</option></select></div>
-          <div class="fld"><label>Min speed (<span class="ru">mph</span>)</label><input type="number" id="rb-min" min="0" placeholder="any"></div>
-          <div class="fld"><label>Max speed (<span class="ru">mph</span>)</label><input type="number" id="rb-max" min="0" placeholder="any"></div>
-          <div class="fld"><label>From hour</label><input type="number" id="rb-hf" min="0" max="23" placeholder="0"></div>
-          <div class="fld"><label>To hour</label><input type="number" id="rb-ht" min="0" max="23" placeholder="23"></div>
+      <div class="fld"><label>Days of week</label>
+        <div class="dow" id="rb-dow">
+          <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
+          <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
+          <button data-d="6">Sun</button>
         </div>
-        <div class="fld"><label>Days of week</label>
-          <div class="dow" id="rb-dow">
-            <button data-d="0">Mon</button><button data-d="1">Tue</button><button data-d="2">Wed</button>
-            <button data-d="3">Thu</button><button data-d="4">Fri</button><button data-d="5">Sat</button>
-            <button data-d="6">Sun</button>
-          </div>
-        </div>
-        <div class="go">
-          <button class="btn" onclick="runReport()">Run report</button>
-          <button class="btn ghost sm" onclick="resetReport()">Reset</button>
-          <span class="q" id="rb-q">e.g. red · westbound · Thursdays → your query in plain English shows here</span>
-        </div>
-        <div class="rb-res" id="rb-res"></div>
       </div>
+      <div class="go">
+        <button class="btn" onclick="runReport()">Run report</button>
+        <button class="btn ghost sm" onclick="resetReport()">Reset</button>
+        <span class="q" id="rb-q">e.g. red · westbound · Thursdays → your query in plain English shows here</span>
+      </div>
+      <div class="rb-res" id="rb-res"></div>
     </div>
   </div>
 
@@ -432,8 +457,8 @@ function dayShort(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?is
 function timeSec(iso){if(!iso)return"";const d=new Date(iso);return isNaN(d)?iso:d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 const COLOR_HEX={black:'#111418',white:'#f4f4f5',gray:'#9ca3af',grey:'#9ca3af',silver:'#c8ccd2',red:'#ef4444',blue:'#3b82f6',navy:'#1e3a8a',green:'#22c55e',yellow:'#eab308',orange:'#f97316',brown:'#8b5a2b',beige:'#d9c9a3',gold:'#d4af37',tan:'#d2b48c',maroon:'#7f1d1d',purple:'#8b5cf6',pink:'#ec4899'};
 function qs(extra){const p=new URLSearchParams();if(FROM)p.set('from',FROM);if(TO)p.set('to',TO);for(const k in(extra||{}))p.set(k,extra[k]);const s=p.toString();return s?'?'+s:'';}
-function applyFilter(){FROM=q('#f-from').value;TO=q('#f-to').value;refreshAll();}
-function clearFilter(){FROM="";TO="";q('#f-from').value="";q('#f-to').value="";refreshAll();}
+// FROM/TO stay empty now that the date-range filter card is gone; the Record
+// builder queries the full history directly via /api/report instead.
 
 let toastT=null;
 function toast(msg,undo){
@@ -548,11 +573,15 @@ async function refreshSummary(){
   if(SUMMARY&&SUMMARY.all)populateDirOptions(SUMMARY.all.directions);
   renderPeriod();
 }
-function populateDirOptions(dirs){
-  const sel=q('#rb-dir');if(sel.dataset.filled)return;
-  const names=Object.keys(dirs||{}).sort();if(!names.length)return;
+function fillOptions(sel,names){
+  if(!sel||sel.dataset.filled||!names.length)return;
   sel.dataset.filled="1";
   names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+}
+function populateDirOptions(dirs){
+  const names=Object.keys(dirs||{}).sort();
+  fillOptions(q('#rb-dir'),names);
+  fillOptions(q('#rec-dir'),names);
 }
 function renderPeriod(){
   if(!SUMMARY)return;
@@ -592,12 +621,9 @@ async function refreshAnalytics(){
 }
 
 function populateReportOptions(colors){
-  const sel=q('#rb-color');
-  if(sel.dataset.filled)return;
   const names=Object.keys(colors||{}).sort();
-  if(!names.length)return;
-  sel.dataset.filled="1";
-  names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+  fillOptions(q('#rb-color'),names);
+  fillOptions(q('#rec-color'),names);
 }
 
 // ---- report builder ----
@@ -665,6 +691,65 @@ function resetReport(){
   q('#rb-color').value='';q('#rb-dir').value='';
   DOW_SEL.clear();qa('#rb-dow button').forEach(b=>b.classList.remove('on'));
   q('#rb-res').innerHTML='';q('#rb-q').textContent='e.g. red · westbound · Thursdays → your query in plain English shows here';
+}
+
+// ---- record builder (same backend as the report, results shown inline) ----
+let REC_DOW=new Set();
+q('#rec-dow').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-d]');if(!b)return;
+  const d=b.dataset.d;if(REC_DOW.has(d)){REC_DOW.delete(d);b.classList.remove('on');}
+  else{REC_DOW.add(d);b.classList.add('on');}
+});
+function recordFilters(){
+  return {from:q('#rec-from').value||null,to:q('#rec-to').value||null,
+    color:q('#rec-color').value||null,direction:q('#rec-dir').value||null,
+    min_mph:q('#rec-min').value||null,max_mph:q('#rec-max').value||null,
+    hour_from:q('#rec-hf').value||null,hour_to:q('#rec-ht').value||null,
+    dows:REC_DOW.size?[...REC_DOW].map(Number):null,limit:100};
+}
+async function runRecords(){
+  const f=recordFilters();
+  q('#rec-q').textContent=humanQuery(f);
+  const box=q('#rec-res');box.innerHTML='<div class="empty">Searching…</div>';
+  const r=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(f)}).then(x=>x.json()).catch(()=>null);
+  if(!r){box.innerHTML='<div class="empty">Query failed.</div>';return;}
+  const a=r.aggregate;box.innerHTML='';
+  const sum=document.createElement('div');sum.className='rec-sum';
+  let s='<b>'+a.count+'</b> match'+(a.count===1?'':'es');
+  if(a.count){
+    const avg=a.avg_speed_mph!=null?Math.round(UNITS==="mph"?a.avg_speed_mph:a.avg_speed_kmh):null;
+    if(avg!=null)s+=' · avg '+avg+' '+uLbl();
+    s+=' · '+a.over+' over limit';
+  }
+  sum.innerHTML=s;box.appendChild(sum);
+  if(r.rows.length){
+    const ol=document.createElement('ol');ol.className='lastcars rec-list';
+    for(const ev of r.rows){
+      const li=document.createElement('li');
+      const col=(ev.color||'').trim();const hex=COLOR_HEX[col.toLowerCase()];
+      const sw=col?'<i style="background:'+(hex||'var(--panel2)')+'"></i>':'';
+      const colHtml=col?(sw+col):'<span class="none">no colour</span>';
+      li.innerHTML='<span class="lc-t">'+dayShort(ev.time)+'</span>'+
+        '<span class="lc-sp'+(isOver(ev)?' over':'')+'">'+fmtSpeed(ev)+'</span>'+
+        '<span class="lc-col">'+colHtml+'</span>'+
+        '<span class="lc-dir">'+(ev.direction||'')+'</span>';
+      if(ev.clip){li.classList.add('click');li.title='Play clip';li.onclick=()=>openModal('/captures/'+ev.clip);}
+      else if(ev.snapshot){li.classList.add('click');li.title='View snapshot';li.onclick=()=>openImg('/captures/'+ev.snapshot);}
+      ol.appendChild(li);
+    }
+    box.appendChild(ol);
+    if(r.truncated){const t=document.createElement('div');t.className='empty';
+      t.textContent='Showing first '+r.rows.length+' of '+r.total+' — narrow the filters to see the rest.';box.appendChild(t);}
+  }else if(a.count===0){
+    const e=document.createElement('div');e.className='empty';e.textContent='No matching passes.';box.appendChild(e);
+  }
+}
+function resetRecords(){
+  ['rec-min','rec-max','rec-hf','rec-ht','rec-from','rec-to'].forEach(id=>q('#'+id).value='');
+  q('#rec-color').value='';q('#rec-dir').value='';
+  REC_DOW.clear();qa('#rec-dow button').forEach(b=>b.classList.remove('on'));
+  q('#rec-res').innerHTML='';q('#rec-q').textContent='Your question in plain English shows here.';
 }
 
 function setPeriod(p){PERIOD=p;qa('#an-seg button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));renderPeriod();}

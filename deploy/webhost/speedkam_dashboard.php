@@ -391,10 +391,16 @@ function compute_stats($rows, $limit_kmh) {
     return compact('c', 'sp', 'dir', 'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges');
 }
 
-// --- report builder (GET filters) -------------------------------------------
+// --- report builder + record builder (both GET filters, same engine) --------
 $rep = null;
 if (isset($_GET['report'])) {
     $rep = run_report($all_rows, $_GET, $limit_kmh);
+}
+// The record builder is the same query engine surfaced in the sidebar; it fires
+// on its own `records=1` marker so it never collides with the report form.
+$recq = null;
+if (isset($_GET['records'])) {
+    $recq = run_report($all_rows, $_GET, $limit_kmh);
 }
 function run_report($all_rows, $g, $limit_kmh) {
     $status = strtolower($g['status'] ?? 'ok');
@@ -491,7 +497,7 @@ render_dashboard(compact(
     'online', 'last_seen', 'units', 'limit_kmh', 'status', 'c', 'sp', 'dir',
     'col', 'spd', 'spd_dir', 'dow', 'hod', 'hist', 'edges', 'top', 'view', 'rows',
     'filter', 'desired', 'desired_thr', 'camera_thr', 'desired_limit_kmh',
-    'sel_node', 'rejected', 'rep', 'all_colors', 'all_dirs',
+    'sel_node', 'rejected', 'rep', 'recq', 'all_colors', 'all_dirs',
     'recent_clips', 'latest_snap', 'latest_snap_time'
 ));
 
@@ -647,6 +653,17 @@ function page_head($title) {
        . '.tri{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;align-items:start;margin:1rem 0}'
        . '@media(max-width:900px){.tri{grid-template-columns:1fr}}'
        . '.tri>div{min-width:0}.tri h2.sec{margin-top:0}'
+       . '.tcol{display:grid;gap:1rem;align-content:start;min-width:0}'
+       // sidebar record builder
+       . '.reclead{color:var(--muted);font-size:.78rem;line-height:1.5;margin-bottom:.6rem}'
+       . '.reclead em{color:var(--fg);font-style:normal;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:.05rem .35rem}'
+       . '.recform{margin:0}'
+       . '.rbgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.5rem}'
+       . '.recform .fld{display:flex;flex-direction:column;gap:.2rem}'
+       . '.recform .fld label{font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}'
+       . '.recform .fld input,.recform .fld select{width:100%}'
+       . '.rec-sum{margin:.7rem 0 .3rem;font-size:.85rem;color:var(--muted)}.rec-sum b{color:var(--fg)}'
+       . '.rec-list{max-height:360px;overflow:auto;border-radius:12px}'
        // latest reading overlaid on the bottom of the live-view snapshot
        . '.snap{position:relative}'
        . '.snap .ov{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:flex-end;gap:.8rem;'
@@ -799,40 +816,14 @@ function render_dashboard($d) {
 
     $nq = (!empty($sel_node)) ? '&node=' . rawurlencode($sel_node) : '';
 
-    // -------- THREE CARDS: Last 10 cars · Recent speeders · Top 10 speeders --
+    // -------- THREE COLUMNS: (Last 10 + Top 10) · Recent speeders · Record builder
     echo '<div class="tri">';
 
-    // Last 10 cars
+    // Column 1: Last 10 cars with Top 10 speeders stacked beneath it
+    echo '<div class="tcol">';
     echo '<div><h2 class="sec">Last 10 cars</h2>';
     render_last_cars($rows, $units, $limit_kmh, false);
     echo '</div>';
-
-    // Recent speeders (captured clips, most-recent first)
-    echo '<div><h2 class="sec">Recent Speeders</h2>';
-    if (!empty($recent_clips)) {
-        echo '<div class="clipgrid">';
-        foreach (array_slice($recent_clips, 0, 6) as $r) {
-            $over  = is_over($r, $limit_kmh);
-            $snap  = trim($r['snapshot'] ?? '');
-            $clip  = trim($r['clip'] ?? '');
-            $thumb = $snap ? '?media=' . rawurlencode($snap) . $nq : '';
-            $vsrc  = '?media=' . rawurlencode($clip) . $nq;
-            echo '<div class="clip">'
-               . ($thumb
-                    ? '<img class="thumb" src="' . h($thumb) . '" loading="lazy" onclick="skPlay(\'' . h($vsrc) . '\')">'
-                    : '<div class="thumb" onclick="skPlay(\'' . h($vsrc) . '\')"></div>')
-               . '<div class="meta"><span class="sp' . ($over ? ' over' : '') . '">'
-               . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
-               . '<span class="t">' . h(substr(str_replace('T', ' ', $r['wall_time'] ?? ''), 11, 5)) . '</span>'
-               . '</div></div>';
-        }
-        echo '</div>';
-    } else {
-        echo '<p class="muted" style="font-size:.85rem">No captures yet.</p>';
-    }
-    echo '</div>';
-
-    // Top 10 speeders -- with colour swatch + a static snapshot of each car
     echo '<div><h2 class="sec">Top 10 speeders</h2>';
     if ($top) {
         echo '<ol class="toplist">';
@@ -859,21 +850,45 @@ function render_dashboard($d) {
         echo '<p class="muted" style="font-size:.85rem">No records yet.</p>';
     }
     echo '</div>';
+    echo '</div>'; // .tcol
+
+    // Column 2: Recent speeders (captured clips, most-recent first)
+    echo '<div><h2 class="sec">Recent Speeders</h2>';
+    if (!empty($recent_clips)) {
+        echo '<div class="clipgrid">';
+        foreach (array_slice($recent_clips, 0, 6) as $r) {
+            $over  = is_over($r, $limit_kmh);
+            $snap  = trim($r['snapshot'] ?? '');
+            $clip  = trim($r['clip'] ?? '');
+            $thumb = $snap ? '?media=' . rawurlencode($snap) . $nq : '';
+            $vsrc  = '?media=' . rawurlencode($clip) . $nq;
+            echo '<div class="clip">'
+               . ($thumb
+                    ? '<img class="thumb" src="' . h($thumb) . '" loading="lazy" onclick="skPlay(\'' . h($vsrc) . '\')">'
+                    : '<div class="thumb" onclick="skPlay(\'' . h($vsrc) . '\')"></div>')
+               . '<div class="meta"><span class="sp' . ($over ? ' over' : '') . '">'
+               . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+               . '<span class="t">' . h(substr(str_replace('T', ' ', $r['wall_time'] ?? ''), 11, 5)) . '</span>'
+               . '</div></div>';
+        }
+        echo '</div>';
+    } else {
+        echo '<p class="muted" style="font-size:.85rem">No captures yet.</p>';
+    }
+    echo '</div>';
+
+    // Column 3: Record builder -- a full query over the whole history
+    echo '<div><h2 class="sec">Record builder</h2><div class="card">';
+    render_record_builder($d);
+    echo '</div></div>';
 
     echo '</div>'; // .tri
 
     // -------- ANALYTICS --------
     render_analytics($d);
 
-    // -------- REPORT BUILDER + RECORD BUILDER (both under Analytics) --------
+    // -------- REPORT BUILDER (under Analytics) --------
     render_report_builder($d);
-
-    echo '<div class="panel"><h3>Record builder</h3>';
-    echo '<div class="tabs">'
-       . '<a href="?filter=all' . $nq . '" class="' . ($filter === 'all' ? 'on' : '') . '">All passes</a>'
-       . '<a href="?filter=speeders' . $nq . '" class="' . ($filter === 'speeders' ? 'on' : '') . '">Over limit</a></div>';
-    render_table($view, $units, $limit_kmh, $nq, true);
-    echo '</div>';
 
     // -------- OPTIONS (SpeedKapture + speed limit, at the bottom) --------
     echo '<h2 class="sec">Options</h2>';
@@ -1046,6 +1061,87 @@ function render_report_builder($d) {
         }
     }
     echo '</div>';
+}
+
+// Sidebar record builder: the same filter engine as the report builder, but
+// surfaced as a compact query whose matching passes list inline. Fires on its
+// own `records=1` marker so it never collides with the report form's `report=1`.
+function render_record_builder($d) {
+    extract($d);
+    $g   = $_GET;
+    $nqf = (!empty($sel_node)) ? '<input type="hidden" name="node" value="' . h($sel_node) . '">' : '';
+    $sv  = function ($k) use ($g) { return h($g[$k] ?? ''); };
+
+    echo '<div class="reclead">Build a question &mdash; e.g. <em>eastbound red cars over 31 '
+       . h(ulbl($units)) . '</em>, or <em>westbound on Tuesdays 4&ndash;5&nbsp;pm</em>.</div>';
+    echo '<form method="get" class="recform">' . $nqf . '<input type="hidden" name="records" value="1">';
+    echo '<div class="rbgrid">';
+    echo '<div class="fld"><label>Direction</label><select name="direction"><option value="">any</option>';
+    foreach ($all_dirs as $dn) {
+        $s = (strtolower($g['direction'] ?? '') === strtolower($dn)) ? ' selected' : '';
+        echo '<option value="' . h($dn) . '"' . $s . '>' . h($dn) . '</option>';
+    }
+    echo '</select></div>';
+    echo '<div class="fld"><label>Colour</label><select name="color"><option value="">any</option>';
+    foreach ($all_colors as $co) {
+        $s = (strtolower($g['color'] ?? '') === strtolower($co)) ? ' selected' : '';
+        echo '<option value="' . h($co) . '"' . $s . '>' . h($co) . '</option>';
+    }
+    echo '</select></div>';
+    echo '<div class="fld"><label>Min ' . h(ulbl($units)) . '</label><input type="number" min="0" name="min_mph" value="' . $sv('min_mph') . '"></div>';
+    echo '<div class="fld"><label>Max ' . h(ulbl($units)) . '</label><input type="number" min="0" name="max_mph" value="' . $sv('max_mph') . '"></div>';
+    echo '<div class="fld"><label>From hour</label><input type="number" min="0" max="23" name="hour_from" value="' . $sv('hour_from') . '"></div>';
+    echo '<div class="fld"><label>To hour</label><input type="number" min="0" max="23" name="hour_to" value="' . $sv('hour_to') . '"></div>';
+    echo '<div class="fld"><label>From date</label><input type="date" name="from" value="' . $sv('from') . '"></div>';
+    echo '<div class="fld"><label>To date</label><input type="date" name="to" value="' . $sv('to') . '"></div>';
+    echo '</div>';
+    echo '<div style="margin:.6rem 0"><label style="display:block;font-size:.68rem;color:var(--muted);'
+       . 'text-transform:uppercase;letter-spacing:.04em;margin-bottom:.25rem">Days of week</label><div class="dowsel">';
+    $dowNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    $selDows  = (isset($g['dow']) && is_array($g['dow'])) ? array_map('intval', $g['dow']) : [];
+    foreach ($dowNames as $i => $nm) {
+        $ck = in_array($i, $selDows, true) ? ' checked' : '';
+        echo '<label><input type="checkbox" name="dow[]" value="' . $i . '"' . $ck . '>' . $nm . '</label>';
+    }
+    echo '</div></div>';
+    echo '<div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">'
+       . '<button type="submit">Show records</button>'
+       . '<a class="muted" href="?' . (!empty($sel_node) ? 'node=' . rawurlencode($sel_node) : '') . '" style="font-size:.85rem">clear</a></div>';
+    echo '</form>';
+
+    if ($recq !== null) {
+        $n   = $recq['count'];
+        $avg = $recq['avg_kmh'] !== null ? round(to_disp($recq['avg_kmh'], $units)) : null;
+        echo '<div class="rec-sum"><b>' . $n . '</b> match' . ($n === 1 ? '' : 'es');
+        if ($n) {
+            if ($avg !== null) echo ' &middot; avg ' . $avg . ' ' . h(ulbl($units));
+            echo ' &middot; ' . $recq['over'] . ' over limit';
+        }
+        echo '</div>';
+        $rows_out = array_slice($recq['rows'], 0, 100);
+        if ($rows_out) {
+            echo '<ol class="lastcars rec-list">';
+            foreach ($rows_out as $r) {
+                $over = is_over($r, $limit_kmh);
+                $time = str_replace('T', ' ', substr($r['wall_time'] ?? '', 0, 16));
+                $col  = trim($r['color'] ?? '');
+                $hex  = $col ? sk_color_hex($col) : null;
+                $colHtml = $col
+                    ? '<i style="background:' . h($hex ?: 'var(--line)') . '"></i>' . h($col)
+                    : '<span class="none">no colour</span>';
+                echo '<li><span class="lc-t">' . h($time) . '</span>'
+                   . '<span class="lc-sp' . ($over ? ' over' : '') . '">' . h(disp_speed($r, $units)) . ' ' . h($units) . '</span>'
+                   . '<span class="lc-col">' . $colHtml . '</span>'
+                   . '<span class="lc-dir">' . h($r['direction'] ?? '') . '</span></li>';
+            }
+            echo '</ol>';
+            if ($n > 100) {
+                echo '<p class="muted" style="font-size:.78rem;margin:.4rem .2rem 0">Showing first 100 of ' . $n . ' &mdash; narrow the filters to see the rest.</p>';
+            }
+        } elseif ($n === 0) {
+            echo '<p class="muted" style="font-size:.85rem;margin:.5rem 0 0">No matching passes.</p>';
+        }
+    }
 }
 
 function render_controls($d) {
